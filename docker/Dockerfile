@@ -23,15 +23,19 @@ WORKDIR /app
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 安装系统依赖（wkhtmltopdf 含 wkhtmltoimage，用于 Markdown 转图片 Issue #289）
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 安装系统依赖
+# Keep the runtime image lean and resilient: wkhtmltopdf is optional for
+# markdown-to-image and the application already falls back to text when the
+# binary is unavailable, so do not hard-require it during image build.
+# Debian mirrors may occasionally return transient 502/connection resets in CI
+# or Docker Desktop, so keep the package set minimal and enable retries.
+RUN apt-get update -o Acquire::Retries=5 \
+    && apt-get install -y --no-install-recommends \
+    -o Acquire::Retries=5 \
+    -o Acquire::http::Timeout=30 \
+    -o Dpkg::Use-Pty=0 \
     gcc \
     curl \
-    wkhtmltopdf \
-    fontconfig \
-    libjpeg62-turbo \
-    libxrender1 \
-    libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件
@@ -66,11 +70,6 @@ EXPOSE 8000
 
 # 数据卷（持久化数据）
 VOLUME ["/app/data", "/app/logs", "/app/reports"]
-
-# 健康检查（FastAPI 模式）
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/api/health || curl -f http://localhost:8000/health \
-    || python -c "import sys; sys.exit(0)"
 
 # 默认命令（可被覆盖）
 CMD ["python", "main.py", "--schedule"]

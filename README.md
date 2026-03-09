@@ -188,6 +188,7 @@ python main.py
 ```
 
 > Docker 部署、定时任务配置请参考 [完整指南](docs/full-guide.md)
+> 注：Docker 镜像默认不再内置 `wkhtmltopdf`；如启用 Markdown 转图片，未安装该二进制时会自动回退为文本推送，不影响 Web 服务启动。
 > 桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)
 
 ## 📱 推送效果

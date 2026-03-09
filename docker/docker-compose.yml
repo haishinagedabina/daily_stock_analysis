@@ -8,7 +8,6 @@
 #   同时启动: docker-compose -f ./docker/docker-compose.yml up -d analyzer server
 
 name: daily-stock-analysis
-version: '3.8'
 
 x-common: &common
   build:
@@ -57,12 +56,28 @@ services:
   analyzer:
     <<: *common
     container_name: stock-analyzer
+    environment:
+      - TZ=Asia/Shanghai
+      - WEBUI_ENABLED=false
+      - WEBUI_AUTO_BUILD=false
 
   # FastAPI 模式
   server:
     <<: *common
     container_name: stock-server
+    environment:
+      - TZ=Asia/Shanghai
+      - WEBUI_HOST=0.0.0.0
+      - WEBUI_PORT=8000
+      - API_PORT=8000
+      - WEBUI_AUTO_BUILD=false
     command: ["python", "main.py", "--serve-only", "--host", "0.0.0.0", "--port", "${API_PORT:-8000}"]
     # 若使用 network_mode: host，则以下 ports 映射无效，端口由 command 中的 --port 指定
     ports:
       - "${API_PORT:-8000}:${API_PORT:-8000}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:$${API_PORT:-8000}/api/health || curl -fsS http://localhost:$${API_PORT:-8000}/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3

@@ -68,6 +68,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --no-notify        # 不发送推送通知
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
+  python main.py --screening        # 执行一次全市场筛选
   python main.py --market-review    # 仅运行大盘复盘
         '''
     )
@@ -113,6 +114,12 @@ def parse_arguments() -> argparse.Namespace:
         '--schedule',
         action='store_true',
         help='启用定时任务模式，每日定时执行'
+    )
+
+    parser.add_argument(
+        '--screening',
+        action='store_true',
+        help='执行全市场筛选；与 --schedule 组合时启用定时筛选模式'
     )
 
     parser.add_argument(
@@ -436,6 +443,28 @@ def run_full_analysis(
         logger.exception(f"分析流程执行失败: {e}")
 
 
+def run_screening_workflow(config: Config, args: argparse.Namespace) -> None:
+    """执行一次全市场筛选工作流。"""
+    from src.services.screening_schedule_service import ScreeningScheduleService
+
+    service = ScreeningScheduleService(config=config)
+    result = service.run_once(force_run=getattr(args, "force_run", False), market="cn")
+    if result.get("status") == "skipped":
+        logger.info("今日目标市场为非交易日，已跳过全市场筛选。可使用 --force-run 强制执行。")
+        return
+    if result.get("status") == "failed":
+        raise RuntimeError(result.get("error_summary") or "全市场筛选失败")
+    if result.get("status") not in {"completed", "completed_with_ai_degraded"}:
+        raise RuntimeError(f"全市场筛选任务尚未完成，当前状态: {result.get('status')}")
+
+    logger.info(
+        "全市场筛选完成: run_id=%s status=%s candidate_count=%s",
+        result.get("run_id"),
+        result.get("status"),
+        result.get("candidate_count"),
+    )
+
+
 def start_api_server(host: str, port: int, config: Config) -> None:
     """
     在后台线程启动 FastAPI 服务
@@ -598,7 +627,13 @@ def main() -> int:
             )
             return 0
 
-        # 模式1: 仅大盘复盘
+        # 模式1: 全市场筛选
+        if args.screening and not args.schedule:
+            logger.info("模式: 全市场筛选")
+            run_screening_workflow(config=config, args=args)
+            return 0
+
+        # 模式2: 仅大盘复盘
         if args.market_review:
             from src.analyzer import GeminiAnalyzer
             from src.core.market_review import run_market_review
@@ -653,7 +688,7 @@ def main() -> int:
             )
             return 0
 
-        # 模式2: 定时任务模式
+        # 模式3: 定时任务模式
         if args.schedule or config.schedule_enabled:
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
@@ -669,8 +704,16 @@ def main() -> int:
 
             from src.scheduler import run_with_schedule
 
-            def scheduled_task():
-                run_full_analysis(config, args, stock_codes)
+            if args.screening:
+                if should_run_immediately:
+                    run_screening_workflow(config=config, args=args)
+                    should_run_immediately = False
+
+                def scheduled_task():
+                    run_screening_workflow(config=config, args=args)
+            else:
+                def scheduled_task():
+                    run_full_analysis(config, args, stock_codes)
 
             run_with_schedule(
                 task=scheduled_task,
@@ -679,7 +722,7 @@ def main() -> int:
             )
             return 0
 
-        # 模式3: 正常单次运行
+        # 模式4: 正常单次运行
         if config.run_immediately:
             run_full_analysis(config, args, stock_codes)
         else:

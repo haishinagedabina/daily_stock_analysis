@@ -11,6 +11,8 @@ A股自选股智能分析系统 - 配置管理模块
 """
 
 import json
+import logging
+import math
 import os
 import re
 from pathlib import Path
@@ -138,6 +140,16 @@ class Config:
     # === 新闻与分析筛选配置 ===
     news_max_age_days: int = 3   # 新闻最大时效（天）
     bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
+
+    # === 全市场筛选配置 ===
+    screening_default_mode: str = "balanced"
+    screening_candidate_limit: int = 30
+    screening_ai_top_k: int = 5
+    screening_min_list_days: int = 120
+    screening_min_volume_ratio: float = 1.2
+    screening_min_avg_amount: float = 50_000_000
+    screening_breakout_lookback_days: int = 20
+    screening_factor_lookback_days: int = 80
 
     # === Agent 模式配置 ===
     agent_mode: bool = False
@@ -598,6 +610,22 @@ class Config:
             serpapi_keys=serpapi_keys,
             news_max_age_days=max(1, int(os.getenv('NEWS_MAX_AGE_DAYS', '3'))),
             bias_threshold=max(1.0, float(os.getenv('BIAS_THRESHOLD', '5.0'))),
+            screening_default_mode=cls._parse_screening_default_mode(os.getenv('SCREENING_DEFAULT_MODE', 'balanced')),
+            screening_candidate_limit=cls._read_int_env('SCREENING_CANDIDATE_LIMIT', 30, min_value=1, max_value=200),
+            screening_ai_top_k=cls._read_int_env('SCREENING_AI_TOP_K', 5, min_value=0, max_value=50),
+            screening_min_list_days=cls._read_int_env('SCREENING_MIN_LIST_DAYS', 120, min_value=1, max_value=5000),
+            screening_min_volume_ratio=cls._read_float_env(
+                'SCREENING_MIN_VOLUME_RATIO', 1.2, min_value=0.1, max_value=10.0
+            ),
+            screening_min_avg_amount=cls._read_float_env(
+                'SCREENING_MIN_AVG_AMOUNT', 50_000_000.0, min_value=0.0, max_value=1_000_000_000_000.0
+            ),
+            screening_breakout_lookback_days=cls._read_int_env(
+                'SCREENING_BREAKOUT_LOOKBACK_DAYS', 20, min_value=2, max_value=240
+            ),
+            screening_factor_lookback_days=cls._read_int_env(
+                'SCREENING_FACTOR_LOOKBACK_DAYS', 80, min_value=20, max_value=365
+            ),
             agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
             agent_max_steps=int(os.getenv('AGENT_MAX_STEPS', '10')),
             agent_skills=[s.strip() for s in os.getenv('AGENT_SKILLS', '').split(',') if s.strip()],
@@ -935,6 +963,70 @@ class Config:
         return result
 
     @classmethod
+    def _read_int_env(
+        cls,
+        key: str,
+        default: int,
+        min_value: Optional[int] = None,
+        max_value: Optional[int] = None,
+    ) -> int:
+        raw = (os.getenv(key) or "").strip()
+        if not raw:
+            value = default
+        else:
+            try:
+                value = int(raw)
+            except ValueError:
+                logging.getLogger(__name__).warning(
+                    "%s 配置值 '%s' 无法解析为整数，已回退为默认值 %s",
+                    key,
+                    raw,
+                    default,
+                )
+                value = default
+        if min_value is not None:
+            value = max(min_value, value)
+        if max_value is not None:
+            value = min(max_value, value)
+        return value
+
+    @classmethod
+    def _read_float_env(
+        cls,
+        key: str,
+        default: float,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+    ) -> float:
+        raw = (os.getenv(key) or "").strip()
+        if not raw:
+            value = default
+        else:
+            try:
+                value = float(raw)
+            except ValueError:
+                logging.getLogger(__name__).warning(
+                    "%s 配置值 '%s' 无法解析为数字，已回退为默认值 %s",
+                    key,
+                    raw,
+                    default,
+                )
+                value = default
+        if not math.isfinite(value):
+            logging.getLogger(__name__).warning(
+                "%s 配置值 '%s' 不是有限数字，已回退为默认值 %s",
+                key,
+                raw,
+                default,
+            )
+            value = default
+        if min_value is not None:
+            value = max(min_value, value)
+        if max_value is not None:
+            value = min(max_value, value)
+        return value
+
+    @classmethod
     def _parse_market_review_region(cls, value: str) -> str:
         """解析大盘复盘市场区域，非法值记录警告后回退为 cn"""
         import logging
@@ -945,6 +1037,18 @@ class Config:
             f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / us / both）"
         )
         return 'cn'
+
+    @classmethod
+    def _parse_screening_default_mode(cls, value: str) -> str:
+        """Parse screening default mode, fallback to balanced for invalid values."""
+        v = (value or "balanced").strip().lower()
+        if v in {"balanced", "aggressive", "quality"}:
+            return v
+        logging.getLogger(__name__).warning(
+            "SCREENING_DEFAULT_MODE 配置值 '%s' 无效，已回退为默认值 'balanced'（合法值：balanced / aggressive / quality）",
+            value,
+        )
+        return "balanced"
 
     @classmethod
     def _parse_md2img_engine(cls, value: str) -> str:
@@ -1082,6 +1186,17 @@ class Config:
                 field="LITELLM_MODEL",
             ))
 
+        # --- Screening configuration ---
+        if self.screening_ai_top_k > self.screening_candidate_limit:
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    "SCREENING_AI_TOP_K 不能大于 SCREENING_CANDIDATE_LIMIT，"
+                    "否则 AI 二筛数量会超过规则候选池上限"
+                ),
+                field="SCREENING_AI_TOP_K",
+            ))
+
         # --- Search engine (informational only) ---
         if not (
             self.bocha_api_keys
@@ -1096,6 +1211,16 @@ class Config:
             ))
 
         # --- Notification channels ---
+        if self.feishu_stream_enabled and not (self.feishu_app_id and self.feishu_app_secret):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=(
+                    "已启用 FEISHU_STREAM_ENABLED，但缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET，"
+                    "飞书 Stream 机器人不会启动"
+                ),
+                field="FEISHU_STREAM_ENABLED",
+            ))
+
         has_notification = bool(
             self.wechat_webhook_url
             or self.feishu_webhook_url

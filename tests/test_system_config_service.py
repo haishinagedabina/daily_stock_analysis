@@ -81,6 +81,119 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                 reload_now=False,
             )
 
+    def test_validate_reports_screening_top_k_exceeds_candidate_limit(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "SCREENING_CANDIDATE_LIMIT", "value": "10"},
+                {"key": "SCREENING_AI_TOP_K", "value": "12"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "SCREENING_AI_TOP_K" and issue["code"] == "out_of_range_relation"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_uses_default_candidate_limit_when_only_ai_top_k_is_updated(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "SCREENING_AI_TOP_K", "value": "40"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "SCREENING_AI_TOP_K" and issue["code"] == "out_of_range_relation"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_rejects_non_finite_screening_number(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "SCREENING_MIN_VOLUME_RATIO", "value": "nan"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "SCREENING_MIN_VOLUME_RATIO" and issue["code"] == "invalid_type"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_rejects_unrelated_update_when_existing_screening_defaults_are_invalid(self) -> None:
+        self.env_path.write_text(
+            self.env_path.read_text(encoding="utf-8")
+            + "SCREENING_CANDIDATE_LIMIT=1\nSCREENING_AI_TOP_K=5\n",
+            encoding="utf-8",
+        )
+
+        validation = self.service.validate(
+            items=[
+                {"key": "LOG_LEVEL", "value": "DEBUG"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "SCREENING_AI_TOP_K" and issue["code"] == "out_of_range_relation"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_get_config_normalizes_invalid_screening_default_mode(self) -> None:
+        self.env_path.write_text(
+            self.env_path.read_text(encoding="utf-8") + "SCREENING_DEFAULT_MODE=unknown\n",
+            encoding="utf-8",
+        )
+
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(items["SCREENING_DEFAULT_MODE"]["value"], "balanced")
+
+    def test_get_config_normalizes_mixed_case_screening_default_mode(self) -> None:
+        self.env_path.write_text(
+            self.env_path.read_text(encoding="utf-8") + "SCREENING_DEFAULT_MODE=Aggressive\n",
+            encoding="utf-8",
+        )
+
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(items["SCREENING_DEFAULT_MODE"]["value"], "aggressive")
+
+    def test_validate_accepts_mixed_case_screening_default_mode(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "SCREENING_DEFAULT_MODE", "value": "Aggressive"},
+            ]
+        )
+
+        self.assertTrue(validation["valid"])
+
+    def test_update_normalizes_screening_default_mode_before_persist(self) -> None:
+        old_version = self.manager.get_config_version()
+
+        response = self.service.update(
+            config_version=old_version,
+            items=[
+                {"key": "SCREENING_DEFAULT_MODE", "value": "Aggressive"},
+            ],
+            reload_now=False,
+        )
+
+        self.assertTrue(response["success"])
+        current_map = self.manager.read_config_map()
+        self.assertEqual(current_map["SCREENING_DEFAULT_MODE"], "aggressive")
+
 
 if __name__ == "__main__":
     unittest.main()

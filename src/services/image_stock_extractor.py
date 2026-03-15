@@ -124,8 +124,8 @@ def _parse_codes_from_text(text: str) -> List[str]:
 def _resolve_vision_model() -> str:
     """Determine the litellm model to use for vision, with gemini-3 downgrade."""
     cfg = get_config()
-    # Prefer explicit vision model, then primary litellm model
-    model = (cfg.openai_vision_model or cfg.litellm_model or "").strip()
+    # Prefer explicit VISION_MODEL, then legacy OPENAI_VISION_MODEL, then primary model.
+    model = (cfg.vision_model or cfg.openai_vision_model or cfg.litellm_model or "").strip()
     if not model:
         # Fallback: infer from available keys
         if cfg.gemini_api_keys:

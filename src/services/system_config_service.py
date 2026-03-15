@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -65,9 +66,10 @@ class SystemConfigService:
         for key in all_keys:
             raw_value = config_map.get(key, "")
             field_schema = schema_by_key[key]
+            normalized_value = self._normalize_value(key=key, value=raw_value, field_schema=field_schema)
             item: Dict[str, Any] = {
                 "key": key,
-                "value": raw_value,
+                "value": normalized_value,
                 "raw_value_exists": bool(raw_value),
                 "is_masked": False,
             }
@@ -121,8 +123,11 @@ class SystemConfigService:
         for item in items:
             key = item["key"].upper()
             value = item["value"]
-            updates.append((key, value))
-            field_schema = get_field_definition(key)
+            field_schema = get_field_definition(key, value)
+            normalized_value = value
+            if key == "SCREENING_DEFAULT_MODE":
+                normalized_value = self._normalize_value(key=key, value=value, field_schema=field_schema)
+            updates.append((key, normalized_value))
             if bool(field_schema.get("is_sensitive", False)):
                 sensitive_keys.add(key)
 
@@ -182,6 +187,8 @@ class SystemConfigService:
     def _validate_value(key: str, value: str, field_schema: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Validate a single field value against schema metadata."""
         issues: List[Dict[str, Any]] = []
+        if key == "SCREENING_DEFAULT_MODE":
+            value = value.strip().lower()
         data_type = field_schema.get("data_type", "string")
         validation = field_schema.get("validation", {}) or {}
         is_required = field_schema.get("is_required", False)
@@ -230,6 +237,17 @@ class SystemConfigService:
                         "message": "Value must be a number",
                         "severity": "error",
                         "expected": "number",
+                        "actual": value,
+                    }
+                ]
+            if not math.isfinite(numeric):
+                return [
+                    {
+                        "key": key,
+                        "code": "invalid_type",
+                        "message": "Value must be a finite number",
+                        "severity": "error",
+                        "expected": "finite number",
                         "actual": value,
                     }
                 ]
@@ -327,4 +345,86 @@ class SystemConfigService:
                 }
             )
 
+        candidate_limit_raw = (effective_map.get("SCREENING_CANDIDATE_LIMIT") or "").strip()
+        ai_top_k_raw = (effective_map.get("SCREENING_AI_TOP_K") or "").strip()
+        candidate_limit_raw = SystemConfigService._normalize_value(
+            key="SCREENING_CANDIDATE_LIMIT",
+            value=candidate_limit_raw,
+            field_schema=get_field_definition("SCREENING_CANDIDATE_LIMIT"),
+        )
+        ai_top_k_raw = SystemConfigService._normalize_value(
+            key="SCREENING_AI_TOP_K",
+            value=ai_top_k_raw,
+            field_schema=get_field_definition("SCREENING_AI_TOP_K"),
+        )
+        try:
+            candidate_limit = int(candidate_limit_raw)
+            ai_top_k = int(ai_top_k_raw)
+        except ValueError:
+            candidate_limit = None
+            ai_top_k = None
+        if (
+            candidate_limit is not None
+            and ai_top_k is not None
+            and ai_top_k > candidate_limit
+        ):
+            issues.append(
+                {
+                    "key": "SCREENING_AI_TOP_K",
+                    "code": "out_of_range_relation",
+                    "message": "SCREENING_AI_TOP_K cannot be greater than SCREENING_CANDIDATE_LIMIT",
+                    "severity": "error",
+                    "expected": f"<={candidate_limit}",
+                    "actual": str(ai_top_k),
+                }
+            )
+
         return issues
+
+    @staticmethod
+    def _normalize_value(key: str, value: str, field_schema: Dict[str, Any]) -> str:
+        """Normalize screening config values to the runtime-effective representation."""
+        if not key.startswith("SCREENING_"):
+            return value
+
+        normalized = (value or "").strip()
+        if key == "SCREENING_DEFAULT_MODE":
+            normalized = normalized.lower()
+        default_value = str(field_schema.get("default_value") or "")
+        if not normalized:
+            return default_value
+
+        data_type = field_schema.get("data_type")
+        validation = field_schema.get("validation", {}) or {}
+        min_value = validation.get("min")
+        max_value = validation.get("max")
+
+        if data_type == "integer":
+            try:
+                numeric = int(normalized)
+            except ValueError:
+                return default_value
+            if min_value is not None:
+                numeric = max(int(min_value), numeric)
+            if max_value is not None:
+                numeric = min(int(max_value), numeric)
+            return str(numeric)
+
+        if data_type == "number":
+            try:
+                numeric = float(normalized)
+            except ValueError:
+                return default_value
+            if not math.isfinite(numeric):
+                return default_value
+            if min_value is not None:
+                numeric = max(float(min_value), numeric)
+            if max_value is not None:
+                numeric = min(float(max_value), numeric)
+            return str(int(numeric)) if float(numeric).is_integer() else str(numeric)
+
+        enum_values = validation.get("enum") or []
+        if enum_values and normalized not in enum_values:
+            return default_value
+
+        return normalized

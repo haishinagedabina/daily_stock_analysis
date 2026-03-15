@@ -38,6 +38,7 @@
 | 图片识别 | 从图片添加 | 上传自选股截图，Vision LLM 自动提取股票代码，一键加入监控 |
 | 回测 | AI 回测验证 | 自动评估历史分析准确率，方向胜率、止盈止损命中率 |
 | **Agent 问股** | **策略对话** | **多轮策略问答，支持均线金叉/缠论/波浪等 11 种内置策略，Web/Bot/API 全链路** |
+| 筛选 | 全市场批量选股（开发中） | 已落地后端主链路：`instrument_master`、日线同步、因子快照、规则首筛、候选 AI 二筛、`screening` API；当前额外支持同步健康报告、同日同模式幂等、失败任务按阶段补跑、AI 降级完成、带新闻补充的最终推荐字段、单候选详情中的 `analysis_history` 关联信息、手动触发推荐名单通知、`python main.py --screening` / `python main.py --screening --schedule` 的手动与定时执行入口，以及带 `screening_run_id` / 阶段耗时 / 漏斗统计的数据链路观测日志 |
 | 推送 | 多渠道通知 | 企业微信、飞书、Telegram、钉钉、邮件、Pushover |
 | 自动化 | 定时运行 | GitHub Actions 定时执行，无需服务器 |
 
@@ -144,6 +145,14 @@
 | `WECHAT_MSG_TYPE` | 企微消息类型，默认 markdown，支持配置 text 类型，发送纯 markdown 文本 | 可选 |
 | `NEWS_MAX_AGE_DAYS` | 新闻最大时效（天），默认 3，避免使用过时信息 | 可选 |
 | `BIAS_THRESHOLD` | 乖离率阈值（%），默认 5.0，超过提示不追高；强势趋势股自动放宽 | 可选 |
+| `SCREENING_DEFAULT_MODE` | 全市场筛选默认模式；支持 `balanced`、`aggressive`、`quality` 三种预设 | 可选 |
+| `SCREENING_CANDIDATE_LIMIT` | 全市场筛选默认规则候选上限；`/api/v1/screening/runs` 未传 `candidate_limit` 时使用 | 可选 |
+| `SCREENING_AI_TOP_K` | 全市场筛选默认 AI 二筛 Top K；未传 `ai_top_k` 时使用 | 可选 |
+| `SCREENING_MIN_LIST_DAYS` | 规则首筛最少上市天数阈值 | 可选 |
+| `SCREENING_MIN_VOLUME_RATIO` | 规则首筛最小量比阈值 | 可选 |
+| `SCREENING_MIN_AVG_AMOUNT` | 规则首筛最小平均成交额阈值（元） | 可选 |
+| `SCREENING_BREAKOUT_LOOKBACK_DAYS` | 近突破判断窗口（天） | 可选 |
+| `SCREENING_FACTOR_LOOKBACK_DAYS` | 因子构建历史回看窗口（天） | 可选 |
 | `AGENT_MODE` | 开启 Agent 策略问股模式（`true`/`false`，默认 false） | 可选 |
 | `AGENT_SKILLS` | 激活的策略（逗号分隔），`all` 启用全部 11 个；不配置时默认 4 个，详见 `.env.example` | 可选 |
 | `AGENT_MAX_STEPS` | Agent 最大推理步数（默认 10） | 可选 |
@@ -186,6 +195,8 @@ cp .env.example .env && vim .env
 # 运行分析
 python main.py
 ```
+
+如果你要接入飞书应用机器人用于 Bot 对话或会话内回复，可在 `.env` 中配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`，并将 `FEISHU_STREAM_ENABLED=true`。该模式通过长连接收发消息，本地或 Docker 场景下无需公网回调地址；如果你要接收定时分析或批量主动推送，仍应继续配置 `FEISHU_WEBHOOK_URL`。
 
 > Docker 部署、定时任务配置请参考 [完整指南](docs/full-guide.md)
 > 注：Docker 镜像默认不再内置 `wkhtmltopdf`；如启用 Markdown 转图片，未安装该二进制时会自动回退为文本推送，不影响 Web 服务启动。

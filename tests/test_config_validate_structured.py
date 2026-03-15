@@ -201,6 +201,107 @@ class TestValidateStructuredLLM:
         assert all(i.severity == "info" for i in llm_issues)
 
 
+class TestValidateStructuredScreening:
+    def test_ai_top_k_greater_than_candidate_limit_is_error(self):
+        cfg = _make_config(
+            screening_candidate_limit=10,
+            screening_ai_top_k=12,
+        )
+        issues = cfg.validate_structured()
+        screening_issues = [i for i in issues if i.field == "SCREENING_AI_TOP_K"]
+        assert screening_issues
+        assert screening_issues[0].severity == "error"
+
+    @patch.dict(
+        "os.environ",
+        {
+            "SCREENING_DEFAULT_MODE": "aggressive",
+            "SCREENING_CANDIDATE_LIMIT": "40",
+            "SCREENING_AI_TOP_K": "8",
+            "SCREENING_MIN_LIST_DAYS": "180",
+            "SCREENING_MIN_VOLUME_RATIO": "1.6",
+            "SCREENING_MIN_AVG_AMOUNT": "80000000",
+            "SCREENING_BREAKOUT_LOOKBACK_DAYS": "30",
+            "SCREENING_FACTOR_LOOKBACK_DAYS": "120",
+        },
+        clear=True,
+    )
+    @patch("src.config.load_dotenv")
+    def test_screening_fields_load_from_env(self, _mock_dotenv):
+        Config._instance = None
+        cfg = Config._load_from_env()
+        assert cfg.screening_default_mode == "aggressive"
+        assert cfg.screening_candidate_limit == 40
+        assert cfg.screening_ai_top_k == 8
+        assert cfg.screening_min_list_days == 180
+        assert cfg.screening_min_volume_ratio == 1.6
+        assert cfg.screening_min_avg_amount == 80_000_000
+        assert cfg.screening_breakout_lookback_days == 30
+        assert cfg.screening_factor_lookback_days == 120
+
+    @patch.dict(
+        "os.environ",
+        {
+            "SCREENING_CANDIDATE_LIMIT": "",
+            "SCREENING_AI_TOP_K": "",
+            "SCREENING_MIN_VOLUME_RATIO": "",
+        },
+        clear=True,
+    )
+    @patch("src.config.load_dotenv")
+    def test_blank_screening_numeric_fields_fallback_to_defaults(self, _mock_dotenv):
+        Config._instance = None
+        cfg = Config._load_from_env()
+        assert cfg.screening_candidate_limit == 30
+        assert cfg.screening_ai_top_k == 5
+        assert cfg.screening_min_volume_ratio == 1.2
+
+    @patch.dict(
+        "os.environ",
+        {
+            "SCREENING_CANDIDATE_LIMIT": "10000",
+            "SCREENING_AI_TOP_K": "500",
+            "SCREENING_MIN_VOLUME_RATIO": "99",
+        },
+        clear=True,
+    )
+    @patch("src.config.load_dotenv")
+    def test_screening_numeric_fields_are_clamped_to_registry_range(self, _mock_dotenv):
+        Config._instance = None
+        cfg = Config._load_from_env()
+        assert cfg.screening_candidate_limit == 200
+        assert cfg.screening_ai_top_k == 50
+        assert cfg.screening_min_volume_ratio == 10.0
+
+    @patch.dict(
+        "os.environ",
+        {
+            "SCREENING_AI_TOP_K": "abc",
+            "SCREENING_MIN_VOLUME_RATIO": "nan",
+        },
+        clear=True,
+    )
+    @patch("src.config.load_dotenv")
+    def test_invalid_screening_numeric_fields_fallback_to_defaults(self, _mock_dotenv):
+        Config._instance = None
+        cfg = Config._load_from_env()
+        assert cfg.screening_ai_top_k == 5
+        assert cfg.screening_min_volume_ratio == 1.2
+
+    @patch.dict(
+        "os.environ",
+        {
+            "SCREENING_DEFAULT_MODE": "unknown",
+        },
+        clear=True,
+    )
+    @patch("src.config.load_dotenv")
+    def test_invalid_screening_default_mode_falls_back_to_balanced(self, _mock_dotenv):
+        Config._instance = None
+        cfg = Config._load_from_env()
+        assert cfg.screening_default_mode == "balanced"
+
+
 # ---------------------------------------------------------------------------
 # validate_structured() — notification & search
 # ---------------------------------------------------------------------------
@@ -216,6 +317,28 @@ class TestValidateStructuredNotification:
         cfg = _make_config(wechat_webhook_url="https://example.com/wh")
         issues = cfg.validate_structured()
         assert not any(i.severity == "warning" and "通知渠道" in i.message for i in issues)
+
+    def test_feishu_stream_enabled_without_credentials_warns(self):
+        cfg = _make_config(
+            wechat_webhook_url=None,
+            feishu_stream_enabled=True,
+            feishu_app_id=None,
+            feishu_app_secret=None,
+        )
+        issues = cfg.validate_structured()
+        warn = [i for i in issues if i.field == "FEISHU_STREAM_ENABLED"]
+        assert warn
+        assert warn[0].severity == "warning"
+
+    def test_feishu_stream_enabled_with_credentials_has_no_stream_warning(self):
+        cfg = _make_config(
+            wechat_webhook_url=None,
+            feishu_stream_enabled=True,
+            feishu_app_id="cli_test_app_id",
+            feishu_app_secret="secret_test_value",
+        )
+        issues = cfg.validate_structured()
+        assert not any(i.field == "FEISHU_STREAM_ENABLED" for i in issues)
 
     def test_no_search_engine_is_info(self):
         cfg = _make_config()

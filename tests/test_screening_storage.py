@@ -1,0 +1,488 @@
+import os
+import tempfile
+import time
+import unittest
+from datetime import date
+from types import SimpleNamespace
+
+from src.config import Config
+from src.search_service import SearchResponse
+from src.search_service import SearchResult
+from src.storage import DatabaseManager
+
+
+class ScreeningStorageTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._db_path = os.path.join(self._temp_dir.name, "test_screening_storage.db")
+        os.environ["DATABASE_PATH"] = self._db_path
+
+        Config.reset_instance()
+        DatabaseManager.reset_instance()
+        self.db = DatabaseManager.get_instance()
+
+    def tearDown(self) -> None:
+        DatabaseManager.reset_instance()
+        Config.reset_instance()
+        os.environ.pop("DATABASE_PATH", None)
+        self._temp_dir.cleanup()
+
+    def test_create_run_update_status_and_save_candidates(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={
+                "candidate_limit": 30,
+                "ai_top_k": 5,
+            },
+        )
+
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="resolving_universe"))
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="ingesting"))
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="factorizing"))
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="screening"))
+        saved = self.db.save_screening_candidates(
+            run_id=run_id,
+            candidates=[
+                {
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "rank": 1,
+                    "rule_score": 91.5,
+                    "selected_for_ai": True,
+                    "rule_hits": ["trend_aligned", "volume_expanding"],
+                    "factor_snapshot": {"close": 1500.0, "ma20": 1480.0},
+                    "ai_summary": "趋势完好，等待回踩确认。",
+                    "ai_operation_advice": "关注",
+                    "ai_query_id": "query-1",
+                },
+                {
+                    "code": "000001",
+                    "name": "平安银行",
+                    "rank": 2,
+                    "rule_score": 82.0,
+                    "selected_for_ai": False,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {"close": 12.1, "ma20": 11.8},
+                },
+            ],
+        )
+        self.assertTrue(
+            self.db.update_screening_run_status(
+                run_id=run_id,
+                status="completed",
+                universe_size=120,
+                candidate_count=2,
+            )
+        )
+
+        self.assertEqual(saved, 2)
+
+        run = self.db.get_screening_run(run_id)
+        self.assertIsNotNone(run)
+        self.assertEqual(run["mode"], "balanced")
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["universe_size"], 120)
+        self.assertEqual(run["candidate_count"], 2)
+
+        candidates = self.db.list_screening_candidates(run_id)
+        self.assertEqual([item["code"] for item in candidates], ["600519", "000001"])
+        self.assertEqual(candidates[0]["rule_hits"], ["trend_aligned", "volume_expanding"])
+        self.assertEqual(candidates[0]["factor_snapshot"]["ma20"], 1480.0)
+        self.assertEqual(candidates[0]["ai_query_id"], "query-1")
+
+    def test_list_screening_candidates_enriches_final_recommendation_fields(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={"candidate_limit": 30, "ai_top_k": 5},
+        )
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="screening"))
+        self.db.save_screening_candidates(
+            run_id=run_id,
+            candidates=[
+                {
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "rank": 1,
+                    "rule_score": 91.5,
+                    "selected_for_ai": True,
+                    "rule_hits": ["trend_aligned", "volume_expanding"],
+                    "factor_snapshot": {"close": 1500.0},
+                    "ai_summary": "趋势完好，等待回踩确认。",
+                    "ai_operation_advice": "关注",
+                    "ai_query_id": "query-1",
+                },
+                {
+                    "code": "000001",
+                    "name": "平安银行",
+                    "rank": 2,
+                    "rule_score": 82.0,
+                    "selected_for_ai": False,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {"close": 12.1},
+                },
+            ],
+        )
+        self.db.save_news_intel(
+            code="600519",
+            name="贵州茅台",
+            dimension="latest_news",
+            query="贵州茅台 600519 股票 最新消息",
+            response=SearchResponse(
+                query="贵州茅台 600519 股票 最新消息",
+                provider="stub",
+                success=True,
+                results=[
+                    SearchResult(
+                        title="贵州茅台新品上市",
+                        snippet="新品表现积极。",
+                        url="https://example.com/news-1",
+                        source="stub",
+                    )
+                ],
+            ),
+            query_context={"query_id": "query-1"},
+        )
+
+        items = self.db.list_screening_candidates(run_id)
+
+        self.assertEqual(items[0]["recommendation_source"], "rules_plus_ai")
+        self.assertEqual(items[0]["news_count"], 1)
+        self.assertIn("贵州茅台新品上市", items[0]["news_summary"])
+        self.assertIn("规则得分", items[0]["recommendation_reason"])
+        self.assertIn("AI", items[0]["recommendation_reason"])
+        self.assertEqual(items[0]["final_rank"], 1)
+        self.assertEqual(items[1]["recommendation_source"], "rules_only")
+
+    def test_list_screening_candidates_applies_limit_after_final_ranking(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={"candidate_limit": 30, "ai_top_k": 5},
+        )
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="screening"))
+        self.db.save_screening_candidates(
+            run_id=run_id,
+            candidates=[
+                {
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "rank": 1,
+                    "rule_score": 80.0,
+                    "selected_for_ai": False,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {},
+                },
+                {
+                    "code": "000001",
+                    "name": "平安银行",
+                    "rank": 2,
+                    "rule_score": 79.0,
+                    "selected_for_ai": False,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {},
+                },
+                {
+                    "code": "300750",
+                    "name": "宁德时代",
+                    "rank": 3,
+                    "rule_score": 78.0,
+                    "selected_for_ai": True,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {},
+                    "ai_summary": "强趋势。",
+                    "ai_operation_advice": "买入",
+                    "ai_query_id": "query-300750",
+                },
+            ],
+        )
+
+        items = self.db.list_screening_candidates(run_id, limit=1)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["code"], "300750")
+        self.assertEqual(items[0]["final_rank"], 1)
+
+    def test_list_screening_candidates_does_not_mix_unbound_recent_news_into_snapshot(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={"candidate_limit": 30, "ai_top_k": 0},
+        )
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="screening"))
+        self.db.save_screening_candidates(
+            run_id=run_id,
+            candidates=[
+                {
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "rank": 1,
+                    "rule_score": 90.0,
+                    "selected_for_ai": False,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {},
+                }
+            ],
+        )
+        self.db.save_news_intel(
+            code="600519",
+            name="贵州茅台",
+            dimension="latest_news",
+            query="贵州茅台 600519 股票 最新消息",
+            response=SearchResponse(
+                query="贵州茅台 600519 股票 最新消息",
+                provider="stub",
+                success=True,
+                results=[
+                    SearchResult(
+                        title="这是一条未绑定本次 run 的新闻",
+                        snippet="不应混入候选快照。",
+                        url="https://example.com/news-unbound",
+                        source="stub",
+                    )
+                ],
+            ),
+        )
+
+        items = self.db.list_screening_candidates(run_id)
+
+        self.assertEqual(items[0]["news_count"], 0)
+        self.assertIsNone(items[0]["news_summary"])
+
+    def test_get_screening_candidate_detail_returns_analysis_history_reference(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={"candidate_limit": 30, "ai_top_k": 5},
+        )
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="screening"))
+        self.db.save_screening_candidates(
+            run_id=run_id,
+            candidates=[
+                {
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "rank": 1,
+                    "rule_score": 91.5,
+                    "selected_for_ai": True,
+                    "rule_hits": ["trend_aligned", "volume_expanding"],
+                    "factor_snapshot": {"close": 1500.0},
+                    "ai_summary": "趋势完好，等待回踩确认。",
+                    "ai_operation_advice": "关注",
+                    "ai_query_id": "query-detail-1",
+                }
+            ],
+        )
+        self.db.save_analysis_history(
+            result=SimpleNamespace(
+                code="600519",
+                name="贵州茅台",
+                sentiment_score=78,
+                trend_prediction="看多",
+                operation_advice="关注",
+                analysis_summary="AI 深析认为趋势未破坏。",
+                dashboard=None,
+            ),
+            query_id="query-detail-1",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+
+        item = self.db.get_screening_candidate_detail(run_id=run_id, code="600519")
+
+        self.assertIsNotNone(item)
+        self.assertEqual(item["code"], "600519")
+        self.assertEqual(item["analysis_history"]["query_id"], "query-detail-1")
+        self.assertEqual(item["analysis_history"]["stock_code"], "600519")
+        self.assertEqual(item["analysis_history"]["analysis_summary"], "AI 深析认为趋势未破坏。")
+
+    def test_get_screening_candidate_detail_keeps_global_final_rank(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={"candidate_limit": 30, "ai_top_k": 5},
+        )
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="screening"))
+        self.db.save_screening_candidates(
+            run_id=run_id,
+            candidates=[
+                {
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "rank": 1,
+                    "rule_score": 80.0,
+                    "selected_for_ai": False,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {},
+                },
+                {
+                    "code": "300750",
+                    "name": "宁德时代",
+                    "rank": 2,
+                    "rule_score": 79.0,
+                    "selected_for_ai": True,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {},
+                    "ai_summary": "强趋势。",
+                    "ai_operation_advice": "买入",
+                    "ai_query_id": "query-rank-1",
+                },
+            ],
+        )
+
+        item = self.db.get_screening_candidate_detail(run_id=run_id, code="600519")
+
+        self.assertIsNotNone(item)
+        self.assertEqual(item["final_rank"], 2)
+
+    def test_get_screening_candidate_detail_does_not_link_history_from_other_code_with_same_query_id(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={"candidate_limit": 30, "ai_top_k": 5},
+        )
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="screening"))
+        self.db.save_screening_candidates(
+            run_id=run_id,
+            candidates=[
+                {
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "rank": 1,
+                    "rule_score": 91.5,
+                    "selected_for_ai": True,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {"close": 1500.0},
+                    "ai_summary": "趋势完好，等待回踩确认。",
+                    "ai_operation_advice": "关注",
+                    "ai_query_id": "query-duplicate",
+                }
+            ],
+        )
+        self.db.save_analysis_history(
+            result=SimpleNamespace(
+                code="000001",
+                name="平安银行",
+                sentiment_score=60,
+                trend_prediction="震荡",
+                operation_advice="观望",
+                analysis_summary="这条历史不应被错误关联。",
+                dashboard=None,
+            ),
+            query_id="query-duplicate",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+
+        item = self.db.get_screening_candidate_detail(run_id=run_id, code="600519")
+
+        self.assertIsNotNone(item)
+        self.assertIsNone(item["analysis_history"])
+
+    def test_update_screening_run_status_rejects_invalid_transition(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={},
+        )
+
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="resolving_universe"))
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="ingesting"))
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="factorizing"))
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="screening"))
+        completed = self.db.update_screening_run_status(run_id=run_id, status="completed")
+        rolled_back = self.db.update_screening_run_status(run_id=run_id, status="screening")
+
+        self.assertTrue(completed)
+        self.assertFalse(rolled_back)
+
+        run = self.db.get_screening_run(run_id)
+        self.assertIsNotNone(run)
+        self.assertEqual(run["status"], "completed")
+        self.assertIsNotNone(run["completed_at"])
+
+    def test_create_screening_run_detects_duplicate_run_id_conflict(self) -> None:
+        run_id, created = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={"mode": "balanced"},
+            run_id="run-fixed-id",
+            return_created=True,
+        )
+        duplicate_run_id, duplicate_created = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={"mode": "balanced"},
+            run_id="run-fixed-id",
+            return_created=True,
+        )
+
+        self.assertEqual(run_id, "run-fixed-id")
+        self.assertTrue(created)
+        self.assertEqual(duplicate_run_id, "run-fixed-id")
+        self.assertFalse(duplicate_created)
+
+    def test_update_screening_run_status_keeps_completed_at_for_same_terminal_status(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={},
+        )
+
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="resolving_universe"))
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="ingesting"))
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="factorizing"))
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="screening"))
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="completed"))
+        first_run = self.db.get_screening_run(run_id)
+        time.sleep(0.01)
+        self.assertTrue(
+            self.db.update_screening_run_status(
+                run_id=run_id,
+                status="completed",
+                candidate_count=1,
+            )
+        )
+        second_run = self.db.get_screening_run(run_id)
+
+        self.assertIsNotNone(first_run)
+        self.assertIsNotNone(second_run)
+        self.assertEqual(first_run["completed_at"], second_run["completed_at"])
+        self.assertEqual(second_run["candidate_count"], 1)
+
+    def test_save_screening_candidates_rejects_missing_run(self) -> None:
+        with self.assertRaises(Exception):
+            self.db.save_screening_candidates(
+                run_id="missing-run",
+                candidates=[
+                    {
+                        "code": "600519",
+                        "name": "贵州茅台",
+                        "rank": 1,
+                        "rule_score": 91.5,
+                    }
+                ],
+            )
+
+    def test_pending_run_cannot_jump_directly_to_completed(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={},
+        )
+
+        updated = self.db.update_screening_run_status(run_id=run_id, status="completed")
+
+        self.assertFalse(updated)
+        run = self.db.get_screening_run(run_id)
+        self.assertIsNotNone(run)
+        self.assertEqual(run["status"], "pending")
+
+
+if __name__ == "__main__":
+    unittest.main()

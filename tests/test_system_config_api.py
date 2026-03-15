@@ -94,6 +94,26 @@ class SystemConfigApiTestCase(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["error"], "config_version_conflict")
 
+    def test_get_schema_includes_screening_category(self) -> None:
+        response = self.client.get("/api/v1/system/config/schema")
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.json()
+        categories = {item["category"] for item in payload["categories"]}
+        self.assertIn("screening", categories)
+
+    def test_get_config_returns_normalized_screening_value(self) -> None:
+        self.env_path.write_text(
+            self.env_path.read_text(encoding="utf-8") + "SCREENING_CANDIDATE_LIMIT=10000\n",
+            encoding="utf-8",
+        )
+        response = self.client.get("/api/v1/system/config")
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.json()
+        item_map = {item["key"]: item for item in payload["items"]}
+        self.assertEqual(item_map["SCREENING_CANDIDATE_LIMIT"]["value"], "200")
+
 
 if __name__ == "__main__":
     unittest.main()

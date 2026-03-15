@@ -210,6 +210,19 @@ daily_stock_analysis/
 > 3. 创建群组并添加应用机器人
 > 4. 在云盘文件夹中添加群组为协作者（可管理权限）
 
+#### 飞书应用机器人配置（本地 / Docker Bot 模式）
+
+| 变量名 | 说明 | 必填 |
+|--------|------|:----:|
+| `FEISHU_APP_ID` | 飞书应用机器人 App ID | 可选 |
+| `FEISHU_APP_SECRET` | 飞书应用机器人 App Secret | 可选 |
+| `FEISHU_STREAM_ENABLED` | 是否启用 Stream 长连接模式；本地 / Docker 推荐设为 `true` | 可选 |
+| `FEISHU_VERIFICATION_TOKEN` | 事件订阅回调校验 Token；仅回调模式需要 | 可选 |
+| `FEISHU_ENCRYPT_KEY` | 飞书事件加密 Key；仅开启消息加密或回调模式需要 | 可选 |
+
+> `FEISHU_STREAM_ENABLED=true` 适合本地或 Docker 的 Bot 对话 / 会话内回复场景，机器人可通过 WebSocket 长连接收发消息，无需额外暴露公网回调地址。
+> 如果你的目标是接收定时分析、批量报告等主动推送，仍需继续配置 `FEISHU_WEBHOOK_URL`。
+
 ### 搜索服务配置
 
 | 变量名 | 说明 | 必填 |

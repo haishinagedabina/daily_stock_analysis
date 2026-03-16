@@ -91,6 +91,56 @@ class ScreeningStorageTestCase(unittest.TestCase):
         self.assertEqual(candidates[0]["factor_snapshot"]["ma20"], 1480.0)
         self.assertEqual(candidates[0]["ai_query_id"], "query-1")
 
+    def test_find_latest_screening_run_ignores_runtime_ingest_context_in_identity(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={
+                "requested_trade_date": "2026-03-13",
+                "mode": "balanced",
+                "stock_codes": [],
+                "candidate_limit": 30,
+                "ai_top_k": 5,
+                "screening_min_list_days": 120,
+                "screening_min_volume_ratio": 1.2,
+                "screening_min_avg_amount": 50_000_000,
+                "screening_breakout_lookback_days": 20,
+                "screening_factor_lookback_days": 80,
+                "screening_ingest_failure_threshold": 0.02,
+            },
+        )
+        self.assertTrue(
+            self.db.update_screening_run_context(
+                run_id=run_id,
+                config_snapshot_updates={
+                    "failed_symbols": ["002859", "601555"],
+                    "failed_symbol_reasons": {"002859": "empty_data", "601555": "fetch_failed"},
+                    "warnings": ["已跳过同步失败股票: 002859, 601555"],
+                    "sync_failure_ratio": 0.02,
+                },
+            )
+        )
+
+        matched = self.db.find_latest_screening_run(
+            market="cn",
+            config_snapshot={
+                "requested_trade_date": "2026-03-13",
+                "mode": "balanced",
+                "stock_codes": [],
+                "candidate_limit": 30,
+                "ai_top_k": 5,
+                "screening_min_list_days": 120,
+                "screening_min_volume_ratio": 1.2,
+                "screening_min_avg_amount": 50_000_000,
+                "screening_breakout_lookback_days": 20,
+                "screening_factor_lookback_days": 80,
+                "screening_ingest_failure_threshold": 0.02,
+            },
+        )
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["run_id"], run_id)
+
     def test_list_screening_candidates_enriches_final_recommendation_fields(self) -> None:
         run_id = self.db.create_screening_run(
             trade_date=date(2026, 3, 13),

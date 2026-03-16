@@ -20,6 +20,7 @@ class CreateScreeningRunRequest(BaseModel):
 class ScreeningNotifyRequest(BaseModel):
     limit: int = Field(10, ge=1, le=50, description="推送候选数量上限")
     with_ai_only: bool = Field(False, description="是否仅推送已进入 AI 二筛的候选")
+    force: bool = Field(False, description="是否强制补发（仅对 failed/skipped 有效，v1 不允许重发 sent）")
 
 
 class ScreeningRunResponse(BaseModel):
@@ -32,9 +33,18 @@ class ScreeningRunResponse(BaseModel):
     candidate_count: int = 0
     ai_top_k: int = 0
     error_summary: Optional[str] = None
+    failed_symbols: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    sync_failure_ratio: float = 0.0
     config_snapshot: Dict[str, Any] = Field(default_factory=dict)
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    # Notification lifecycle fields
+    trigger_type: Optional[str] = "manual"
+    notification_status: Optional[str] = None
+    notification_attempts: int = 0
+    notification_sent_at: Optional[str] = None
+    notification_error: Optional[str] = None
 
 
 class ScreeningRunListResponse(BaseModel):

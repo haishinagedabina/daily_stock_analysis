@@ -1343,7 +1343,7 @@ def test_screening_task_service_ignores_delisted_sync_errors_and_continues():
         "mode": "balanced",
         "status": "completed",
         "candidate_count": 1,
-        "error_summary": "已忽略退市股票同步失败: 000002",
+        "error_summary": "已跳过同步失败股票: 000002",
     }
 
     universe_service = MagicMock()
@@ -1381,6 +1381,7 @@ def test_screening_task_service_ignores_delisted_sync_errors_and_continues():
         candidate_analysis_service=MagicMock(),
         market_data_sync_service=market_data_sync_service,
     )
+    service.config.screening_ingest_failure_threshold = 0.8
 
     result = service.execute_run(
         trade_date=date(2026, 3, 13),
@@ -1394,7 +1395,424 @@ def test_screening_task_service_ignores_delisted_sync_errors_and_continues():
     assert factor_universe["code"].tolist() == ["600519"]
     completed_call = db.update_screening_run_status.call_args_list[-1]
     assert completed_call.kwargs["status"] == "completed"
-    assert completed_call.kwargs["error_summary"] == "已忽略退市股票同步失败: 000002"
+    assert completed_call.kwargs["error_summary"] == "已跳过同步失败股票: 000002"
+
+
+def test_screening_task_service_continues_with_skippable_sync_failures_below_threshold():
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-006-threshold-ok"
+    db.get_screening_run.return_value = {
+        "run_id": "run-006-threshold-ok",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 1,
+        "config_snapshot": {
+            "failed_symbols": ["000002"],
+            "warnings": ["已跳过同步失败股票: 000002"],
+            "sync_failure_ratio": 0.25,
+        },
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [
+            {"code": "600519", "name": "贵州茅台", "listing_status": "active"},
+            {"code": "000001", "name": "平安银行", "listing_status": "active"},
+            {"code": "000002", "name": "未知股票", "listing_status": "active"},
+            {"code": "000003", "name": "招商银行", "listing_status": "active"},
+        ]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame([{"code": "600519", "name": "贵州茅台"}])
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 4,
+        "synced": 3,
+        "skipped": 0,
+        "errors": [{"code": "000002", "reason": "fetch_failed", "detail": "all providers failed"}],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_ingest_failure_threshold = 0.3
+
+    result = service.execute_run(
+        trade_date=date(2026, 3, 13),
+        stock_codes=None,
+        candidate_limit=30,
+        ai_top_k=0,
+    )
+
+    assert result["status"] == "completed"
+    assert result["failed_symbols"] == ["000002"]
+    assert result["warnings"] == ["已跳过同步失败股票: 000002"]
+    assert result["sync_failure_ratio"] == 0.25
+    factor_universe = factor_service.build_factor_snapshot.call_args.kwargs["universe_df"]
+    assert factor_universe["code"].tolist() == ["600519", "000001", "000003"]
+
+
+def test_screening_task_service_fails_when_skippable_sync_failure_ratio_exceeds_threshold():
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-006-threshold-failed"
+    db.get_screening_run.return_value = {
+        "run_id": "run-006-threshold-failed",
+        "mode": "balanced",
+        "status": "failed",
+        "candidate_count": 0,
+        "config_snapshot": {
+            "failed_symbols": ["000002", "000003"],
+            "warnings": ["已跳过同步失败股票: 000002, 000003"],
+            "sync_failure_ratio": 0.5,
+        },
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [
+            {"code": "600519", "name": "贵州茅台", "listing_status": "active"},
+            {"code": "000001", "name": "平安银行", "listing_status": "active"},
+            {"code": "000002", "name": "未知股票A", "listing_status": "active"},
+            {"code": "000003", "name": "未知股票B", "listing_status": "active"},
+        ]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 4,
+        "synced": 2,
+        "skipped": 0,
+        "errors": [
+            {"code": "000002", "reason": "fetch_failed", "detail": "all providers failed"},
+            {"code": "000003", "reason": "empty_data", "detail": "no data"},
+        ],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=MagicMock(),
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_ingest_failure_threshold = 0.4
+
+    result = service.execute_run(
+        trade_date=date(2026, 3, 13),
+        stock_codes=None,
+        candidate_limit=30,
+        ai_top_k=0,
+    )
+
+    assert result["status"] == "failed"
+    factor_service.build_factor_snapshot.assert_not_called()
+    failed_call = db.update_screening_run_status.call_args_list[-1]
+    assert "同步失败比例" in failed_call.kwargs["error_summary"]
+
+
+def test_screening_task_service_rerun_failed_skips_known_failed_symbols_before_sync():
+    db = MagicMock()
+    db.find_latest_screening_run.return_value = {
+        "run_id": "run-known-bad",
+        "mode": "balanced",
+        "status": "failed",
+        "candidate_count": 0,
+        "config_snapshot": {
+            "stock_codes": [],
+            "failed_symbols": ["000002", "000003"],
+            "failed_symbol_reasons": {"000002": "empty_data", "000003": "not_found"},
+            "warnings": ["已跳过同步失败股票: 000002, 000003"],
+            "next_resume_stage": "ingesting",
+        },
+    }
+    db.get_screening_run.return_value = {
+        "run_id": "run-known-bad",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 1,
+        "config_snapshot": {
+            "failed_symbols": ["000002", "000003"],
+            "warnings": ["补跑跳过已确认无数据股票: 000002, 000003"],
+            "sync_failure_ratio": 0.0,
+        },
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [
+            {"code": "600519", "name": "贵州茅台", "listing_status": "active"},
+            {"code": "000002", "name": "未知股票A", "listing_status": "active"},
+            {"code": "000003", "name": "未知股票B", "listing_status": "active"},
+        ]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame([{"code": "600519", "name": "贵州茅台"}])
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 1,
+        "synced": 1,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_ingest_failure_threshold = 0.4
+
+    result = service.execute_run(
+        trade_date=date(2026, 3, 13),
+        stock_codes=None,
+        rerun_failed=True,
+        candidate_limit=30,
+        ai_top_k=0,
+    )
+
+    assert result["status"] == "completed"
+    sync_codes = market_data_sync_service.sync_trade_date.call_args.kwargs["stock_codes"]
+    assert sync_codes == ["600519"]
+    factor_universe = factor_service.build_factor_snapshot.call_args.kwargs["universe_df"]
+    assert factor_universe["code"].tolist() == ["600519"]
+
+
+def test_screening_task_service_factorizing_rerun_keeps_filtered_universe_and_warning_summary():
+    db = MagicMock()
+    db.find_latest_screening_run.return_value = {
+        "run_id": "run-factorizing-known-bad",
+        "mode": "balanced",
+        "status": "failed",
+        "candidate_count": 0,
+        "config_snapshot": {
+            "stock_codes": [],
+            "failed_symbols": ["000002", "000003"],
+            "failed_symbol_reasons": {"000002": "empty_data", "000003": "fetch_failed"},
+            "warnings": ["已跳过同步失败股票: 000002, 000003"],
+            "next_resume_stage": "factorizing",
+        },
+    }
+    db.get_screening_run.return_value = {
+        "run_id": "run-factorizing-known-bad",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+        "config_snapshot": {
+            "failed_symbols": ["000002", "000003"],
+            "warnings": ["已跳过同步失败股票: 000002, 000003"],
+            "sync_failure_ratio": 0.25,
+        },
+        "error_summary": "已跳过同步失败股票: 000002, 000003",
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [
+            {"code": "600519", "name": "贵州茅台", "listing_status": "active"},
+            {"code": "000002", "name": "未知股票A", "listing_status": "active"},
+            {"code": "000003", "name": "未知股票B", "listing_status": "active"},
+        ]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame([{"code": "600519", "name": "贵州茅台"}])
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=MagicMock(),
+    )
+
+    result = service.execute_run(
+        trade_date=date(2026, 3, 13),
+        stock_codes=None,
+        rerun_failed=True,
+        resume_from="factorizing",
+        candidate_limit=30,
+        ai_top_k=0,
+    )
+
+    assert result["status"] == "completed"
+    factor_universe = factor_service.build_factor_snapshot.call_args.kwargs["universe_df"]
+    assert factor_universe["code"].tolist() == ["600519"]
+    completed_call = db.update_screening_run_status.call_args_list[-1]
+    assert "已跳过同步失败股票: 000002, 000003" in completed_call.kwargs["error_summary"]
+    assert "补跑跳过已确认无数据股票: 000002, 000003" in completed_call.kwargs["error_summary"]
+
+
+def test_screening_task_service_rerun_ingesting_clears_stale_fetch_failed_marker_after_success():
+    db = MagicMock()
+    db.find_latest_screening_run.return_value = {
+        "run_id": "run-rerun-fetch-failed",
+        "mode": "balanced",
+        "status": "failed",
+        "candidate_count": 0,
+        "config_snapshot": {
+            "stock_codes": [],
+            "failed_symbols": ["000002"],
+            "failed_symbol_reasons": {"000002": "fetch_failed"},
+            "warnings": ["已跳过同步失败股票: 000002"],
+            "next_resume_stage": "ingesting",
+        },
+    }
+    db.get_screening_run.return_value = {
+        "run_id": "run-rerun-fetch-failed",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+        "config_snapshot": {
+            "failed_symbols": [],
+            "warnings": [],
+            "sync_failure_ratio": 0.0,
+        },
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [
+            {"code": "600519", "name": "贵州茅台", "listing_status": "active"},
+            {"code": "000002", "name": "未知股票A", "listing_status": "active"},
+        ]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame([{"code": "600519", "name": "贵州茅台"}])
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 2,
+        "synced": 2,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+
+    result = service.execute_run(
+        trade_date=date(2026, 3, 13),
+        stock_codes=None,
+        rerun_failed=True,
+        candidate_limit=30,
+        ai_top_k=0,
+    )
+
+    assert result["status"] == "completed"
+    sync_codes = market_data_sync_service.sync_trade_date.call_args.kwargs["stock_codes"]
+    assert sync_codes == ["600519", "000002"]
+    update_context_calls = db.update_screening_run_context.call_args_list
+    assert any(call.kwargs["config_snapshot_updates"]["failed_symbols"] == [] for call in update_context_calls)
+
+
+def test_screening_task_service_does_not_fail_when_sync_failure_ratio_equals_threshold():
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-006-threshold-equal"
+    db.get_screening_run.return_value = {
+        "run_id": "run-006-threshold-equal",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 1,
+        "config_snapshot": {
+            "failed_symbols": ["000002"],
+            "warnings": ["已跳过同步失败股票: 000002"],
+            "sync_failure_ratio": 0.3333,
+        },
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [
+            {"code": "600519", "name": "贵州茅台", "listing_status": "active"},
+            {"code": "000001", "name": "平安银行", "listing_status": "active"},
+            {"code": "000002", "name": "未知股票", "listing_status": "active"},
+        ]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame([{"code": "600519", "name": "贵州茅台"}])
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 3,
+        "synced": 2,
+        "skipped": 0,
+        "errors": [{"code": "000002", "reason": "empty_data", "detail": "no data"}],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_ingest_failure_threshold = 1 / 3
+
+    result = service.execute_run(
+        trade_date=date(2026, 3, 13),
+        stock_codes=None,
+        candidate_limit=30,
+        ai_top_k=0,
+    )
+
+    assert result["status"] == "completed"
+    factor_service.build_factor_snapshot.assert_called_once()
 
 
 def test_screening_task_service_does_not_ignore_non_delisted_inactive_status_sync_errors():
@@ -1610,7 +2028,7 @@ def test_screening_task_service_reports_filtered_empty_universe_after_ignoring_d
     assert result["status"] == "failed"
     factor_service.build_factor_snapshot.assert_not_called()
     failed_call = db.update_screening_run_status.call_args_list[-1]
-    assert "剔除退市且无数据股票后" in failed_call.kwargs["error_summary"]
+    assert "剔除同步失败股票后" in failed_call.kwargs["error_summary"]
 
 
 def test_screening_task_service_persists_failed_run_to_real_database():

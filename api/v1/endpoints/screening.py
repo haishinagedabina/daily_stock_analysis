@@ -12,7 +12,6 @@ from api.v1.schemas.screening import (
 )
 from api.v1.schemas.common import SuccessResponse
 from src.services.screening_notification_service import (
-    ScreeningNotificationDeliveryError,
     ScreeningNotificationService,
     ScreeningRunNotFoundError,
     ScreeningRunNotReadyError,
@@ -140,15 +139,14 @@ def get_screening_candidate_detail(run_id: str, code: str) -> ScreeningCandidate
 @router.post(
     "/runs/{run_id}/notify",
     response_model=SuccessResponse,
-    summary="推送筛选推荐名单",
+    summary="推送筛选推荐名单（幂等，支持 force 补发）",
 )
 def notify_screening_run(run_id: str, request: ScreeningNotifyRequest) -> SuccessResponse:
     service = ScreeningNotificationService()
     try:
-        result = service.send_run_notification(
+        result = service.notify_run(
             run_id=run_id,
-            limit=request.limit,
-            with_ai_only=request.with_ai_only,
+            force=request.force,
         )
     except ScreeningRunNotFoundError as exc:
         raise HTTPException(
@@ -160,10 +158,7 @@ def notify_screening_run(run_id: str, request: ScreeningNotifyRequest) -> Succes
             status_code=409,
             detail={"error": "conflict", "message": str(exc), "run_id": run_id},
         ) from exc
-    except ScreeningNotificationDeliveryError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "delivery_failed", "message": str(exc), "run_id": run_id},
-        ) from exc
 
-    return SuccessResponse(success=bool(result.get("success")), message=result.get("message"), data=result)
+    success = bool(result.get("success")) and not result.get("skipped")
+    message = result.get("reason") or result.get("notification_status") or "ok"
+    return SuccessResponse(success=success, message=message, data=result)

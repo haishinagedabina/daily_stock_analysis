@@ -153,6 +153,7 @@
 | `SCREENING_MIN_AVG_AMOUNT` | 规则首筛最小平均成交额阈值（元） | 可选 |
 | `SCREENING_BREAKOUT_LOOKBACK_DAYS` | 近突破判断窗口（天） | 可选 |
 | `SCREENING_FACTOR_LOOKBACK_DAYS` | 因子构建历史回看窗口（天） | 可选 |
+| `SCREENING_INGEST_FAILURE_THRESHOLD` | `ingesting` 阶段可容忍失败比例；低于阈值的无数据/全源失败股票会降级为 skip，并写入 run 的 `failed_symbols` / `warnings` 返回字段 | 可选 |
 | `AGENT_MODE` | 开启 Agent 策略问股模式（`true`/`false`，默认 false） | 可选 |
 | `AGENT_SKILLS` | 激活的策略（逗号分隔），`all` 启用全部 11 个；不配置时默认 4 个，详见 `.env.example` | 可选 |
 | `AGENT_MAX_STEPS` | Agent 最大推理步数（默认 10） | 可选 |

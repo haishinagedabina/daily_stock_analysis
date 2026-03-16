@@ -150,6 +150,7 @@ class Config:
     screening_min_avg_amount: float = 50_000_000
     screening_breakout_lookback_days: int = 20
     screening_factor_lookback_days: int = 80
+    screening_ingest_failure_threshold: float = 0.02
 
     # === Agent 模式配置 ===
     agent_mode: bool = False
@@ -625,6 +626,9 @@ class Config:
             ),
             screening_factor_lookback_days=cls._read_int_env(
                 'SCREENING_FACTOR_LOOKBACK_DAYS', 80, min_value=20, max_value=365
+            ),
+            screening_ingest_failure_threshold=cls._read_float_env(
+                'SCREENING_INGEST_FAILURE_THRESHOLD', 0.02, min_value=0.0, max_value=1.0
             ),
             agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
             agent_max_steps=int(os.getenv('AGENT_MAX_STEPS', '10')),
@@ -1195,6 +1199,12 @@ class Config:
                     "否则 AI 二筛数量会超过规则候选池上限"
                 ),
                 field="SCREENING_AI_TOP_K",
+            ))
+        if not 0.0 <= self.screening_ingest_failure_threshold <= 1.0:
+            issues.append(ConfigIssue(
+                severity="error",
+                message="SCREENING_INGEST_FAILURE_THRESHOLD 必须位于 0.0 到 1.0 之间",
+                field="SCREENING_INGEST_FAILURE_THRESHOLD",
             ))
 
         # --- Search engine (informational only) ---

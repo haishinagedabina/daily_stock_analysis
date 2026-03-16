@@ -170,6 +170,39 @@ class ScreeningApiTestCase(unittest.TestCase):
         self.assertEqual(payload["status"], "completed_with_ai_degraded")
 
     @patch("api.v1.endpoints.screening.ScreeningTaskService")
+    def test_create_run_returns_failed_symbols_and_warnings(self, service_cls) -> None:
+        service = service_cls.return_value
+        service.config.screening_default_mode = "balanced"
+        service.config.screening_candidate_limit = 30
+        service.config.screening_ai_top_k = 5
+        service.resolve_run_config.return_value.candidate_limit = 30
+        service.resolve_run_config.return_value.ai_top_k = 5
+        service.execute_run.return_value = {
+            "run_id": "run-20260313-warnings",
+            "mode": "balanced",
+            "status": "completed",
+            "candidate_count": 1,
+            "failed_symbols": ["002859", "601555"],
+            "warnings": ["已跳过同步失败股票: 002859, 601555"],
+            "sync_failure_ratio": 0.02,
+        }
+
+        response = self.client.post(
+            "/api/v1/screening/runs",
+            json={
+                "trade_date": "2026-03-13",
+                "stock_codes": ["600519"],
+                "market": "cn",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["failed_symbols"], ["002859", "601555"])
+        self.assertEqual(payload["warnings"], ["已跳过同步失败股票: 002859, 601555"])
+        self.assertEqual(payload["sync_failure_ratio"], 0.02)
+
+    @patch("api.v1.endpoints.screening.ScreeningTaskService")
     def test_create_run_uses_config_defaults_when_limits_omitted(self, service_cls) -> None:
         service = service_cls.return_value
         service.config.screening_default_mode = "balanced"
@@ -322,9 +355,9 @@ class ScreeningApiTestCase(unittest.TestCase):
     @patch("api.v1.endpoints.screening.ScreeningNotificationService")
     def test_notify_run_returns_success_payload(self, notify_service_cls) -> None:
         notify_service = notify_service_cls.return_value
-        notify_service.send_run_notification.return_value = {
+        notify_service.notify_run.return_value = {
             "success": True,
-            "message": "筛选推荐通知发送成功",
+            "notification_status": "sent",
             "run_id": "run-20260313-1",
             "candidate_count": 2,
             "report_path": "reports/screening_run_20260313_1.md",
@@ -332,17 +365,16 @@ class ScreeningApiTestCase(unittest.TestCase):
 
         response = self.client.post(
             "/api/v1/screening/runs/run-20260313-1/notify",
-            json={"limit": 5, "with_ai_only": True},
+            json={"limit": 5, "with_ai_only": True, "force": False},
         )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload["success"])
         self.assertEqual(payload["data"]["run_id"], "run-20260313-1")
-        notify_service.send_run_notification.assert_called_once_with(
+        notify_service.notify_run.assert_called_once_with(
             run_id="run-20260313-1",
-            limit=5,
-            with_ai_only=True,
+            force=False,
         )
 
     @patch("api.v1.endpoints.screening.ScreeningNotificationService")
@@ -350,7 +382,7 @@ class ScreeningApiTestCase(unittest.TestCase):
         notify_service = notify_service_cls.return_value
         from src.services.screening_notification_service import ScreeningRunNotReadyError
 
-        notify_service.send_run_notification.side_effect = ScreeningRunNotReadyError("筛选任务尚未完成，暂不可推送")
+        notify_service.notify_run.side_effect = ScreeningRunNotReadyError("筛选任务尚未完成，暂不可推送")
 
         response = self.client.post(
             "/api/v1/screening/runs/run-pending/notify",
@@ -364,7 +396,7 @@ class ScreeningApiTestCase(unittest.TestCase):
         from src.services.screening_notification_service import ScreeningRunNotFoundError
 
         notify_service = notify_service_cls.return_value
-        notify_service.send_run_notification.side_effect = ScreeningRunNotFoundError("筛选任务不存在")
+        notify_service.notify_run.side_effect = ScreeningRunNotFoundError("筛选任务不存在")
 
         response = self.client.post(
             "/api/v1/screening/runs/missing-run/notify",
@@ -374,18 +406,25 @@ class ScreeningApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
     @patch("api.v1.endpoints.screening.ScreeningNotificationService")
-    def test_notify_run_returns_502_when_delivery_failed(self, notify_service_cls) -> None:
-        from src.services.screening_notification_service import ScreeningNotificationDeliveryError
-
+    def test_notify_run_returns_skipped_when_already_sent(self, notify_service_cls) -> None:
         notify_service = notify_service_cls.return_value
-        notify_service.send_run_notification.side_effect = ScreeningNotificationDeliveryError("筛选推荐通知发送失败")
+        notify_service.notify_run.return_value = {
+            "success": True,
+            "skipped": True,
+            "reason": "already_sent",
+            "run_id": "run-20260313-1",
+        }
 
         response = self.client.post(
             "/api/v1/screening/runs/run-20260313-1/notify",
             json={"limit": 5, "with_ai_only": False},
         )
 
-        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        # success=False because skipped=True
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["message"], "already_sent")
 
     def test_create_run_rejects_unsupported_market(self) -> None:
         response = self.client.post(

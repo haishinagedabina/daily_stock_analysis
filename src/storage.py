@@ -471,6 +471,12 @@ class ScreeningRun(Base):
     error_summary = Column(Text)
     started_at = Column(DateTime, default=datetime.now, index=True)
     completed_at = Column(DateTime, nullable=True, index=True)
+    # -- Notification lifecycle fields --
+    trigger_type = Column(String(32), nullable=False, default="manual")
+    notification_status = Column(String(32), nullable=True)
+    notification_attempts = Column(Integer, nullable=False, default=0)
+    notification_sent_at = Column(DateTime, nullable=True)
+    notification_error = Column(Text, nullable=True)
 
     __table_args__ = (
         Index("ix_screening_run_trade_market", "trade_date", "market"),
@@ -491,6 +497,11 @@ class ScreeningRun(Base):
             "error_summary": self.error_summary,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "trigger_type": self.trigger_type or "manual",
+            "notification_status": self.notification_status,
+            "notification_attempts": self.notification_attempts or 0,
+            "notification_sent_at": self.notification_sent_at.isoformat() if self.notification_sent_at else None,
+            "notification_error": self.notification_error,
         }
 
 
@@ -611,8 +622,10 @@ class DatabaseManager:
             autoflush=False,
         )
         
-        # 创建所有表
+        # Create tables first, then apply lightweight inline schema migrations
+        # for backward-compatible upgrades on existing SQLite databases.
         Base.metadata.create_all(self._engine)
+        self._apply_inline_migrations()
 
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
@@ -652,6 +665,69 @@ class DatabaseManager:
                 logger.debug("数据库引擎已清理")
         except Exception as e:
             logger.warning(f"清理数据库引擎时出错: {e}")
+
+    def _apply_inline_migrations(self) -> None:
+        """Apply lightweight backward-compatible schema migrations.
+
+        This keeps existing SQLite data files usable after adding new columns,
+        especially for local/Docker deployments that copy old databases to new
+        machines. The migration is intentionally additive-only.
+        """
+        try:
+            dialect = self._engine.dialect.name
+            if dialect == "sqlite":
+                self._migrate_sqlite_screening_runs_notification_fields()
+        except Exception as exc:
+            logger.exception("Inline database migration failed: %s", exc)
+            raise
+
+    def _migrate_sqlite_screening_runs_notification_fields(self) -> None:
+        """Ensure screening_runs has notification-related columns on SQLite."""
+        expected_columns = {
+            "trigger_type": "ALTER TABLE screening_runs ADD COLUMN trigger_type VARCHAR(32) NOT NULL DEFAULT 'manual'",
+            "notification_status": "ALTER TABLE screening_runs ADD COLUMN notification_status VARCHAR(32)",
+            "notification_attempts": "ALTER TABLE screening_runs ADD COLUMN notification_attempts INTEGER NOT NULL DEFAULT 0",
+            "notification_sent_at": "ALTER TABLE screening_runs ADD COLUMN notification_sent_at DATETIME",
+            "notification_error": "ALTER TABLE screening_runs ADD COLUMN notification_error TEXT",
+        }
+
+        with self._engine.begin() as conn:
+            existing = {
+                row[1]
+                for row in conn.exec_driver_sql("PRAGMA table_info(screening_runs)").fetchall()
+            }
+            missing = [name for name in expected_columns if name not in existing]
+            if not missing:
+                return
+
+            logger.info(
+                "Applying inline SQLite migration for screening_runs, missing columns: %s",
+                ", ".join(missing),
+            )
+            for column_name in missing:
+                conn.exec_driver_sql(expected_columns[column_name])
+
+            conn.exec_driver_sql(
+                "UPDATE screening_runs "
+                "SET trigger_type='manual' "
+                "WHERE trigger_type IS NULL OR TRIM(trigger_type)=''"
+            )
+            conn.exec_driver_sql(
+                "UPDATE screening_runs "
+                "SET notification_status='pending' "
+                "WHERE notification_status IS NULL AND trigger_type='scheduled'"
+            )
+            conn.exec_driver_sql(
+                "UPDATE screening_runs "
+                "SET notification_status='skipped' "
+                "WHERE notification_status IS NULL AND COALESCE(trigger_type, 'manual')!='scheduled'"
+            )
+            conn.exec_driver_sql(
+                "UPDATE screening_runs "
+                "SET notification_attempts=0 "
+                "WHERE notification_attempts IS NULL"
+            )
+            logger.info("Inline SQLite migration for screening_runs completed")
     
     def get_session(self) -> Session:
         """
@@ -1195,10 +1271,14 @@ class DatabaseManager:
         ai_top_k: int = 0,
         run_id: Optional[str] = None,
         return_created: bool = False,
+        trigger_type: str = "manual",
     ) -> Any:
         """创建筛选任务记录并返回 run_id。"""
         if run_id is None:
             run_id = f"run-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+
+        # Derive notification_status default from trigger_type
+        notification_status = "pending" if trigger_type == "scheduled" else "skipped"
 
         record = ScreeningRun(
             run_id=run_id,
@@ -1208,6 +1288,8 @@ class DatabaseManager:
             ai_top_k=ai_top_k,
             config_snapshot=self._safe_json_dumps(config_snapshot or {}),
             started_at=datetime.now(),
+            trigger_type=trigger_type,
+            notification_status=notification_status,
         )
 
         created = True
@@ -1258,6 +1340,27 @@ class DatabaseManager:
                     record.completed_at = datetime.now()
             elif record.completed_at is not None:
                 record.completed_at = None
+            return True
+
+    def update_notification_status(
+        self,
+        run_id: str,
+        notification_status: str,
+        notification_error: Optional[str] = None,
+    ) -> bool:
+        """Update notification lifecycle fields on a screening run."""
+        with self.session_scope() as session:
+            record = session.execute(
+                select(ScreeningRun).where(ScreeningRun.run_id == run_id)
+            ).scalar_one_or_none()
+            if record is None:
+                return False
+            record.notification_status = notification_status
+            record.notification_attempts = (record.notification_attempts or 0) + 1
+            if notification_status == "sent":
+                record.notification_sent_at = datetime.now()
+            if notification_error is not None:
+                record.notification_error = notification_error
             return True
 
     def get_screening_run(self, run_id: str) -> Optional[Dict[str, Any]]:
@@ -1367,6 +1470,7 @@ class DatabaseManager:
             "screening_min_avg_amount": config_snapshot.get("screening_min_avg_amount"),
             "screening_breakout_lookback_days": config_snapshot.get("screening_breakout_lookback_days"),
             "screening_factor_lookback_days": config_snapshot.get("screening_factor_lookback_days"),
+            "screening_ingest_failure_threshold": config_snapshot.get("screening_ingest_failure_threshold", 0.02),
         }
 
     def list_screening_runs(self, limit: int = 20) -> List[Dict[str, Any]]:

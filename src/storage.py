@@ -36,10 +36,10 @@ from sqlalchemy import (
     Text,
     select,
     and_,
+    or_,
     delete,
     desc,
-    event,
-    update,
+    func,
 )
 from sqlalchemy.orm import (
     declarative_base,
@@ -178,6 +178,31 @@ class NewsIntel(Base):
 
     def __repr__(self) -> str:
         return f"<NewsIntel(code={self.code}, title={self.title[:20]}...)>"
+
+
+class FundamentalSnapshot(Base):
+    """
+    基本面上下文快照（P0 write-only）。
+
+    仅用于写入，主链路不依赖读取该表，便于后续回测/画像扩展。
+    """
+    __tablename__ = 'fundamental_snapshot'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    query_id = Column(String(64), nullable=False, index=True)
+    code = Column(String(10), nullable=False, index=True)
+    payload = Column(Text, nullable=False)
+    source_chain = Column(Text)
+    coverage = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_fundamental_snapshot_query_code', 'query_id', 'code'),
+        Index('ix_fundamental_snapshot_created', 'created_at'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<FundamentalSnapshot(query_id={self.query_id}, code={self.code})>"
 
 
 class AnalysisHistory(Base):
@@ -367,6 +392,205 @@ class BacktestSummary(Base):
     )
 
 
+class PortfolioAccount(Base):
+    """Portfolio account metadata."""
+
+    __tablename__ = 'portfolio_accounts'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_id = Column(String(64), index=True)
+    name = Column(String(64), nullable=False)
+    broker = Column(String(64))
+    market = Column(String(8), nullable=False, default='cn', index=True)  # cn/hk/us
+    base_currency = Column(String(8), nullable=False, default='CNY')
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_portfolio_account_owner_active', 'owner_id', 'is_active'),
+    )
+
+
+class PortfolioTrade(Base):
+    """Executed trade events used as the source of truth for replay."""
+
+    __tablename__ = 'portfolio_trades'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('portfolio_accounts.id'), nullable=False, index=True)
+    trade_uid = Column(String(128))
+    symbol = Column(String(16), nullable=False, index=True)
+    market = Column(String(8), nullable=False, default='cn')
+    currency = Column(String(8), nullable=False, default='CNY')
+    trade_date = Column(Date, nullable=False, index=True)
+    side = Column(String(8), nullable=False)  # buy/sell
+    quantity = Column(Float, nullable=False)
+    price = Column(Float, nullable=False)
+    fee = Column(Float, default=0.0)
+    tax = Column(Float, default=0.0)
+    note = Column(String(255))
+    dedup_hash = Column(String(64), index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('account_id', 'trade_uid', name='uix_portfolio_trade_uid'),
+        UniqueConstraint('account_id', 'dedup_hash', name='uix_portfolio_trade_dedup_hash'),
+        Index('ix_portfolio_trade_account_date', 'account_id', 'trade_date'),
+    )
+
+
+class PortfolioCashLedger(Base):
+    """Cash in/out events."""
+
+    __tablename__ = 'portfolio_cash_ledger'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('portfolio_accounts.id'), nullable=False, index=True)
+    event_date = Column(Date, nullable=False, index=True)
+    direction = Column(String(8), nullable=False)  # in/out
+    amount = Column(Float, nullable=False)
+    currency = Column(String(8), nullable=False, default='CNY')
+    note = Column(String(255))
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_portfolio_cash_account_date', 'account_id', 'event_date'),
+    )
+
+
+class PortfolioCorporateAction(Base):
+    """Corporate actions that impact cash or share quantity."""
+
+    __tablename__ = 'portfolio_corporate_actions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('portfolio_accounts.id'), nullable=False, index=True)
+    symbol = Column(String(16), nullable=False, index=True)
+    market = Column(String(8), nullable=False, default='cn')
+    currency = Column(String(8), nullable=False, default='CNY')
+    effective_date = Column(Date, nullable=False, index=True)
+    action_type = Column(String(24), nullable=False)  # cash_dividend/split_adjustment
+    cash_dividend_per_share = Column(Float)
+    split_ratio = Column(Float)
+    note = Column(String(255))
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_portfolio_ca_account_date', 'account_id', 'effective_date'),
+    )
+
+
+class PortfolioPosition(Base):
+    """Latest replayed position snapshot for each symbol in one account."""
+
+    __tablename__ = 'portfolio_positions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('portfolio_accounts.id'), nullable=False, index=True)
+    cost_method = Column(String(8), nullable=False, default='fifo')
+    symbol = Column(String(16), nullable=False, index=True)
+    market = Column(String(8), nullable=False, default='cn')
+    currency = Column(String(8), nullable=False, default='CNY')
+    quantity = Column(Float, nullable=False, default=0.0)
+    avg_cost = Column(Float, nullable=False, default=0.0)
+    total_cost = Column(Float, nullable=False, default=0.0)
+    last_price = Column(Float, nullable=False, default=0.0)
+    market_value_base = Column(Float, nullable=False, default=0.0)
+    unrealized_pnl_base = Column(Float, nullable=False, default=0.0)
+    valuation_currency = Column(String(8), nullable=False, default='CNY')
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'account_id',
+            'symbol',
+            'market',
+            'currency',
+            'cost_method',
+            name='uix_portfolio_position_account_symbol_market_currency',
+        ),
+    )
+
+
+class PortfolioPositionLot(Base):
+    """Lot-level remaining quantities used by FIFO replay."""
+
+    __tablename__ = 'portfolio_position_lots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('portfolio_accounts.id'), nullable=False, index=True)
+    cost_method = Column(String(8), nullable=False, default='fifo')
+    symbol = Column(String(16), nullable=False, index=True)
+    market = Column(String(8), nullable=False, default='cn')
+    currency = Column(String(8), nullable=False, default='CNY')
+    open_date = Column(Date, nullable=False, index=True)
+    remaining_quantity = Column(Float, nullable=False, default=0.0)
+    unit_cost = Column(Float, nullable=False, default=0.0)
+    source_trade_id = Column(Integer, ForeignKey('portfolio_trades.id'))
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_portfolio_lot_account_symbol', 'account_id', 'symbol'),
+    )
+
+
+class PortfolioDailySnapshot(Base):
+    """Daily account snapshot generated by read-time replay."""
+
+    __tablename__ = 'portfolio_daily_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey('portfolio_accounts.id'), nullable=False, index=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    cost_method = Column(String(8), nullable=False, default='fifo')  # fifo/avg
+    base_currency = Column(String(8), nullable=False, default='CNY')
+    total_cash = Column(Float, nullable=False, default=0.0)
+    total_market_value = Column(Float, nullable=False, default=0.0)
+    total_equity = Column(Float, nullable=False, default=0.0)
+    unrealized_pnl = Column(Float, nullable=False, default=0.0)
+    realized_pnl = Column(Float, nullable=False, default=0.0)
+    fee_total = Column(Float, nullable=False, default=0.0)
+    tax_total = Column(Float, nullable=False, default=0.0)
+    fx_stale = Column(Boolean, nullable=False, default=False)
+    payload = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'account_id',
+            'snapshot_date',
+            'cost_method',
+            name='uix_portfolio_snapshot_account_date_method',
+        ),
+    )
+
+
+class PortfolioFxRate(Base):
+    """Cached FX rates used for cross-currency portfolio conversion."""
+
+    __tablename__ = 'portfolio_fx_rates'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    from_currency = Column(String(8), nullable=False, index=True)
+    to_currency = Column(String(8), nullable=False, index=True)
+    rate_date = Column(Date, nullable=False, index=True)
+    rate = Column(Float, nullable=False)
+    source = Column(String(32), nullable=False, default='manual')
+    is_stale = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'from_currency',
+            'to_currency',
+            'rate_date',
+            name='uix_portfolio_fx_pair_date',
+        ),
+    )
+
+
 class ConversationMessage(Base):
     """
     Agent 对话历史记录表
@@ -380,171 +604,20 @@ class ConversationMessage(Base):
     created_at = Column(DateTime, default=datetime.now, index=True)
 
 
-class InstrumentMaster(Base):
-    """正式股票池主数据。"""
+class LLMUsage(Base):
+    """One row per litellm.completion() call — token-usage audit log."""
 
-    __tablename__ = "instrument_master"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(16), nullable=False, unique=True, index=True)
-    name = Column(String(64), nullable=False)
-    market = Column(String(16), nullable=False, default="cn", index=True)
-    exchange = Column(String(16), nullable=True, index=True)
-    listing_status = Column(String(16), nullable=False, default="active", index=True)
-    is_st = Column(Boolean, nullable=False, default=False, index=True)
-    industry = Column(String(64))
-    list_date = Column(Date, nullable=True, index=True)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "code": self.code,
-            "name": self.name,
-            "market": self.market,
-            "exchange": self.exchange,
-            "listing_status": self.listing_status,
-            "is_st": self.is_st,
-            "industry": self.industry,
-            "list_date": self.list_date.isoformat() if self.list_date else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-        }
-
-
-class DailyFactorSnapshot(Base):
-    """日度因子快照。"""
-
-    __tablename__ = "daily_factor_snapshots"
+    __tablename__ = 'llm_usage'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    trade_date = Column(Date, nullable=False, index=True)
-    code = Column(String(16), nullable=False, index=True)
-    close = Column(Float)
-    pct_chg = Column(Float)
-    ma5 = Column(Float)
-    ma10 = Column(Float)
-    ma20 = Column(Float)
-    ma60 = Column(Float)
-    volume_ratio = Column(Float)
-    turnover_rate = Column(Float)
-    trend_score = Column(Float)
-    liquidity_score = Column(Float)
-    risk_flags_json = Column(Text)
-    created_at = Column(DateTime, default=datetime.now, index=True)
-
-    __table_args__ = (
-        UniqueConstraint("trade_date", "code", name="uix_factor_snapshot_trade_code"),
-        Index("ix_factor_snapshot_trade_code", "trade_date", "code"),
-    )
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "trade_date": self.trade_date.isoformat() if self.trade_date else None,
-            "code": self.code,
-            "close": self.close,
-            "pct_chg": self.pct_chg,
-            "ma5": self.ma5,
-            "ma10": self.ma10,
-            "ma20": self.ma20,
-            "ma60": self.ma60,
-            "volume_ratio": self.volume_ratio,
-            "turnover_rate": self.turnover_rate,
-            "trend_score": self.trend_score,
-            "liquidity_score": self.liquidity_score,
-            "risk_flags": json.loads(self.risk_flags_json) if self.risk_flags_json else [],
-        }
-
-
-class ScreeningRun(Base):
-    """全市场筛选任务记录。"""
-
-    __tablename__ = "screening_runs"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    run_id = Column(String(64), nullable=False, unique=True, index=True)
-    trade_date = Column(Date, nullable=False, index=True)
-    market = Column(String(16), nullable=False, default="cn", index=True)
-    status = Column(String(32), nullable=False, default="pending", index=True)
-    universe_size = Column(Integer, nullable=False, default=0)
-    candidate_count = Column(Integer, nullable=False, default=0)
-    ai_top_k = Column(Integer, nullable=False, default=0)
-    config_snapshot = Column(Text)
-    error_summary = Column(Text)
-    started_at = Column(DateTime, default=datetime.now, index=True)
-    completed_at = Column(DateTime, nullable=True, index=True)
-    # -- Notification lifecycle fields --
-    trigger_type = Column(String(32), nullable=False, default="manual")
-    notification_status = Column(String(32), nullable=True)
-    notification_attempts = Column(Integer, nullable=False, default=0)
-    notification_sent_at = Column(DateTime, nullable=True)
-    notification_error = Column(Text, nullable=True)
-
-    __table_args__ = (
-        Index("ix_screening_run_trade_market", "trade_date", "market"),
-    )
-
-    def to_dict(self) -> Dict[str, Any]:
-        snapshot = json.loads(self.config_snapshot) if self.config_snapshot else {}
-        return {
-            "run_id": self.run_id,
-            "trade_date": self.trade_date.isoformat() if self.trade_date else None,
-            "market": self.market,
-            "mode": snapshot.get("mode", "balanced"),
-            "status": self.status,
-            "universe_size": self.universe_size,
-            "candidate_count": self.candidate_count,
-            "ai_top_k": self.ai_top_k,
-            "config_snapshot": snapshot,
-            "error_summary": self.error_summary,
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "trigger_type": self.trigger_type or "manual",
-            "notification_status": self.notification_status,
-            "notification_attempts": self.notification_attempts or 0,
-            "notification_sent_at": self.notification_sent_at.isoformat() if self.notification_sent_at else None,
-            "notification_error": self.notification_error,
-        }
-
-
-class ScreeningCandidate(Base):
-    """全市场筛选候选结果。"""
-
-    __tablename__ = "screening_candidates"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    run_id = Column(String(64), ForeignKey("screening_runs.run_id"), nullable=False, index=True)
-    code = Column(String(10), nullable=False, index=True)
-    name = Column(String(50))
-    rank = Column(Integer, nullable=False, index=True)
-    rule_score = Column(Float, nullable=False, default=0.0)
-    selected_for_ai = Column(Boolean, nullable=False, default=False)
-    rule_hits_json = Column(Text)
-    factor_snapshot_json = Column(Text)
-    ai_query_id = Column(String(64), index=True)
-    ai_summary = Column(Text)
-    ai_operation_advice = Column(String(20))
-    created_at = Column(DateTime, default=datetime.now, index=True)
-
-    __table_args__ = (
-        UniqueConstraint("run_id", "code", name="uix_screening_candidate_run_code"),
-        Index("ix_screening_candidate_run_rank", "run_id", "rank"),
-    )
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "run_id": self.run_id,
-            "code": self.code,
-            "name": self.name,
-            "rank": self.rank,
-            "rule_score": self.rule_score,
-            "selected_for_ai": self.selected_for_ai,
-            "rule_hits": json.loads(self.rule_hits_json) if self.rule_hits_json else [],
-            "factor_snapshot": json.loads(self.factor_snapshot_json) if self.factor_snapshot_json else {},
-            "ai_query_id": self.ai_query_id,
-            "ai_summary": self.ai_summary,
-            "ai_operation_advice": self.ai_operation_advice,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-        }
+    # 'analysis' | 'agent' | 'market_review'
+    call_type = Column(String(32), nullable=False, index=True)
+    model = Column(String(128), nullable=False)
+    stock_code = Column(String(16), nullable=True)
+    prompt_tokens = Column(Integer, nullable=False, default=0)
+    completion_tokens = Column(Integer, nullable=False, default=0)
+    total_tokens = Column(Integer, nullable=False, default=0)
+    called_at = Column(DateTime, default=datetime.now, index=True)
 
 
 class DatabaseManager:
@@ -559,27 +632,6 @@ class DatabaseManager:
     
     _instance: Optional['DatabaseManager'] = None
     _initialized: bool = False
-    _screening_status_transitions = {
-        "pending": {
-            "pending",
-            "resolving_universe",
-            "syncing_universe",
-            "ingesting",
-            "factorizing",
-            "screening",
-            "ai_enriching",
-            "failed",
-        },
-        "resolving_universe": {"resolving_universe", "syncing_universe", "ingesting", "failed"},
-        "syncing_universe": {"syncing_universe", "ingesting", "failed"},
-        "ingesting": {"ingesting", "factorizing", "failed"},
-        "factorizing": {"factorizing", "screening", "failed"},
-        "screening": {"screening", "ai_enriching", "completed", "completed_with_ai_degraded", "failed"},
-        "ai_enriching": {"ai_enriching", "completed", "completed_with_ai_degraded", "failed"},
-        "completed": {"completed"},
-        "completed_with_ai_degraded": {"completed_with_ai_degraded"},
-        "failed": {"failed"},
-    }
     
     def __new__(cls, *args, **kwargs):
         """单例模式实现"""
@@ -608,12 +660,6 @@ class DatabaseManager:
             echo=False,  # 设为 True 可查看 SQL 语句
             pool_pre_ping=True,  # 连接健康检查
         )
-        if db_url.startswith("sqlite"):
-            @event.listens_for(self._engine, "connect")
-            def _set_sqlite_pragma(dbapi_connection, connection_record):  # type: ignore[no-redef]
-                cursor = dbapi_connection.cursor()
-                cursor.execute("PRAGMA foreign_keys=ON")
-                cursor.close()
         
         # 创建 Session 工厂
         self._SessionLocal = sessionmaker(
@@ -622,10 +668,8 @@ class DatabaseManager:
             autoflush=False,
         )
         
-        # Create tables first, then apply lightweight inline schema migrations
-        # for backward-compatible upgrades on existing SQLite databases.
+        # 创建所有表
         Base.metadata.create_all(self._engine)
-        self._apply_inline_migrations()
 
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
@@ -665,69 +709,6 @@ class DatabaseManager:
                 logger.debug("数据库引擎已清理")
         except Exception as e:
             logger.warning(f"清理数据库引擎时出错: {e}")
-
-    def _apply_inline_migrations(self) -> None:
-        """Apply lightweight backward-compatible schema migrations.
-
-        This keeps existing SQLite data files usable after adding new columns,
-        especially for local/Docker deployments that copy old databases to new
-        machines. The migration is intentionally additive-only.
-        """
-        try:
-            dialect = self._engine.dialect.name
-            if dialect == "sqlite":
-                self._migrate_sqlite_screening_runs_notification_fields()
-        except Exception as exc:
-            logger.exception("Inline database migration failed: %s", exc)
-            raise
-
-    def _migrate_sqlite_screening_runs_notification_fields(self) -> None:
-        """Ensure screening_runs has notification-related columns on SQLite."""
-        expected_columns = {
-            "trigger_type": "ALTER TABLE screening_runs ADD COLUMN trigger_type VARCHAR(32) NOT NULL DEFAULT 'manual'",
-            "notification_status": "ALTER TABLE screening_runs ADD COLUMN notification_status VARCHAR(32)",
-            "notification_attempts": "ALTER TABLE screening_runs ADD COLUMN notification_attempts INTEGER NOT NULL DEFAULT 0",
-            "notification_sent_at": "ALTER TABLE screening_runs ADD COLUMN notification_sent_at DATETIME",
-            "notification_error": "ALTER TABLE screening_runs ADD COLUMN notification_error TEXT",
-        }
-
-        with self._engine.begin() as conn:
-            existing = {
-                row[1]
-                for row in conn.exec_driver_sql("PRAGMA table_info(screening_runs)").fetchall()
-            }
-            missing = [name for name in expected_columns if name not in existing]
-            if not missing:
-                return
-
-            logger.info(
-                "Applying inline SQLite migration for screening_runs, missing columns: %s",
-                ", ".join(missing),
-            )
-            for column_name in missing:
-                conn.exec_driver_sql(expected_columns[column_name])
-
-            conn.exec_driver_sql(
-                "UPDATE screening_runs "
-                "SET trigger_type='manual' "
-                "WHERE trigger_type IS NULL OR TRIM(trigger_type)=''"
-            )
-            conn.exec_driver_sql(
-                "UPDATE screening_runs "
-                "SET notification_status='pending' "
-                "WHERE notification_status IS NULL AND trigger_type='scheduled'"
-            )
-            conn.exec_driver_sql(
-                "UPDATE screening_runs "
-                "SET notification_status='skipped' "
-                "WHERE notification_status IS NULL AND COALESCE(trigger_type, 'manual')!='scheduled'"
-            )
-            conn.exec_driver_sql(
-                "UPDATE screening_runs "
-                "SET notification_attempts=0 "
-                "WHERE notification_attempts IS NULL"
-            )
-            logger.info("Inline SQLite migration for screening_runs completed")
     
     def get_session(self) -> Session:
         """
@@ -947,6 +928,86 @@ class DatabaseManager:
 
         return saved_count
 
+    def save_fundamental_snapshot(
+        self,
+        query_id: str,
+        code: str,
+        payload: Optional[Dict[str, Any]],
+        source_chain: Optional[Any] = None,
+        coverage: Optional[Any] = None,
+    ) -> int:
+        """
+        保存基本面快照（P0 write-only）。失败不抛异常，返回写入条数 0/1。
+        """
+        if not query_id or not code or payload is None:
+            return 0
+
+        with self.get_session() as session:
+            try:
+                session.add(
+                    FundamentalSnapshot(
+                        query_id=query_id,
+                        code=code,
+                        payload=self._safe_json_dumps(payload),
+                        source_chain=self._safe_json_dumps(source_chain or []),
+                        coverage=self._safe_json_dumps(coverage or {}),
+                    )
+                )
+                session.commit()
+                return 1
+            except Exception as e:
+                session.rollback()
+                logger.debug(
+                    "基本面快照写入失败（fail-open）: query_id=%s code=%s err=%s",
+                    query_id,
+                    code,
+                    e,
+                )
+                return 0
+
+    def get_latest_fundamental_snapshot(
+        self,
+        query_id: str,
+        code: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        获取指定 query_id + code 的最新基本面快照 payload。
+
+        读取失败或不存在时返回 None（fail-open）。
+        """
+        if not query_id or not code:
+            return None
+
+        with self.get_session() as session:
+            try:
+                row = session.execute(
+                    select(FundamentalSnapshot)
+                    .where(
+                        and_(
+                            FundamentalSnapshot.query_id == query_id,
+                            FundamentalSnapshot.code == code,
+                        )
+                    )
+                    .order_by(desc(FundamentalSnapshot.created_at))
+                    .limit(1)
+                ).scalar_one_or_none()
+            except Exception as e:
+                logger.debug(
+                    "基本面快照读取失败（fail-open）: query_id=%s code=%s err=%s",
+                    query_id,
+                    code,
+                    e,
+                )
+                return None
+
+            if row is None:
+                return None
+            try:
+                payload = json.loads(row.payload or "{}")
+                return payload if isinstance(payload, dict) else None
+            except Exception:
+                return None
+
     def get_recent_news(self, code: str, days: int = 7, limit: int = 20) -> List[NewsIntel]:
         """
         获取指定股票最近 N 天的新闻情报
@@ -1049,7 +1110,8 @@ class DatabaseManager:
         code: Optional[str] = None,
         query_id: Optional[str] = None,
         days: int = 30,
-        limit: int = 50
+        limit: int = 50,
+        exclude_query_id: Optional[str] = None,
     ) -> List[AnalysisHistory]:
         """
         Query analysis history records.
@@ -1057,6 +1119,7 @@ class DatabaseManager:
         Notes:
         - If query_id is provided, perform exact lookup and ignore days window.
         - If query_id is not provided, apply days-based time filtering.
+        - exclude_query_id: exclude records with this query_id (for history comparison).
         """
         cutoff_date = datetime.now() - timedelta(days=days)
 
@@ -1070,6 +1133,10 @@ class DatabaseManager:
 
             if code:
                 conditions.append(AnalysisHistory.code == code)
+
+            # exclude_query_id only applies when not doing exact lookup (query_id is None)
+            if exclude_query_id and not query_id:
+                conditions.append(AnalysisHistory.query_id != exclude_query_id)
 
             results = session.execute(
                 select(AnalysisHistory)
@@ -1153,480 +1220,30 @@ class DatabaseManager:
             ).scalars().first()
             return result
 
-    def upsert_instruments(self, instruments: List[Dict[str, Any]]) -> int:
-        """批量写入或更新股票池主数据。"""
-        if not instruments:
+    def delete_analysis_history_records(self, record_ids: List[int]) -> int:
+        """
+        删除指定的分析历史记录。
+
+        同时清理依赖这些历史记录的回测结果，避免外键约束失败。
+
+        Args:
+            record_ids: 要删除的历史记录主键 ID 列表
+
+        Returns:
+            实际删除的历史记录数量
+        """
+        ids = sorted({int(record_id) for record_id in record_ids if record_id is not None})
+        if not ids:
             return 0
 
         with self.session_scope() as session:
-            normalized_items = []
-            for item in instruments:
-                code = str(item["code"]).strip().upper()
-                normalized_items.append((code, item))
-
-            existing_codes = [code for code, _ in normalized_items]
-            existing_records = session.execute(
-                select(InstrumentMaster).where(InstrumentMaster.code.in_(existing_codes))
-            ).scalars().all()
-            record_map = {record.code: record for record in existing_records}
-
-            for code, item in normalized_items:
-                record = record_map.get(code)
-                if record is None:
-                    record = InstrumentMaster(code=code)
-                    session.add(record)
-                    record_map[code] = record
-
-                record.name = item.get("name") or code
-                record.market = item.get("market") or "cn"
-                record.exchange = item.get("exchange")
-                record.listing_status = item.get("listing_status") or "active"
-                record.is_st = bool(item.get("is_st", False))
-                record.industry = item.get("industry")
-                record.list_date = item.get("list_date")
-                record.updated_at = datetime.now()
-
-        return len(instruments)
-
-    def get_instrument(self, code: str) -> Optional[Dict[str, Any]]:
-        """根据代码查询单个股票池主数据。"""
-        with self.get_session() as session:
-            record = session.execute(
-                select(InstrumentMaster).where(InstrumentMaster.code == str(code).strip().upper())
-            ).scalar_one_or_none()
-            return record.to_dict() if record else None
-
-    def list_instruments(
-        self,
-        market: Optional[str] = None,
-        listing_status: Optional[str] = None,
-        exclude_st: bool = False,
-        codes: Optional[List[str]] = None,
-        limit: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """查询股票池主数据列表。"""
-        with self.get_session() as session:
-            stmt = select(InstrumentMaster).order_by(InstrumentMaster.code)
-            if market:
-                stmt = stmt.where(InstrumentMaster.market == market)
-            if listing_status:
-                stmt = stmt.where(InstrumentMaster.listing_status == listing_status)
-            if exclude_st:
-                stmt = stmt.where(InstrumentMaster.is_st.is_(False))
-            if codes:
-                normalized_codes = [str(code).strip().upper() for code in codes if str(code).strip()]
-                stmt = stmt.where(InstrumentMaster.code.in_(normalized_codes))
-            if limit is not None:
-                stmt = stmt.limit(limit)
-
-            rows = session.execute(stmt).scalars().all()
-            return [row.to_dict() for row in rows]
-
-    def replace_factor_snapshots(self, trade_date: date, snapshots: List[Dict[str, Any]]) -> int:
-        """按交易日全量替换因子快照。"""
-        with self.session_scope() as session:
             session.execute(
-                delete(DailyFactorSnapshot).where(DailyFactorSnapshot.trade_date == trade_date)
+                delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(ids))
             )
-            for item in snapshots:
-                session.add(
-                    DailyFactorSnapshot(
-                        trade_date=trade_date,
-                        code=str(item["code"]).strip().upper(),
-                        close=item.get("close"),
-                        pct_chg=item.get("pct_chg"),
-                        ma5=item.get("ma5"),
-                        ma10=item.get("ma10"),
-                        ma20=item.get("ma20"),
-                        ma60=item.get("ma60"),
-                        volume_ratio=item.get("volume_ratio"),
-                        turnover_rate=item.get("turnover_rate"),
-                        trend_score=item.get("trend_score"),
-                        liquidity_score=item.get("liquidity_score"),
-                        risk_flags_json=self._safe_json_dumps(item.get("risk_flags", [])),
-                        created_at=datetime.now(),
-                    )
-                )
-        return len(snapshots)
-
-    def list_factor_snapshots(self, trade_date: date, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """查询指定交易日的因子快照。"""
-        with self.get_session() as session:
-            stmt = (
-                select(DailyFactorSnapshot)
-                .where(DailyFactorSnapshot.trade_date == trade_date)
-                .order_by(DailyFactorSnapshot.code)
-            )
-            if limit is not None:
-                stmt = stmt.limit(limit)
-            rows = session.execute(stmt).scalars().all()
-            return [row.to_dict() for row in rows]
-
-    def create_screening_run(
-        self,
-        trade_date: date,
-        market: str = "cn",
-        config_snapshot: Optional[Dict[str, Any]] = None,
-        status: str = "pending",
-        ai_top_k: int = 0,
-        run_id: Optional[str] = None,
-        return_created: bool = False,
-        trigger_type: str = "manual",
-    ) -> Any:
-        """创建筛选任务记录并返回 run_id。"""
-        if run_id is None:
-            run_id = f"run-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-
-        # Derive notification_status default from trigger_type
-        notification_status = "pending" if trigger_type == "scheduled" else "skipped"
-
-        record = ScreeningRun(
-            run_id=run_id,
-            trade_date=trade_date,
-            market=market,
-            status=status,
-            ai_top_k=ai_top_k,
-            config_snapshot=self._safe_json_dumps(config_snapshot or {}),
-            started_at=datetime.now(),
-            trigger_type=trigger_type,
-            notification_status=notification_status,
-        )
-
-        created = True
-        with self.session_scope() as session:
-            try:
-                session.add(record)
-                session.flush()
-            except IntegrityError:
-                session.rollback()
-                created = False
-
-        if return_created:
-            return run_id, created
-        return run_id
-
-    def update_screening_run_status(
-        self,
-        run_id: str,
-        status: str,
-        trade_date: Optional[date] = None,
-        universe_size: Optional[int] = None,
-        candidate_count: Optional[int] = None,
-        error_summary: Optional[str] = None,
-    ) -> bool:
-        """更新筛选任务状态。"""
-        with self.session_scope() as session:
-            record = session.execute(
-                select(ScreeningRun).where(ScreeningRun.run_id == run_id)
-            ).scalar_one_or_none()
-            if record is None:
-                return False
-
-            allowed_statuses = self._screening_status_transitions.get(record.status, {record.status})
-            if status not in allowed_statuses:
-                return False
-
-            record.status = status
-            if trade_date is not None:
-                record.trade_date = trade_date
-            if universe_size is not None:
-                record.universe_size = universe_size
-            if candidate_count is not None:
-                record.candidate_count = candidate_count
-            if error_summary is not None:
-                record.error_summary = error_summary
-            if status in {"completed", "completed_with_ai_degraded", "failed"}:
-                if record.completed_at is None:
-                    record.completed_at = datetime.now()
-            elif record.completed_at is not None:
-                record.completed_at = None
-            return True
-
-    def update_notification_status(
-        self,
-        run_id: str,
-        notification_status: str,
-        notification_error: Optional[str] = None,
-    ) -> bool:
-        """Update notification lifecycle fields on a screening run."""
-        with self.session_scope() as session:
-            record = session.execute(
-                select(ScreeningRun).where(ScreeningRun.run_id == run_id)
-            ).scalar_one_or_none()
-            if record is None:
-                return False
-            record.notification_status = notification_status
-            record.notification_attempts = (record.notification_attempts or 0) + 1
-            if notification_status == "sent":
-                record.notification_sent_at = datetime.now()
-            if notification_error is not None:
-                record.notification_error = notification_error
-            return True
-
-    def get_screening_run(self, run_id: str) -> Optional[Dict[str, Any]]:
-        """获取单次筛选任务。"""
-        with self.get_session() as session:
-            record = session.execute(
-                select(ScreeningRun).where(ScreeningRun.run_id == run_id)
-            ).scalar_one_or_none()
-            return record.to_dict() if record else None
-
-    def find_latest_screening_run(
-        self,
-        market: str = "cn",
-        config_snapshot: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Find the latest screening run for the same effective request snapshot."""
-        expected_identity = self._screening_run_identity(config_snapshot or {})
-        with self.get_session() as session:
-            rows = session.execute(
-                select(ScreeningRun)
-                .where(ScreeningRun.market == market)
-                .order_by(desc(ScreeningRun.started_at))
-            ).scalars().all()
-
-            for row in rows:
-                payload = row.to_dict()
-                if self._screening_run_identity(payload.get("config_snapshot", {})) == expected_identity:
-                    return payload
-        return None
-
-    def reset_screening_run_for_rerun(
-        self,
-        run_id: str,
-        config_snapshot: Optional[Dict[str, Any]] = None,
-        ai_top_k: Optional[int] = None,
-    ) -> bool:
-        """Reset a failed screening run so it can be re-executed in place."""
-        with self.session_scope() as session:
-            values = {
-                "status": "pending",
-                "universe_size": 0,
-                "candidate_count": 0,
-                "error_summary": None,
-                "completed_at": None,
-                "started_at": datetime.now(),
-            }
-            if config_snapshot is not None:
-                values["config_snapshot"] = self._safe_json_dumps(config_snapshot)
-            if ai_top_k is not None:
-                values["ai_top_k"] = ai_top_k
-
             result = session.execute(
-                update(ScreeningRun)
-                .where(
-                    ScreeningRun.run_id == run_id,
-                    ScreeningRun.status == "failed",
-                )
-                .values(**values)
+                delete(AnalysisHistory).where(AnalysisHistory.id.in_(ids))
             )
-            if result.rowcount == 0:
-                return False
-
-            session.execute(
-                delete(ScreeningCandidate).where(ScreeningCandidate.run_id == run_id)
-            )
-            return True
-
-    def update_screening_run_context(
-        self,
-        run_id: str,
-        config_snapshot_updates: Optional[Dict[str, Any]] = None,
-        ai_top_k: Optional[int] = None,
-    ) -> bool:
-        """Update the persisted config snapshot or ai_top_k for an existing run."""
-        with self.session_scope() as session:
-            record = session.execute(
-                select(ScreeningRun).where(ScreeningRun.run_id == run_id)
-            ).scalar_one_or_none()
-            if record is None:
-                return False
-
-            if config_snapshot_updates:
-                snapshot = json.loads(record.config_snapshot) if record.config_snapshot else {}
-                snapshot.update(config_snapshot_updates)
-                record.config_snapshot = self._safe_json_dumps(snapshot)
-            if ai_top_k is not None:
-                record.ai_top_k = ai_top_k
-            return True
-
-    @staticmethod
-    def _screening_run_identity(config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
-        """Build a stable identity used for screening run idempotency."""
-        return {
-            "requested_trade_date": str(config_snapshot.get("requested_trade_date") or ""),
-            "mode": str(config_snapshot.get("mode") or "balanced"),
-            "stock_codes": sorted(
-                {
-                    str(code).strip().upper()
-                    for code in (config_snapshot.get("stock_codes") or [])
-                    if str(code).strip()
-                }
-            ),
-            "candidate_limit": config_snapshot.get("candidate_limit"),
-            "ai_top_k": config_snapshot.get("ai_top_k"),
-            "screening_min_list_days": config_snapshot.get("screening_min_list_days"),
-            "screening_min_volume_ratio": config_snapshot.get("screening_min_volume_ratio"),
-            "screening_min_avg_amount": config_snapshot.get("screening_min_avg_amount"),
-            "screening_breakout_lookback_days": config_snapshot.get("screening_breakout_lookback_days"),
-            "screening_factor_lookback_days": config_snapshot.get("screening_factor_lookback_days"),
-            "screening_ingest_failure_threshold": config_snapshot.get("screening_ingest_failure_threshold", 0.02),
-        }
-
-    def list_screening_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """按开始时间倒序列出筛选任务。"""
-        with self.get_session() as session:
-            rows = session.execute(
-                select(ScreeningRun)
-                .order_by(desc(ScreeningRun.started_at))
-                .limit(limit)
-            ).scalars().all()
-            return [row.to_dict() for row in rows]
-
-    def save_screening_candidates(self, run_id: str, candidates: List[Dict[str, Any]]) -> int:
-        """批量保存筛选候选结果。"""
-        with self.session_scope() as session:
-            session.execute(
-                delete(ScreeningCandidate).where(ScreeningCandidate.run_id == run_id)
-            )
-
-            for item in candidates:
-                session.add(
-                    ScreeningCandidate(
-                        run_id=run_id,
-                        code=item["code"],
-                        name=item.get("name"),
-                        rank=int(item.get("rank", 0)),
-                        rule_score=float(item.get("rule_score", 0.0)),
-                        selected_for_ai=bool(item.get("selected_for_ai", False)),
-                        rule_hits_json=self._safe_json_dumps(item.get("rule_hits", [])),
-                        factor_snapshot_json=self._safe_json_dumps(item.get("factor_snapshot", {})),
-                        ai_query_id=item.get("ai_query_id"),
-                        ai_summary=item.get("ai_summary"),
-                        ai_operation_advice=item.get("ai_operation_advice"),
-                        created_at=datetime.now(),
-                    )
-                )
-
-        return len(candidates)
-
-    def list_screening_candidates(
-        self,
-        run_id: str,
-        limit: int = 100,
-        with_ai_only: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """查询某次筛选任务的候选结果。"""
-        with self.get_session() as session:
-            stmt = (
-                select(ScreeningCandidate)
-                .where(ScreeningCandidate.run_id == run_id)
-                .order_by(ScreeningCandidate.rank)
-            )
-            if with_ai_only:
-                stmt = stmt.where(ScreeningCandidate.selected_for_ai.is_(True))
-            rows = session.execute(stmt).scalars().all()
-            return self._enrich_screening_candidates([row.to_dict() for row in rows])[:limit]
-
-    def get_screening_candidate_detail(self, run_id: str, code: str) -> Optional[Dict[str, Any]]:
-        """查询某次筛选任务下单只候选的完整详情。"""
-        with self.get_session() as session:
-            rows = session.execute(
-                select(ScreeningCandidate)
-                .where(ScreeningCandidate.run_id == run_id)
-                .order_by(ScreeningCandidate.rank)
-            ).scalars().all()
-            if not rows:
-                return None
-
-        enriched = self._enrich_screening_candidates([row.to_dict() for row in rows])
-        item = next((candidate for candidate in enriched if candidate.get("code") == code), None)
-        if item is None:
-            return None
-
-        item["analysis_history"] = self._build_screening_analysis_history_ref(
-            query_id=item.get("ai_query_id"),
-            code=item.get("code"),
-        )
-        return item
-
-    def _enrich_screening_candidates(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        enriched: List[Dict[str, Any]] = []
-        for item in items:
-            news_records = []
-            ai_query_id = item.get("ai_query_id")
-            if ai_query_id:
-                news_records = self.get_news_intel_by_query_id(ai_query_id, limit=3)
-
-            news_titles = [record.title for record in news_records if getattr(record, "title", None)]
-            news_count = len(news_records)
-            has_ai_analysis = bool(item.get("ai_summary") or item.get("ai_operation_advice"))
-            recommendation_source = "rules_plus_ai" if has_ai_analysis else "rules_only"
-            final_score = round(
-                float(item.get("rule_score", 0.0))
-                + self._screening_ai_bonus(item.get("ai_operation_advice"))
-                + min(news_count, 3),
-                2,
-            )
-
-            reason_parts = [f"规则得分 {float(item.get('rule_score', 0.0)):.1f}"]
-            if has_ai_analysis:
-                reason_parts.append(f"AI 建议 {item.get('ai_operation_advice') or '已分析'}")
-            else:
-                reason_parts.append("按规则结果输出")
-            if news_count:
-                reason_parts.append(f"新闻补充 {news_count} 条")
-
-            enriched_item = {
-                **item,
-                "has_ai_analysis": has_ai_analysis,
-                "news_count": news_count,
-                "news_summary": "；".join(news_titles[:2]) if news_titles else None,
-                "recommendation_source": recommendation_source,
-                "recommendation_reason": "；".join(reason_parts),
-                "final_score": final_score,
-            }
-            enriched.append(enriched_item)
-
-        ordered = sorted(
-            enriched,
-            key=lambda item: (-float(item["final_score"]), -float(item["rule_score"]), int(item["rank"])),
-        )
-        for index, item in enumerate(ordered, start=1):
-            item["final_rank"] = index
-        return ordered
-
-    def _build_screening_analysis_history_ref(self, query_id: Optional[str], code: Optional[str]) -> Optional[Dict[str, Any]]:
-        if not query_id or not code:
-            return None
-        record = self.get_latest_analysis_by_query_id_and_code(query_id=query_id, code=code)
-        if record is None:
-            return None
-        return {
-            "id": record.id,
-            "query_id": record.query_id,
-            "stock_code": record.code,
-            "stock_name": record.name,
-            "report_type": record.report_type,
-            "operation_advice": record.operation_advice,
-            "trend_prediction": record.trend_prediction,
-            "sentiment_score": record.sentiment_score,
-            "analysis_summary": record.analysis_summary,
-            "created_at": record.created_at.isoformat() if record.created_at else None,
-        }
-
-    @staticmethod
-    def _screening_ai_bonus(operation_advice: Optional[str]) -> float:
-        mapping = {
-            "买入": 8.0,
-            "加仓": 6.0,
-            "关注": 4.0,
-            "持有": 2.0,
-            "观望": 0.0,
-            "减仓": -4.0,
-            "卖出": -8.0,
-        }
-        return mapping.get(str(operation_advice or "").strip(), 0.0)
+            return result.rowcount or 0
 
     def get_latest_analysis_by_query_id(self, query_id: str) -> Optional[AnalysisHistory]:
         """
@@ -1644,20 +1261,6 @@ class DatabaseManager:
             result = session.execute(
                 select(AnalysisHistory)
                 .where(AnalysisHistory.query_id == query_id)
-                .order_by(desc(AnalysisHistory.created_at))
-                .limit(1)
-            ).scalars().first()
-            return result
-
-    def get_latest_analysis_by_query_id_and_code(self, query_id: str, code: str) -> Optional[AnalysisHistory]:
-        """根据 query_id 和股票代码查询最新分析历史记录。"""
-        with self.get_session() as session:
-            result = session.execute(
-                select(AnalysisHistory)
-                .where(
-                    AnalysisHistory.query_id == query_id,
-                    AnalysisHistory.code == code,
-                )
                 .order_by(desc(AnalysisHistory.created_at))
                 .limit(1)
             ).scalars().first()
@@ -2118,9 +1721,32 @@ class DatabaseManager:
             # 倒序返回，保证时间顺序
             return [{"role": msg.role, "content": msg.content} for msg in reversed(messages)]
 
-    def get_chat_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def conversation_session_exists(self, session_id: str) -> bool:
+        """Return True when at least one message exists for the given session."""
+        with self.session_scope() as session:
+            stmt = (
+                select(ConversationMessage.id)
+                .where(ConversationMessage.session_id == session_id)
+                .limit(1)
+            )
+            return session.execute(stmt).scalar() is not None
+
+    def get_chat_sessions(
+        self,
+        limit: int = 50,
+        session_prefix: Optional[str] = None,
+        extra_session_ids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         获取聊天会话列表（从 conversation_messages 聚合）
+
+        Args:
+            limit: Maximum number of sessions to return.
+            session_prefix: If provided, only return sessions whose session_id
+                starts with this prefix.  Used for per-user isolation (e.g.
+                ``"telegram_12345"``).
+            extra_session_ids: Optional exact session ids to include in
+                addition to the scoped prefix.
 
         Returns:
             按最近活跃时间倒序的会话列表，每条包含 session_id, title, message_count, last_active
@@ -2128,14 +1754,29 @@ class DatabaseManager:
         from sqlalchemy import func
 
         with self.session_scope() as session:
+            normalized_prefix = None
+            if session_prefix:
+                normalized_prefix = session_prefix if session_prefix.endswith(":") else f"{session_prefix}:"
+            exact_ids = [sid for sid in (extra_session_ids or []) if sid]
+
             # 聚合每个 session 的消息数和最后活跃时间
-            stmt = (
+            base = (
                 select(
                     ConversationMessage.session_id,
                     func.count(ConversationMessage.id).label("message_count"),
                     func.min(ConversationMessage.created_at).label("created_at"),
                     func.max(ConversationMessage.created_at).label("last_active"),
                 )
+            )
+            conditions = []
+            if normalized_prefix:
+                conditions.append(ConversationMessage.session_id.startswith(normalized_prefix))
+            if exact_ids:
+                conditions.append(ConversationMessage.session_id.in_(exact_ids))
+            if conditions:
+                base = base.where(or_(*conditions))
+            stmt = (
+                base
                 .group_by(ConversationMessage.session_id)
                 .order_by(desc(func.max(ConversationMessage.created_at)))
                 .limit(limit)
@@ -2205,11 +1846,120 @@ class DatabaseManager:
             )
             return result.rowcount
 
+    # ------------------------------------------------------------------
+    # LLM usage tracking
+    # ------------------------------------------------------------------
+
+    def record_llm_usage(
+        self,
+        call_type: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        stock_code: Optional[str] = None,
+    ) -> None:
+        """Append one LLM call record to llm_usage."""
+        row = LLMUsage(
+            call_type=call_type,
+            model=model or "unknown",
+            stock_code=stock_code,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+        with self.session_scope() as session:
+            session.add(row)
+
+    def get_llm_usage_summary(
+        self,
+        from_dt: datetime,
+        to_dt: datetime,
+    ) -> Dict[str, Any]:
+        """Return aggregated token usage between from_dt and to_dt.
+
+        Returns a dict with keys:
+          total_calls, total_tokens,
+          by_call_type: list of {call_type, calls, total_tokens},
+          by_model:     list of {model, calls, total_tokens}
+        """
+        with self.session_scope() as session:
+            base_filter = and_(
+                LLMUsage.called_at >= from_dt,
+                LLMUsage.called_at <= to_dt,
+            )
+
+            # Overall totals
+            totals = session.execute(
+                select(
+                    func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
+                ).where(base_filter)
+            ).one()
+
+            # Breakdown by call_type
+            by_type_rows = session.execute(
+                select(
+                    LLMUsage.call_type,
+                    func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
+                )
+                .where(base_filter)
+                .group_by(LLMUsage.call_type)
+                .order_by(desc(func.sum(LLMUsage.total_tokens)))
+            ).all()
+
+            # Breakdown by model
+            by_model_rows = session.execute(
+                select(
+                    LLMUsage.model,
+                    func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
+                )
+                .where(base_filter)
+                .group_by(LLMUsage.model)
+                .order_by(desc(func.sum(LLMUsage.total_tokens)))
+            ).all()
+
+        return {
+            "total_calls": totals.calls,
+            "total_tokens": totals.tokens,
+            "by_call_type": [
+                {"call_type": r.call_type, "calls": r.calls, "total_tokens": r.tokens}
+                for r in by_type_rows
+            ],
+            "by_model": [
+                {"model": r.model, "calls": r.calls, "total_tokens": r.tokens}
+                for r in by_model_rows
+            ],
+        }
+
 
 # 便捷函数
 def get_db() -> DatabaseManager:
     """获取数据库管理器实例的快捷方式"""
     return DatabaseManager.get_instance()
+
+
+def persist_llm_usage(
+    usage: Dict[str, Any],
+    model: str,
+    call_type: str,
+    stock_code: Optional[str] = None,
+) -> None:
+    """Fire-and-forget: write one LLM call record to llm_usage. Never raises."""
+    try:
+        db = DatabaseManager.get_instance()
+        db.record_llm_usage(
+            call_type=call_type,
+            model=model,
+            prompt_tokens=usage.get("prompt_tokens", 0) or 0,
+            completion_tokens=usage.get("completion_tokens", 0) or 0,
+            total_tokens=usage.get("total_tokens", 0) or 0,
+            stock_code=stock_code,
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("[LLM usage] failed to persist usage record: %s", exc)
 
 
 if __name__ == "__main__":

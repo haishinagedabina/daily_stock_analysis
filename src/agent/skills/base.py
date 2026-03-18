@@ -48,6 +48,7 @@ class Skill:
     category: str = "trend"
     core_rules: List[int] = field(default_factory=list)
     required_tools: List[str] = field(default_factory=list)
+    screening: Optional[Dict] = None
     enabled: bool = False
     source: str = "builtin"
 
@@ -88,6 +89,9 @@ def load_skill_from_yaml(filepath: Union[str, Path]) -> Skill:
             f"Strategy file {filepath.name} missing required fields: {missing}"
         )
 
+    screening_raw = data.get("screening")
+    screening = dict(screening_raw) if isinstance(screening_raw, dict) else None
+
     return Skill(
         name=str(data["name"]).strip(),
         display_name=str(data["display_name"]).strip(),
@@ -96,6 +100,7 @@ def load_skill_from_yaml(filepath: Union[str, Path]) -> Skill:
         category=str(data.get("category", "trend")).strip(),
         core_rules=data.get("core_rules", []) or [],
         required_tools=data.get("required_tools", []) or [],
+        screening=screening,
         enabled=False,
         source=str(filepath),
     )
@@ -289,3 +294,19 @@ class SkillManager:
         for s in self.list_active_skills():
             tools.update(s.required_tools)
         return list(tools)
+
+    def get_screening_rules(self, strategy_names: Optional[List[str]] = None) -> List[Skill]:
+        """Return skills that have a ``screening`` section defined.
+
+        Args:
+            strategy_names: If provided, only return rules for these strategies.
+                            If None, return all skills with screening definitions.
+
+        Returns:
+            List of ``Skill`` instances that have ``screening`` data.
+        """
+        candidates = self._skills.values()
+        if strategy_names is not None:
+            name_set = set(strategy_names)
+            candidates = [s for s in candidates if s.name in name_set]
+        return [s for s in candidates if s.screening is not None]

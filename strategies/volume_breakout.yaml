@@ -11,6 +11,30 @@ required_tools:
   - analyze_trend
   - get_realtime_quote
 
+screening:
+  filters:
+    - field: breakout_ratio
+      op: ">="
+      value: 0.995
+    - field: volume_ratio
+      op: ">="
+      value: 2.0
+    - field: trend_score
+      op: ">="
+      value: 40
+  scoring:
+    - field: breakout_ratio
+      weight: 40
+      bonus_above: 1.0
+      bonus_multiplier: 1000
+    - field: volume_ratio
+      weight: 30
+      cap: 5.0
+    - field: trend_score
+      weight: 20
+    - field: liquidity_score
+      weight: 10
+
 instructions: |
   **放量突破（Volume Breakout Strategy）**
 

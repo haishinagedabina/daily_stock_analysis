@@ -12,6 +12,7 @@ class CreateScreeningRunRequest(BaseModel):
     mode: Optional[Literal["balanced", "aggressive", "quality"]] = Field(None, description="筛选模式预设，默认读取配置")
     candidate_limit: Optional[int] = Field(None, ge=1, le=200, description="规则候选上限，默认读取配置")
     ai_top_k: Optional[int] = Field(None, ge=0, le=50, description="AI 二筛上限，默认读取配置")
+    strategies: Optional[List[str]] = Field(None, description="指定使用的筛选策略名称列表，默认使用全部可用策略")
     rerun_failed: bool = Field(False, description="是否在同日同模式失败任务存在时原地补跑")
     resume_from: Optional[Literal["ingesting", "factorizing"]] = Field(None, description="失败任务补跑起始阶段")
     market: Literal["cn"] = Field("cn", description="市场标识，MVP 仅支持 A 股")

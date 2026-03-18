@@ -35,12 +35,14 @@ class ScreeningTaskService:
         screener_service: Optional[ScreenerService] = None,
         candidate_analysis_service: Optional[CandidateAnalysisService] = None,
         market_data_sync_service: Optional[MarketDataSyncService] = None,
+        skill_manager: Optional[Any] = None,
     ) -> None:
         self.config = get_config()
         self.db = db_manager or DatabaseManager.get_instance()
         self._last_stage_hint = "initializing"
         self._custom_factor_service = factor_service is not None
         self._custom_screener_service = screener_service is not None
+        self._skill_manager = skill_manager
         self.universe_service = universe_service or UniverseService()
         self.screener_service = screener_service
         self.factor_service = factor_service
@@ -572,6 +574,7 @@ class ScreeningTaskService:
     def _build_runtime_screener_service(
         self,
         runtime_config: ResolvedScreeningRuntimeConfig,
+        strategy_names: Optional[List[str]] = None,
     ) -> ScreenerService:
         if self._custom_screener_service:
             return self.screener_service
@@ -580,7 +583,22 @@ class ScreeningTaskService:
             min_volume_ratio=runtime_config.min_volume_ratio,
             min_avg_amount=runtime_config.min_avg_amount,
             breakout_lookback_days=runtime_config.breakout_lookback_days,
+            skill_manager=self._skill_manager,
+            strategy_names=strategy_names,
         )
+
+    def resolve_active_strategies(
+        self,
+        mode: str = "balanced",
+        strategies: Optional[List[str]] = None,
+    ) -> Optional[List[str]]:
+        """Determine which strategies to use for screening.
+
+        Returns None to indicate 'use all available strategies'.
+        """
+        if strategies:
+            return strategies
+        return None
 
     def _build_runtime_factor_service(
         self,

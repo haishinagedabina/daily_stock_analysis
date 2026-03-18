@@ -11,6 +11,34 @@ required_tools:
   - analyze_trend
   - get_realtime_quote
 
+screening:
+  filters:
+    - field: ma5
+      op: ">="
+      value_ref: ma10
+    - field: ma10
+      op: ">="
+      value_ref: ma20
+    - field: volume_ratio
+      op: "<="
+      value: 0.8
+    - field: ma5_distance_pct
+      op: "<="
+      value: 2.0
+  scoring:
+    - field: trend_score
+      weight: 40
+    - field: volume_ratio
+      weight: 30
+      invert: true
+      cap: 1.0
+    - field: ma5_distance_pct
+      weight: 20
+      invert: true
+      cap: 5.0
+    - field: liquidity_score
+      weight: 10
+
 instructions: |
   **缩量回踩（Shrink Volume Pullback Strategy）**
 

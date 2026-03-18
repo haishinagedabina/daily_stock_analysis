@@ -125,6 +125,8 @@ class FactorService:
                 breakout_ratio=breakout_ratio,
             )
 
+            extended = self._compute_extended_factors(group, latest, close_series)
+
             snapshots.append(
                 {
                     "code": code,
@@ -144,6 +146,7 @@ class FactorService:
                     "trend_score": trend_score,
                     "liquidity_score": liquidity_score,
                     "risk_flags": risk_flags,
+                    **extended,
                 }
             )
 
@@ -203,3 +206,105 @@ class FactorService:
         if breakout_ratio < 0.98:
             flags.append("far_from_breakout")
         return flags
+
+    def _compute_extended_factors(
+        self,
+        group: pd.DataFrame,
+        latest: pd.Series,
+        close_series: pd.Series,
+    ) -> dict:
+        """Compute additional factor dimensions used by strategy screening."""
+        close = float(latest["close"])
+        ma5 = float(close_series.tail(5).mean()) if len(close_series) >= 5 else close
+
+        pct_chg_5d = 0.0
+        if len(close_series) >= 6:
+            prev_5 = float(close_series.iloc[-6])
+            pct_chg_5d = round((close - prev_5) / prev_5 * 100.0, 4) if prev_5 else 0.0
+
+        pct_chg_20d = 0.0
+        if len(close_series) >= 21:
+            prev_20 = float(close_series.iloc[-21])
+            pct_chg_20d = round((close - prev_20) / prev_20 * 100.0, 4) if prev_20 else 0.0
+
+        ma5_distance_pct = round(abs(close - ma5) / ma5 * 100.0, 4) if ma5 else 0.0
+
+        high = float(latest.get("high", close))
+        low = float(latest.get("low", close))
+        prev_close = float(close_series.iloc[-2]) if len(close_series) >= 2 else close
+        amplitude = round((high - low) / prev_close * 100.0, 4) if prev_close else 0.0
+
+        tail_bars = group.tail(5) if len(group) >= 5 else group.tail(1)
+        candle_pattern = self._detect_candle_pattern(tail_bars)
+
+        return {
+            "pct_chg_5d": pct_chg_5d,
+            "pct_chg_20d": pct_chg_20d,
+            "ma5_distance_pct": ma5_distance_pct,
+            "amplitude": amplitude,
+            "candle_pattern": candle_pattern,
+        }
+
+    @staticmethod
+    def _detect_candle_pattern(bars: pd.DataFrame) -> str:
+        """Detect basic candlestick pattern from recent bars.
+
+        Returns a pattern identifier string. Operates on the last row for single-bar
+        patterns, and on all rows for multi-bar patterns.
+        """
+        if bars.empty:
+            return "unknown"
+
+        latest = bars.iloc[-1]
+        o, h, l, c = float(latest["open"]), float(latest["high"]), float(latest["low"]), float(latest["close"])
+        pct = float(latest.get("pct_chg", 0.0) or 0.0)
+        body = abs(c - o)
+        total_range = h - l if h > l else 0.001
+
+        body_ratio = body / total_range
+
+        if body_ratio < 0.15 and total_range / max(l, 0.01) > 0.02:
+            return "doji"
+
+        if pct >= 5.0 and body_ratio > 0.6 and c > o:
+            return "big_yang"
+
+        if pct <= -5.0 and body_ratio > 0.6 and c < o:
+            return "big_yin"
+
+        if len(bars) >= 5:
+            pattern = _detect_one_yang_three_yin(bars)
+            if pattern:
+                return pattern
+
+        return "normal"
+
+
+def _detect_one_yang_three_yin(bars: pd.DataFrame) -> str | None:
+    """Detect the one-yang-three-yin pattern across last 5 bars."""
+    if len(bars) < 5:
+        return None
+
+    last5 = bars.tail(5).reset_index(drop=True)
+    day1 = last5.iloc[0]
+    day5 = last5.iloc[4]
+
+    d1_o, d1_c = float(day1["open"]), float(day1["close"])
+    d5_o, d5_c = float(day5["open"]), float(day5["close"])
+
+    if d1_c <= d1_o or (d1_c - d1_o) / max(d1_o, 0.01) < 0.02:
+        return None
+
+    for i in range(1, 4):
+        bar = last5.iloc[i]
+        bar_low = float(bar["low"])
+        bar_close = float(bar["close"])
+        if bar_low < d1_o:
+            return None
+        if bar_close > d1_c:
+            return None
+
+    if d5_c <= d5_o or d5_c < d1_c:
+        return None
+
+    return "one_yang_three_yin"

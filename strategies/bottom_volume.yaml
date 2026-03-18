@@ -10,6 +10,29 @@ required_tools:
   - get_daily_history
   - analyze_trend
 
+screening:
+  filters:
+    - field: pct_chg_20d
+      op: "<="
+      value: -10
+    - field: volume_ratio
+      op: ">="
+      value: 2.5
+    - field: pct_chg
+      op: ">"
+      value: 0
+  scoring:
+    - field: volume_ratio
+      weight: 40
+      cap: 8.0
+    - field: pct_chg_20d
+      weight: 30
+      invert: true
+    - field: pct_chg
+      weight: 20
+    - field: liquidity_score
+      weight: 10
+
 instructions: |
   **底部放量（Bottom Volume Surge Strategy）**
 

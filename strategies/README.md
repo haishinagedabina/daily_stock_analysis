@@ -19,7 +19,7 @@ instructions: |
   可以引用工具名称（如 get_daily_history、analyze_trend）来指导 AI 使用哪些数据。
 ```
 
-### 完整模板
+### 完整模板（含量化筛选规则）
 
 ```yaml
 name: my_strategy
@@ -33,29 +33,57 @@ category: trend
 core_rules: [1, 2]
 
 # 策略需要使用的工具列表，可选
-# 可用工具：get_daily_history, analyze_trend, get_realtime_quote,
-#           get_sector_rankings, search_stock_news
 required_tools:
   - get_daily_history
   - analyze_trend
+
+# 量化筛选规则（可选）——用于全市场筛选
+screening:
+  filters:
+    - field: breakout_ratio      # 因子字段名
+      op: ">="                   # 操作符: >=, <=, >, <, ==, !=
+      value: 0.995               # 阈值
+    - field: ma5
+      op: ">="
+      value_ref: ma10            # 跨字段比较（ma5 >= ma10）
+  scoring:
+    - field: breakout_ratio      # 因子字段名
+      weight: 40                 # 权重（0-100）
+      bonus_above: 1.0           # 超过此值给额外加分
+      bonus_multiplier: 1000     # 加分倍率
+    - field: volume_ratio
+      weight: 30
+      cap: 5.0                   # 封顶值（防止极端值主导）
+      invert: false              # true 时低值得高分（如缩量策略）
 
 # 策略详细说明（自然语言，支持 Markdown 格式）
 instructions: |
   **我的策略名称**
 
   判断标准：
-
-  1. **条件一**：
-     - 使用 `analyze_trend` 检查均线排列。
-     - 描述你期望看到的趋势特征...
-
-  2. **条件二**：
-     - 描述量能要求...
-
-  评分调整：
-  - 满足条件时建议的 sentiment_score 调整
-  - 在 `buy_reason` 中注明策略名称
+  1. 条件一...
+  2. 条件二...
 ```
+
+### 可用因子字段
+
+| 字段 | 说明 | 策略示例 |
+|------|------|----------|
+| `close` | 最新收盘价 | - |
+| `ma5` / `ma10` / `ma20` / `ma60` | 移动均线 | 均线金叉、缩量回踩 |
+| `volume_ratio` | 量比（当日/5日均量） | 放量突破、底部放量 |
+| `breakout_ratio` | 突破比（收盘/N日高点） | 放量突破 |
+| `trend_score` | 趋势评分（0-100） | 所有趋势类策略 |
+| `liquidity_score` | 流动性评分（0-100） | 通用 |
+| `pct_chg` | 当日涨跌幅（%） | 底部放量 |
+| `pct_chg_5d` | 5日涨跌幅（%） | - |
+| `pct_chg_20d` | 20日涨跌幅（%） | 底部放量 |
+| `ma5_distance_pct` | 与MA5距离百分比 | 缩量回踩 |
+| `amplitude` | 振幅（%） | - |
+| `candle_pattern` | K线形态标识 | 一阳夹三阴 |
+| `avg_amount` | 5日均成交额 | 流动性过滤 |
+| `days_since_listed` | 上市天数 | 新股过滤 |
+| `is_st` | 是否ST | ST过滤 |
 
 ### 核心交易理念参考
 

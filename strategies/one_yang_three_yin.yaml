@@ -10,6 +10,25 @@ required_tools:
   - get_daily_history
   - analyze_trend
 
+screening:
+  filters:
+    - field: candle_pattern
+      op: "=="
+      value: "one_yang_three_yin"
+    - field: trend_score
+      op: ">="
+      value: 25
+  scoring:
+    - field: trend_score
+      weight: 40
+    - field: volume_ratio
+      weight: 25
+      cap: 3.0
+    - field: breakout_ratio
+      weight: 25
+    - field: liquidity_score
+      weight: 10
+
 instructions: |
   **一阳夹三阴（One Yang Three Yin Strategy）**
 

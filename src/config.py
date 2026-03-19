@@ -539,6 +539,17 @@ class Config:
     portfolio_risk_lookback_days: int = 180
     portfolio_fx_update_enabled: bool = True
 
+    # === 全市场筛选配置 ===
+    screening_default_mode: str = "balanced"
+    screening_candidate_limit: int = 30
+    screening_ai_top_k: int = 5
+    screening_min_list_days: int = 120
+    screening_min_volume_ratio: float = 1.2
+    screening_min_avg_amount: float = 50_000_000.0
+    screening_breakout_lookback_days: int = 20
+    screening_factor_lookback_days: int = 80
+    screening_ingest_failure_threshold: float = 0.02
+
     # Discord 机器人状态
     discord_bot_status: str = "A股智能分析 | /help"
 
@@ -1090,7 +1101,17 @@ class Config:
                 os.getenv('PORTFOLIO_RISK_STOP_LOSS_NEAR_RATIO', '0.8')
             ),
             portfolio_risk_lookback_days=int(os.getenv('PORTFOLIO_RISK_LOOKBACK_DAYS', '180')),
-            portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true'
+            portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true',
+            # 全市场筛选
+            screening_default_mode=os.getenv('SCREENING_DEFAULT_MODE', 'balanced'),
+            screening_candidate_limit=int(os.getenv('SCREENING_CANDIDATE_LIMIT', '30')),
+            screening_ai_top_k=int(os.getenv('SCREENING_AI_TOP_K', '5')),
+            screening_min_list_days=int(os.getenv('SCREENING_MIN_LIST_DAYS', '120')),
+            screening_min_volume_ratio=float(os.getenv('SCREENING_MIN_VOLUME_RATIO', '1.2')),
+            screening_min_avg_amount=float(os.getenv('SCREENING_MIN_AVG_AMOUNT', '50000000')),
+            screening_breakout_lookback_days=int(os.getenv('SCREENING_BREAKOUT_LOOKBACK_DAYS', '20')),
+            screening_factor_lookback_days=int(os.getenv('SCREENING_FACTOR_LOOKBACK_DAYS', '80')),
+            screening_ingest_failure_threshold=float(os.getenv('SCREENING_INGEST_FAILURE_THRESHOLD', '0.02')),
         )
     
     @classmethod

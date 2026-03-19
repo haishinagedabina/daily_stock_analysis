@@ -93,3 +93,15 @@ class ScreeningCandidateDetailResponse(ScreeningCandidateItem):
 class ScreeningCandidateListResponse(BaseModel):
     total: int
     items: List[ScreeningCandidateItem]
+
+
+class ScreeningStrategyInfo(BaseModel):
+    name: str
+    display_name: str
+    description: str
+    category: str
+    has_screening_rules: bool
+
+
+class ScreeningStrategyListResponse(BaseModel):
+    strategies: List[ScreeningStrategyInfo]

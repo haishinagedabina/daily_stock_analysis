@@ -9,6 +9,7 @@ from api.v1.schemas.screening import (
     ScreeningCandidateListResponse,
     ScreeningRunListResponse,
     ScreeningRunResponse,
+    ScreeningStrategyListResponse,
 )
 from api.v1.schemas.common import SuccessResponse
 from src.services.screening_notification_service import (
@@ -19,6 +20,29 @@ from src.services.screening_notification_service import (
 from src.services.screening_task_service import ScreeningTaskService
 
 router = APIRouter()
+
+
+def get_screening_strategies() -> list[dict]:
+    """Load available strategies from SkillManager."""
+    from src.agent.skills.base import SkillManager
+    mgr = SkillManager()
+    mgr.load_builtin_strategies()
+    return [
+        {
+            "name": s.name,
+            "display_name": s.display_name,
+            "description": s.description,
+            "category": s.category,
+            "has_screening_rules": s.screening is not None,
+        }
+        for s in mgr.list_skills()
+    ]
+
+
+@router.get("/strategies", response_model=ScreeningStrategyListResponse, summary="获取可用筛选策略列表")
+def list_screening_strategies() -> ScreeningStrategyListResponse:
+    strategies = get_screening_strategies()
+    return ScreeningStrategyListResponse(strategies=strategies)
 
 
 @router.post("/runs", response_model=ScreeningRunResponse, summary="执行一次全市场筛选")

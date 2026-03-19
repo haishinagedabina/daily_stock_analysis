@@ -3,11 +3,15 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import func, select
 
 from src.config import get_config
 from src.storage import DatabaseManager, StockDaily
+from src.indicators.ma_breakout_detector import MABreakoutDetector
+from src.indicators.gap_detector import GapDetector
+from src.indicators.limit_up_detector import LimitUpDetector
 
 
 class FactorService:
@@ -136,6 +140,7 @@ class FactorService:
                     "ma10": float(close_series.tail(10).mean()),
                     "ma20": float(close_series.tail(20).mean()),
                     "ma60": float(close_series.tail(min(len(close_series), 60)).mean()),
+                    "ma100": float(close_series.tail(min(len(close_series), 100)).mean()) if len(close_series) >= 100 else 0.0,
                     "volume_ratio": round(volume_ratio, 4),
                     "avg_amount": round(avg_amount, 2),
                     "breakout_ratio": round(breakout_ratio, 4),
@@ -237,12 +242,70 @@ class FactorService:
         tail_bars = group.tail(5) if len(group) >= 5 else group.tail(1)
         candle_pattern = self._detect_candle_pattern(tail_bars)
 
+        # MA100 strategy factors
+        ma100_factors = self._compute_ma100_factors(group, close_series, close)
+
+        # Gap / limit-up factors
+        gap_limit_factors = self._compute_gap_limit_factors(group)
+
         return {
             "pct_chg_5d": pct_chg_5d,
             "pct_chg_20d": pct_chg_20d,
             "ma5_distance_pct": ma5_distance_pct,
             "amplitude": amplitude,
             "candle_pattern": candle_pattern,
+            **ma100_factors,
+            **gap_limit_factors,
+        }
+
+    @staticmethod
+    def _compute_ma100_factors(group: pd.DataFrame, close_series: pd.Series, close: float) -> dict:
+        """Compute MA100-related factors for screening strategies C/D."""
+        n = len(close_series)
+        ma100 = float(close_series.tail(min(n, 100)).mean()) if n >= 100 else 0.0
+        above_ma100 = close > ma100 if ma100 > 0 else False
+        ma100_distance_pct = round((close - ma100) / ma100 * 100.0, 4) if ma100 > 0 else 0.0
+
+        ma100_breakout = MABreakoutDetector.detect_breakout(group, ma_period=100) if n >= 100 else {}
+        breakout_days = ma100_breakout.get("breakout_days", 0)
+
+        pullback_ma100 = MABreakoutDetector.detect_pullback_support(group, ma_period=100) if n >= 100 else {}
+        pullback_ma20 = MABreakoutDetector.detect_pullback_support(group, ma_period=20) if n >= 20 else {}
+
+        # Stop-loss: highest MA below price
+        ma20 = float(close_series.tail(min(n, 20)).mean()) if n >= 20 else 0.0
+        stop_loss_price = 0.0
+        stop_loss_ma = ""
+        if ma20 > 0 and ma20 < close:
+            stop_loss_price = round(ma20, 4)
+            stop_loss_ma = "MA20"
+        if ma100 > 0 and ma100 < close and ma100 > stop_loss_price:
+            stop_loss_price = round(ma100, 4)
+            stop_loss_ma = "MA100"
+
+        return {
+            "ma100": round(ma100, 4),
+            "above_ma100": above_ma100,
+            "ma100_distance_pct": ma100_distance_pct,
+            "ma100_breakout_days": breakout_days,
+            "pullback_ma100": pullback_ma100.get("is_pullback_support", False),
+            "pullback_ma20": pullback_ma20.get("is_pullback_support", False),
+            "stop_loss_price": stop_loss_price,
+            "stop_loss_ma": stop_loss_ma,
+        }
+
+    @staticmethod
+    def _compute_gap_limit_factors(group: pd.DataFrame) -> dict:
+        """Compute gap and limit-up factors for screening strategy C."""
+        gap_result = GapDetector.detect_breakaway_gap(group)
+        pct_chg = float(group.iloc[-1].get("pct_chg", 0)) if not group.empty else 0.0
+        limit_result = LimitUpDetector.is_breakout_limit_up(group)
+
+        return {
+            "gap_up": gap_result.get("is_gap_up", False),
+            "gap_breakaway": gap_result.get("is_breakaway", False),
+            "is_limit_up": limit_result.get("is_limit_up", False),
+            "limit_up_breakout": limit_result.get("is_breakout_high", False),
         }
 
     @staticmethod

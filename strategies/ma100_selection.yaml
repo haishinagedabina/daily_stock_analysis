@@ -1,0 +1,58 @@
+# MA100 Selection Strategy / MA100 均线选股法 (Strategy D)
+# Price above MA100 + MA20 breakout + pullback support + stop-loss
+
+name: ma100_selection
+display_name: MA100均线选股
+description: 选出站上MA100的个股，确认MA20突破或回踩均线支撑，自动计算止损位。
+category: trend
+core_rules: [1, 2, 4]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+
+screening:
+  filters:
+    - field: above_ma100
+      op: "=="
+      value: true
+    - field: ma100_breakout_days
+      op: ">="
+      value: 3
+  scoring:
+    - field: ma100_distance_pct
+      weight: 30
+      invert: true
+      cap: 20.0
+    - field: pullback_ma100
+      weight: 20
+      boolean_score: 20
+    - field: pullback_ma20
+      weight: 15
+      boolean_score: 15
+    - field: trend_score
+      weight: 25
+    - field: volume_ratio
+      weight: 10
+      cap: 3.0
+
+instructions: |
+  **MA100 均线选股法（Strategy D - 日线版）**
+
+  选股逻辑（三步法）：
+
+  1. **MA100 过滤**：
+     - 个股价格必须在日线 MA100 之上（牛熊分界线）。
+     - 连续站稳 MA100 至少 3 个交易日（确认有效突破）。
+
+  2. **MA20 突破确认**：
+     - 在站稳 MA100 的前提下，观察 MA20 是否也被突破。
+     - 或者价格回踩 MA20/MA100 获得支撑（回踩买点）。
+
+  3. **止损设置**：
+     - 止损位自动设在价格下方最近的均线（MA20 或 MA100）。
+     - 跌破止损均线则离场。
+
+  评分调整：
+  - MA100 距离越近（回踩）得分越高（反向权重）。
+  - 回踩 MA100/MA20 获得支撑额外加分。
+  - 趋势评分和量比作为辅助确认。

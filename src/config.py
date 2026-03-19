@@ -552,7 +552,7 @@ class Config:
     screening_min_volume_ratio: float = 1.2
     screening_min_avg_amount: float = 50_000_000.0
     screening_breakout_lookback_days: int = 20
-    screening_factor_lookback_days: int = 80
+    screening_factor_lookback_days: int = 200
     screening_ingest_failure_threshold: float = 0.02
 
     # Discord 机器人状态
@@ -1118,7 +1118,7 @@ class Config:
             screening_min_volume_ratio=float(os.getenv('SCREENING_MIN_VOLUME_RATIO', '1.2')),
             screening_min_avg_amount=float(os.getenv('SCREENING_MIN_AVG_AMOUNT', '50000000')),
             screening_breakout_lookback_days=int(os.getenv('SCREENING_BREAKOUT_LOOKBACK_DAYS', '20')),
-            screening_factor_lookback_days=int(os.getenv('SCREENING_FACTOR_LOOKBACK_DAYS', '80')),
+            screening_factor_lookback_days=int(os.getenv('SCREENING_FACTOR_LOOKBACK_DAYS', '200')),
             screening_ingest_failure_threshold=float(os.getenv('SCREENING_INGEST_FAILURE_THRESHOLD', '0.02')),
         )
     

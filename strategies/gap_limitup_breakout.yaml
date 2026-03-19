@@ -1,0 +1,57 @@
+# Gap/Limit-Up Breakout Strategy / 跳空涨停突破 (Strategy C)
+# Breakaway gap or limit-up that breaks above the recent high.
+
+name: gap_limitup_breakout
+display_name: 跳空涨停突破
+description: 检测跳空突破性缺口或涨停突破前高的强势信号，需量能确认。
+category: momentum
+core_rules: [1, 3]
+required_tools:
+  - get_daily_history
+  - get_realtime_quote
+
+screening:
+  filters:
+    - field: above_ma100
+      op: "=="
+      value: true
+    - field: gap_breakaway
+      op: "=="
+      value: true
+      or:
+        - field: limit_up_breakout
+          op: "=="
+          value: true
+  scoring:
+    - field: volume_ratio
+      weight: 40
+      cap: 5.0
+    - field: breakout_ratio
+      weight: 30
+      bonus_above: 1.0
+      bonus_multiplier: 1000
+    - field: trend_score
+      weight: 20
+    - field: liquidity_score
+      weight: 10
+
+instructions: |
+  **跳空涨停突破（Strategy C）**
+
+  信号判定标准：
+
+  1. **跳空突破性缺口**：
+     - 当日最低价 > 前日最高价（跳空缺口）。
+     - 成交量 >= 5日均量的 1.5 倍（量能确认）。
+
+  2. **涨停突破前高**：
+     - 当日涨停（主板 >= 9.8%，科创/创业板 >= 19.5%）。
+     - 收盘价突破近 20 日最高价。
+
+  3. **MA100 前提条件**：
+     - 个股价格需在 MA100 之上，避免弱势反弹中的虚假信号。
+
+  评分调整：
+  - 量比越高得分越高（上限 5 倍）。
+  - 突破前高幅度越大额外加分。
+  - 趋势评分和流动性作为辅助确认。

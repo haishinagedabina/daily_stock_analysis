@@ -32,6 +32,7 @@ from src.search_service import SearchService
 from src.services.social_sentiment_service import SocialSentimentService
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
+from src.core.market_guard import MarketGuard, MarketGuardResult
 from src.core.trading_calendar import get_market_for_stock, is_market_open
 from data_provider.us_index_mapping import is_us_stock_code
 from bot.models import BotMessage
@@ -1120,6 +1121,18 @@ class StockAnalysisPipeline:
         logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")
         logger.info(f"股票列表: {', '.join(stock_codes)}")
         logger.info(f"并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}")
+
+        # Market-level MA100 risk check (advisory, never blocks)
+        try:
+            guard = MarketGuard(fetcher_manager=self.fetcher_manager)
+            self._market_guard_result = guard.check()
+            if self._market_guard_result.is_safe:
+                logger.info(f"MarketGuard: {self._market_guard_result.message}")
+            else:
+                logger.warning(f"MarketGuard: {self._market_guard_result.message}")
+        except Exception as e:
+            logger.warning(f"MarketGuard check failed: {e}")
+            self._market_guard_result = MarketGuardResult(is_safe=True, message=f"Guard error: {e}")
         
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
         # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效

@@ -94,12 +94,20 @@ class TrendAnalysisResult:
     ma10: float = 0.0
     ma20: float = 0.0
     ma60: float = 0.0
+    ma100: float = 0.0
     current_price: float = 0.0
     
     # 乖离率（与 MA5 的偏离度）
     bias_ma5: float = 0.0            # (Close - MA5) / MA5 * 100
     bias_ma10: float = 0.0
     bias_ma20: float = 0.0
+    bias_ma100: float = 0.0
+
+    # MA100 策略字段
+    above_ma100: bool = False
+    ma100_breakout_days: int = 0
+    stop_loss_price: float = 0.0
+    stop_loss_ma: str = ""
     
     # 量能分析
     volume_status: VolumeStatus = VolumeStatus.NORMAL
@@ -142,10 +150,16 @@ class TrendAnalysisResult:
             'ma10': self.ma10,
             'ma20': self.ma20,
             'ma60': self.ma60,
+            'ma100': self.ma100,
             'current_price': self.current_price,
             'bias_ma5': self.bias_ma5,
             'bias_ma10': self.bias_ma10,
             'bias_ma20': self.bias_ma20,
+            'bias_ma100': self.bias_ma100,
+            'above_ma100': self.above_ma100,
+            'ma100_breakout_days': self.ma100_breakout_days,
+            'stop_loss_price': self.stop_loss_price,
+            'stop_loss_ma': self.stop_loss_ma,
             'volume_status': self.volume_status.value,
             'volume_ratio_5d': self.volume_ratio_5d,
             'volume_trend': self.volume_trend,
@@ -237,6 +251,13 @@ class StockTrendAnalyzer:
         result.ma10 = float(latest['MA10'])
         result.ma20 = float(latest['MA20'])
         result.ma60 = float(latest.get('MA60', 0))
+        result.ma100 = float(latest.get('MA100', 0))
+
+        # MA100 策略字段
+        if result.ma100 > 0:
+            result.above_ma100 = result.current_price > result.ma100
+            result.bias_ma100 = (result.current_price - result.ma100) / result.ma100 * 100
+            result.ma100_breakout_days = self._count_breakout_days(df, 'MA100')
 
         # 1. 趋势判断
         self._analyze_trend(df, result)
@@ -270,8 +291,29 @@ class StockTrendAnalyzer:
         if len(df) >= 60:
             df['MA60'] = df['close'].rolling(window=60).mean()
         else:
-            df['MA60'] = df['MA20']  # 数据不足时使用 MA20 替代
+            df['MA60'] = df['MA20']
+        if len(df) >= 100:
+            df['MA100'] = df['close'].rolling(window=100).mean()
+        else:
+            df['MA100'] = df['MA60']
         return df
+
+    @staticmethod
+    def _count_breakout_days(df: pd.DataFrame, ma_col: str) -> int:
+        """Count consecutive days price has been above the given MA (from latest backwards)."""
+        if ma_col not in df.columns:
+            return 0
+        close = df['close'].values
+        ma = df[ma_col].values
+        count = 0
+        for i in range(len(df) - 1, -1, -1):
+            if np.isnan(ma[i]):
+                break
+            if close[i] > ma[i]:
+                count += 1
+            else:
+                break
+        return count
 
     def _calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -470,7 +512,17 @@ class StockTrendAnalyzer:
         # MA20 作为重要支撑
         if result.ma20 > 0 and price >= result.ma20:
             result.support_levels.append(result.ma20)
-        
+
+        # MA60 作为中期支撑
+        if result.ma60 > 0 and price >= result.ma60:
+            if result.ma60 not in result.support_levels:
+                result.support_levels.append(result.ma60)
+
+        # MA100 作为长期支撑（牛熊分界线）
+        if result.ma100 > 0 and price >= result.ma100:
+            if result.ma100 not in result.support_levels:
+                result.support_levels.append(result.ma100)
+
         # 近期高点作为压力
         if len(df) >= 20:
             recent_high = df['high'].iloc[-20:].max()
@@ -724,6 +776,12 @@ class StockTrendAnalyzer:
         else:
             reasons.append(result.rsi_signal)
 
+        # === MA100 过滤（扣分）===
+        if not result.above_ma100:
+            penalty = 15
+            score = max(0, score - penalty)
+            risks.append("⚠️ 价格在MA100下方，长期趋势偏空")
+
         # === 综合判断 ===
         result.signal_score = score
         result.signal_reasons = reasons
@@ -765,6 +823,8 @@ class StockTrendAnalyzer:
             f"   MA5:  {result.ma5:.2f} (乖离 {result.bias_ma5:+.2f}%)",
             f"   MA10: {result.ma10:.2f} (乖离 {result.bias_ma10:+.2f}%)",
             f"   MA20: {result.ma20:.2f} (乖离 {result.bias_ma20:+.2f}%)",
+            f"   MA100: {result.ma100:.2f} (乖离 {result.bias_ma100:+.2f}%)",
+            f"   MA100状态: {'站上' if result.above_ma100 else '下方'} (连续{result.ma100_breakout_days}天)",
             f"",
             f"📊 量能分析: {result.volume_status.value}",
             f"   量比(vs5日): {result.volume_ratio_5d:.2f}",

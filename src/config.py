@@ -468,6 +468,11 @@ class Config:
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
 
+    # === MA100 交易策略配置 ===
+    data_fetch_days: int = 200
+    ma100_breakout_confirm_days: int = 3
+    ma100_support_tolerance: float = 0.02
+
     # === 回测配置 ===
     backtest_enabled: bool = True
     backtest_eval_window_days: int = 10
@@ -1015,6 +1020,9 @@ class Config:
             prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
+            data_fetch_days=int(os.getenv('DATA_FETCH_DAYS', '200')),
+            ma100_breakout_confirm_days=int(os.getenv('MA100_BREAKOUT_CONFIRM_DAYS', '3')),
+            ma100_support_tolerance=float(os.getenv('MA100_SUPPORT_TOLERANCE', '0.02')),
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
             backtest_eval_window_days=int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS', '10')),
             backtest_min_age_days=int(os.getenv('BACKTEST_MIN_AGE_DAYS', '14')),

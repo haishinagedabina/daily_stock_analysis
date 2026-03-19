@@ -318,6 +318,27 @@ class BaseFetcher(ABC):
         """
         return None
 
+    def get_intraday_data(
+        self,
+        stock_code: str,
+        period: str = "60min",
+        count: int = 200,
+    ) -> pd.DataFrame:
+        """
+        获取分钟级别 K 线数据
+
+        Args:
+            stock_code: 股票代码
+            period: K 线周期，可选 '60min'/'30min'/'15min'/'5min'
+            count: 获取条数
+
+        Returns:
+            标准化 DataFrame，至少包含 datetime/open/high/low/close/volume
+        """
+        raise NotImplementedError(
+            f"{self.name} does not support intraday data"
+        )
+
     def get_daily_data(
         self,
         stock_code: str, 
@@ -823,6 +844,58 @@ class DataFetcherManager:
         logger.error(f"[数据源终止] {stock_code} 获取失败: elapsed={elapsed:.2f}s\n{error_summary}")
         raise DataFetchError(error_summary)
     
+    def get_intraday_data(
+        self,
+        stock_code: str,
+        period: str = "60min",
+        count: int = 200,
+    ) -> Tuple[pd.DataFrame, str]:
+        """
+        获取分钟级别 K 线数据（自动切换数据源）
+
+        Args:
+            stock_code: 股票代码
+            period: K 线周期，可选 '60min'/'30min'/'15min'/'5min'
+            count: 获取条数
+
+        Returns:
+            Tuple[DataFrame, str]: (数据, 成功的数据源名称)
+            若全部失败返回 (空 DataFrame, "")
+        """
+        stock_code = normalize_stock_code(stock_code)
+        errors = []
+
+        for fetcher in self._fetchers:
+            try:
+                df = fetcher.get_intraday_data(
+                    stock_code=stock_code,
+                    period=period,
+                    count=count,
+                )
+                if df is not None and not df.empty:
+                    logger.info(
+                        f"[Intraday] {stock_code} {period} 使用 [{fetcher.name}] 获取成功: "
+                        f"rows={len(df)}"
+                    )
+                    return df, fetcher.name
+            except NotImplementedError:
+                continue
+            except Exception as e:
+                error_type, error_reason = summarize_exception(e)
+                logger.warning(
+                    f"[Intraday] [{fetcher.name}] {stock_code} {period} 失败: "
+                    f"error_type={error_type}, reason={error_reason}"
+                )
+                errors.append(f"[{fetcher.name}] ({error_type}) {error_reason}")
+                continue
+
+        if errors:
+            logger.error(
+                f"[Intraday] {stock_code} {period} 所有数据源均失败:\n"
+                + "\n".join(errors)
+            )
+        return pd.DataFrame(), ""
+
     @property
     def available_fetchers(self) -> List[str]:
         """返回可用数据源名称列表"""

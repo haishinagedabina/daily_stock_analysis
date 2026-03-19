@@ -12,6 +12,7 @@ from src.storage import DatabaseManager, StockDaily
 from src.indicators.ma_breakout_detector import MABreakoutDetector
 from src.indicators.gap_detector import GapDetector
 from src.indicators.limit_up_detector import LimitUpDetector
+from src.indicators.divergence_detector import DivergenceDetector
 
 
 class FactorService:
@@ -248,6 +249,9 @@ class FactorService:
         # Gap / limit-up factors
         gap_limit_factors = self._compute_gap_limit_factors(group)
 
+        # MACD divergence factors
+        macd_factors = self._compute_macd_divergence_factors(group)
+
         return {
             "pct_chg_5d": pct_chg_5d,
             "pct_chg_20d": pct_chg_20d,
@@ -256,6 +260,7 @@ class FactorService:
             "candle_pattern": candle_pattern,
             **ma100_factors,
             **gap_limit_factors,
+            **macd_factors,
         }
 
     @staticmethod
@@ -306,6 +311,26 @@ class FactorService:
             "gap_breakaway": gap_result.get("is_breakaway", False),
             "is_limit_up": limit_result.get("is_limit_up", False),
             "limit_up_breakout": limit_result.get("is_breakout_high", False),
+        }
+
+    @staticmethod
+    def _compute_macd_divergence_factors(group: pd.DataFrame) -> dict:
+        """Compute MACD divergence factors from daily data."""
+        if len(group) < 35:
+            return {
+                "macd_bull_divergence": False,
+                "macd_bear_divergence": False,
+            }
+        df_for_div = group[["close"]].copy()
+        if "high" in group.columns:
+            df_for_div["high"] = group["high"].values
+        if "low" in group.columns:
+            df_for_div["low"] = group["low"].values
+        bull = DivergenceDetector.detect_bullish(df_for_div)
+        bear = DivergenceDetector.detect_bearish(df_for_div)
+        return {
+            "macd_bull_divergence": bull.get("found", False),
+            "macd_bear_divergence": bear.get("found", False),
         }
 
     @staticmethod

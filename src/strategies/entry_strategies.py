@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Entry Strategies C and D (daily version).
+Entry Strategies C, D, and D-Enhanced.
 
 Strategy C: Gap/Limit-Up Breakout
   - Breakaway gap (gap-up + volume surge) OR
@@ -12,9 +12,13 @@ Strategy D: MA100 Selection (daily, no 60-min yet)
   Step 2: MA100/MA20 breakout confirmed
   Step 3: Pullback to MA support (optional entry refinement)
   Output: stop-loss price based on the highest MA below price
+
+Strategy D-Enhanced: MA100 Selection with 60-min precise entry
+  Extends Strategy D with multi-timeframe alignment and MACD divergence
+  from 60-minute bars for more precise entry timing.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -22,6 +26,7 @@ import pandas as pd
 from src.indicators.ma_breakout_detector import MABreakoutDetector
 from src.indicators.gap_detector import GapDetector
 from src.indicators.limit_up_detector import LimitUpDetector
+from src.indicators.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 
 
 class EntryStrategyC:
@@ -181,3 +186,65 @@ class EntryStrategyD:
             "score": min(100, score),
             "reason": "MA100 selection" if triggered else "conditions not fully met",
         }
+
+
+class EntryStrategyDEnhanced:
+    """
+    MA100 Selection with 60-minute precise entry.
+
+    Combines daily EntryStrategyD logic with multi-timeframe alignment
+    and 60-min MACD divergence for better entry timing.
+    """
+
+    _mtf = MultiTimeframeAnalyzer()
+
+    @classmethod
+    def evaluate(
+        cls,
+        daily_df: pd.DataFrame,
+        intraday_df: Optional[pd.DataFrame] = None,
+        ma100_confirm_days: int = 3,
+        support_tolerance: float = 0.02,
+    ) -> Dict[str, Any]:
+        base_result = EntryStrategyD.evaluate(
+            daily_df, ma100_confirm_days=ma100_confirm_days,
+            support_tolerance=support_tolerance,
+        )
+
+        mtf_result = cls._mtf.analyze(
+            daily_df=daily_df, intraday_df=intraday_df
+        )
+
+        alignment = mtf_result["alignment_score"]
+        timing = mtf_result["entry_timing"]
+        bull_div = mtf_result["intraday_macd_bull_divergence"]
+        bear_div = mtf_result["intraday_macd_bear_divergence"]
+
+        score = base_result["score"]
+        if alignment >= 80:
+            score = min(100, score + 15)
+        elif alignment >= 60:
+            score = min(100, score + 5)
+        elif alignment < 40:
+            score = max(0, score - 10)
+
+        if bull_div:
+            score = min(100, score + 10)
+
+        triggered = base_result["triggered"]
+        if triggered and alignment < 30:
+            triggered = False
+
+        base_result.update({
+            "alignment_score": alignment,
+            "entry_timing": timing,
+            "daily_trend": mtf_result["daily_trend"],
+            "intraday_trend": mtf_result["intraday_trend"],
+            "intraday_macd_bull_divergence": bull_div,
+            "intraday_macd_bear_divergence": bear_div,
+            "score": min(100, score),
+        })
+        if not triggered:
+            base_result["triggered"] = False
+
+        return base_result

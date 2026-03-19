@@ -33,6 +33,13 @@ import os
 
 logger = logging.getLogger(__name__)
 
+INTRADAY_CATEGORIES = {
+    "5min": 0,
+    "15min": 1,
+    "30min": 2,
+    "60min": 3,
+}
+
 
 def _parse_hosts_from_env() -> Optional[List[Tuple[str, int]]]:
     """
@@ -253,6 +260,67 @@ class PytdxFetcher(BaseFetcher):
 
                 start += self.SECURITY_LIST_PAGE_SIZE
     
+    def get_intraday_data(
+        self,
+        stock_code: str,
+        period: str = "60min",
+        count: int = 200,
+    ) -> pd.DataFrame:
+        """
+        获取分钟级别 K 线数据
+
+        Args:
+            stock_code: 股票代码
+            period: '60min'/'30min'/'15min'/'5min'
+            count: 获取条数（pytdx 单次上限 800）
+
+        Returns:
+            标准化 DataFrame (datetime/open/high/low/close/volume)
+        """
+        from .base import _is_hk_market
+        from .us_index_mapping import is_us_index_code, is_us_stock_code
+
+        if is_us_stock_code(stock_code) or is_us_index_code(stock_code):
+            raise DataFetchError(f"PytdxFetcher 不支持美股分钟线 {stock_code}")
+        if _is_hk_market(stock_code):
+            raise DataFetchError(f"PytdxFetcher 不支持港股分钟线 {stock_code}")
+
+        if period not in INTRADAY_CATEGORIES:
+            raise DataFetchError(f"不支持的周期: {period}，可选 {list(INTRADAY_CATEGORIES.keys())}")
+
+        category = INTRADAY_CATEGORIES[period]
+        count = min(count, 800)
+        market, code = self._get_market_code(stock_code)
+
+        with self._pytdx_session() as api:
+            try:
+                data = api.get_security_bars(
+                    category=category,
+                    market=market,
+                    code=code,
+                    start=0,
+                    count=count,
+                )
+                if data is None or len(data) == 0:
+                    raise DataFetchError(
+                        f"Pytdx 未查询到 {stock_code} 的 {period} 数据"
+                    )
+                df = api.to_df(data)
+                df = df.rename(columns={"vol": "volume"})
+                df["datetime"] = pd.to_datetime(df["datetime"])
+                cols = ["datetime", "open", "high", "low", "close", "volume"]
+                for c in cols:
+                    if c not in df.columns:
+                        raise DataFetchError(f"Pytdx {period} 数据缺少列: {c}")
+                df = df[cols].sort_values("datetime").reset_index(drop=True)
+                return df
+            except Exception as e:
+                if isinstance(e, DataFetchError):
+                    raise
+                raise DataFetchError(
+                    f"Pytdx 获取 {stock_code} {period} 数据失败: {e}"
+                ) from e
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),

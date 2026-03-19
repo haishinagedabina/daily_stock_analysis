@@ -319,6 +319,70 @@ class AkshareFetcher(BaseFetcher):
         self.random_sleep(self.sleep_min, self.sleep_max)
         self._last_request_time = time.time()
     
+    def get_intraday_data(
+        self,
+        stock_code: str,
+        period: str = "60min",
+        count: int = 200,
+    ) -> pd.DataFrame:
+        """
+        获取 A 股分钟级别 K 线数据（通过 akshare）
+
+        Args:
+            stock_code: 6 位 A 股代码
+            period: '60'/'30'/'15'/'5' 或 '60min'/'30min' 形式
+            count: 期望条数（akshare 返回最近交易日全量，可能不支持精确条数）
+
+        Returns:
+            标准化 DataFrame (datetime/open/high/low/close/volume)
+        """
+        import akshare as ak
+        from .base import _is_hk_market, normalize_stock_code
+        from .us_index_mapping import is_us_index_code, is_us_stock_code
+
+        if is_us_stock_code(stock_code) or is_us_index_code(stock_code):
+            raise DataFetchError(f"AkshareFetcher 不支持美股分钟线 {stock_code}")
+        if _is_hk_market(stock_code):
+            raise DataFetchError(f"AkshareFetcher 不支持港股分钟线 {stock_code}")
+
+        period_map = {"5min": "5", "15min": "15", "30min": "30", "60min": "60"}
+        ak_period = period_map.get(period, period.replace("min", ""))
+        if ak_period not in ("5", "15", "30", "60"):
+            raise DataFetchError(f"不支持的周期: {period}")
+
+        code = normalize_stock_code(stock_code)
+        self._smart_sleep()
+
+        try:
+            df = ak.stock_zh_a_hist_min_em(symbol=code, period=ak_period)
+            if df is None or df.empty:
+                raise DataFetchError(f"Akshare 未查询到 {code} 的 {period} 数据")
+
+            col_map = {
+                "时间": "datetime",
+                "开盘": "open",
+                "最高": "high",
+                "最低": "low",
+                "收盘": "close",
+                "成交量": "volume",
+            }
+            df = df.rename(columns=col_map)
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            cols = ["datetime", "open", "high", "low", "close", "volume"]
+            for c in cols:
+                if c not in df.columns:
+                    raise DataFetchError(f"Akshare {period} 数据缺少列: {c}")
+            df = df[cols].sort_values("datetime").reset_index(drop=True)
+            if count and len(df) > count:
+                df = df.tail(count).reset_index(drop=True)
+            return df
+        except DataFetchError:
+            raise
+        except Exception as e:
+            raise DataFetchError(
+                f"Akshare 获取 {code} {period} 数据失败: {e}"
+            ) from e
+
     @retry(
         stop=stop_after_attempt(3),  # 最多重试3次
         wait=wait_exponential(multiplier=1, min=2, max=30),  # 指数退避：2, 4, 8... 最大30秒

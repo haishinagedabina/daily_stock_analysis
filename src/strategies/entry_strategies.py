@@ -1,6 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Entry Strategies C, D, and D-Enhanced.
+Entry Strategies A, B, C, D, and D-Enhanced.
+
+Strategy A: Trendline Breakout
+  - Detect downtrend resistance line
+  - Price breaks above the trendline
+  - Volume confirmation
+
+Strategy B: 123 Bottom Reversal
+  - 123 bottom pattern detected
+  - Breakout above Point 2 confirmed
 
 Strategy C: Gap/Limit-Up Breakout
   - Breakaway gap (gap-up + volume surge) OR
@@ -26,6 +35,8 @@ import pandas as pd
 from src.indicators.ma_breakout_detector import MABreakoutDetector
 from src.indicators.gap_detector import GapDetector
 from src.indicators.limit_up_detector import LimitUpDetector
+from src.indicators.trendline_detector import TrendlineDetector
+from src.indicators.pattern_detector import PatternDetector
 from src.indicators.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 
 
@@ -235,6 +246,14 @@ class EntryStrategyDEnhanced:
         if triggered and alignment < 30:
             triggered = False
 
+        # Trendline confirmation
+        trendline_confirmed = False
+        if len(daily_df) >= 20:
+            tl_result = TrendlineDetector.detect_trendline_breakout(daily_df)
+            if tl_result.get("breakout") and tl_result.get("direction") == "up":
+                trendline_confirmed = True
+                score = min(100, score + 10)
+
         base_result.update({
             "alignment_score": alignment,
             "entry_timing": timing,
@@ -242,9 +261,118 @@ class EntryStrategyDEnhanced:
             "intraday_trend": mtf_result["intraday_trend"],
             "intraday_macd_bull_divergence": bull_div,
             "intraday_macd_bear_divergence": bear_div,
+            "trendline_confirmed": trendline_confirmed,
             "score": min(100, score),
         })
         if not triggered:
             base_result["triggered"] = False
 
         return base_result
+
+
+class EntryStrategyA:
+    """Trendline Breakout strategy."""
+
+    @classmethod
+    def evaluate(cls, df: pd.DataFrame) -> Dict[str, Any]:
+        if df is None or len(df) < 20:
+            return {
+                "triggered": False,
+                "trendline_breakout": False,
+                "score": 0,
+                "reason": "insufficient data",
+            }
+
+        breakout_result = TrendlineDetector.detect_trendline_breakout(df)
+        is_breakout = breakout_result.get("breakout", False)
+        direction = breakout_result.get("direction", "none")
+
+        triggered = is_breakout and direction == "up"
+
+        score = 0
+        reasons = []
+
+        if triggered:
+            score += 50
+            reasons.append("trendline breakout (up)")
+
+            # Volume confirmation
+            if len(df) >= 6 and "volume" in df.columns:
+                vol_avg = float(df["volume"].iloc[-6:-1].mean())
+                vol_curr = float(df["volume"].iloc[-1])
+                vol_ratio = vol_curr / vol_avg if vol_avg > 0 else 0
+                if vol_ratio >= 2.0:
+                    score += 30
+                    reasons.append(f"volume surge ({vol_ratio:.1f}x)")
+                elif vol_ratio >= 1.5:
+                    score += 15
+                    reasons.append(f"volume increase ({vol_ratio:.1f}x)")
+
+            # Downtrend strength bonus: more touches = stronger breakout
+            downtrend = breakout_result.get("downtrend")
+            if downtrend and downtrend.get("touch_count", 0) >= 3:
+                score += 20
+                reasons.append(f"strong resistance ({downtrend['touch_count']} touches)")
+
+        return {
+            "triggered": triggered,
+            "trendline_breakout": is_breakout,
+            "direction": direction,
+            "score": min(100, score),
+            "reason": " + ".join(reasons) if reasons else "no signal",
+            "breakout_detail": breakout_result,
+        }
+
+
+class EntryStrategyB:
+    """123 Bottom Reversal strategy."""
+
+    @classmethod
+    def evaluate(cls, df: pd.DataFrame) -> Dict[str, Any]:
+        if df is None or len(df) < 30:
+            return {
+                "triggered": False,
+                "pattern_123": {"found": False},
+                "score": 0,
+                "reason": "insufficient data",
+            }
+
+        pattern = PatternDetector.detect_123_bottom(df)
+        found = pattern.get("found", False)
+        confirmed = pattern.get("breakout_confirmed", False)
+
+        triggered = found and confirmed
+
+        score = 0
+        reasons = []
+
+        if found:
+            score += 30
+            reasons.append("123 bottom detected")
+        if confirmed:
+            score += 40
+            reasons.append("breakout above Point 2 confirmed")
+
+        # Volume confirmation at breakout
+        if triggered and len(df) >= 6 and "volume" in df.columns:
+            vol_avg = float(df["volume"].iloc[-6:-1].mean())
+            vol_curr = float(df["volume"].iloc[-1])
+            vol_ratio = vol_curr / vol_avg if vol_avg > 0 else 0
+            if vol_ratio >= 1.5:
+                score += 15
+                reasons.append(f"volume confirmation ({vol_ratio:.1f}x)")
+
+        # Point 3 higher than Point 1 confidence bonus
+        if found and pattern.get("point1") and pattern.get("point3"):
+            p1 = pattern["point1"]["price"]
+            p3 = pattern["point3"]["price"]
+            if p1 > 0 and (p3 - p1) / p1 > 0.05:
+                score += 15
+                reasons.append("strong higher low")
+
+        return {
+            "triggered": triggered,
+            "pattern_123": pattern,
+            "score": min(100, score),
+            "reason": " + ".join(reasons) if reasons else "no signal",
+        }

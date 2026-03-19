@@ -13,6 +13,8 @@ from src.indicators.ma_breakout_detector import MABreakoutDetector
 from src.indicators.gap_detector import GapDetector
 from src.indicators.limit_up_detector import LimitUpDetector
 from src.indicators.divergence_detector import DivergenceDetector
+from src.indicators.trendline_detector import TrendlineDetector
+from src.indicators.pattern_detector import PatternDetector
 
 
 class FactorService:
@@ -252,6 +254,12 @@ class FactorService:
         # MACD divergence factors
         macd_factors = self._compute_macd_divergence_factors(group)
 
+        # Trendline factors
+        trendline_factors = self._compute_trendline_factors(group)
+
+        # 123 pattern factors
+        pattern_123_factors = self._compute_pattern_123_factors(group)
+
         return {
             "pct_chg_5d": pct_chg_5d,
             "pct_chg_20d": pct_chg_20d,
@@ -261,6 +269,8 @@ class FactorService:
             **ma100_factors,
             **gap_limit_factors,
             **macd_factors,
+            **trendline_factors,
+            **pattern_123_factors,
         }
 
     @staticmethod
@@ -331,6 +341,44 @@ class FactorService:
         return {
             "macd_bull_divergence": bull.get("found", False),
             "macd_bear_divergence": bear.get("found", False),
+        }
+
+    @staticmethod
+    def _compute_trendline_factors(group: pd.DataFrame) -> dict:
+        """Compute trendline breakout factors for screening strategy A."""
+        if len(group) < 20:
+            return {"trendline_breakout": False, "trendline_touch_count": 0}
+        tl_result = TrendlineDetector.detect_trendline_breakout(group)
+        is_breakout = tl_result.get("breakout", False) and tl_result.get("direction") == "up"
+        downtrend = tl_result.get("downtrend") or {}
+        touch_count = downtrend.get("touch_count", 0) if is_breakout else 0
+        return {
+            "trendline_breakout": is_breakout,
+            "trendline_touch_count": touch_count,
+        }
+
+    @staticmethod
+    def _compute_pattern_123_factors(group: pd.DataFrame) -> dict:
+        """Compute 123 bottom pattern factors for screening strategy B."""
+        if len(group) < 30:
+            return {
+                "pattern_123_bottom": False,
+                "pattern_123_breakout": False,
+                "pattern_123_higher_low_pct": 0.0,
+            }
+        pattern = PatternDetector.detect_123_bottom(group)
+        found = pattern.get("found", False)
+        confirmed = pattern.get("breakout_confirmed", False)
+        higher_low_pct = 0.0
+        if found and pattern.get("point1") and pattern.get("point3"):
+            p1 = pattern["point1"]["price"]
+            p3 = pattern["point3"]["price"]
+            if p1 > 0:
+                higher_low_pct = round((p3 - p1) / p1 * 100.0, 4)
+        return {
+            "pattern_123_bottom": found,
+            "pattern_123_breakout": confirmed,
+            "pattern_123_higher_low_pct": higher_low_pct,
         }
 
     @staticmethod

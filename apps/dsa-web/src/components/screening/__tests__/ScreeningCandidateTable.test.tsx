@@ -44,6 +44,9 @@ const mockStore = {
   currentRun: mockRun as ScreeningRun | null,
   candidates: mockCandidates as ScreeningCandidate[],
   candidatesLoading: false,
+  strategies: [
+    { name: 'volume_breakout', displayName: '放量突破', description: 'd', category: 'trend', hasScreeningRules: true },
+  ],
   selectCandidate: vi.fn(),
   sendNotification: vi.fn(),
 };
@@ -84,9 +87,9 @@ describe('ScreeningCandidateTable', () => {
     expect(screen.getByText('72.3')).toBeInTheDocument();
   });
 
-  it('shows matched strategy badges', () => {
+  it('shows matched strategy display names', () => {
     render(<ScreeningCandidateTable />);
-    expect(screen.getByText('volume_breakout')).toBeInTheDocument();
+    expect(screen.getByText('放量突破')).toBeInTheDocument();
   });
 
   it('shows total count', () => {

@@ -59,6 +59,7 @@ class ScreeningCandidateItem(BaseModel):
     rank: int
     rule_score: float
     selected_for_ai: bool
+    matched_strategies: List[str] = Field(default_factory=list)
     rule_hits: List[str] = Field(default_factory=list)
     factor_snapshot: Dict[str, Any] = Field(default_factory=dict)
     ai_query_id: Optional[str] = None

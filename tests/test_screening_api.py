@@ -79,6 +79,7 @@ class ScreeningApiTestCase(unittest.TestCase):
                 "rank": 1,
                 "rule_score": 90.5,
                 "selected_for_ai": True,
+                "matched_strategies": ["volume_breakout"],
                 "rule_hits": ["trend_aligned"],
                 "factor_snapshot": {"close": 1500.0},
                 "ai_summary": "趋势良好",
@@ -109,6 +110,7 @@ class ScreeningApiTestCase(unittest.TestCase):
         candidate_resp = self.client.get("/api/v1/screening/runs/run-20260313-1/candidates")
         self.assertEqual(candidate_resp.status_code, 200)
         self.assertEqual(candidate_resp.json()["items"][0]["code"], "600519")
+        self.assertEqual(candidate_resp.json()["items"][0]["matched_strategies"], ["volume_breakout"])
 
     @patch("api.v1.endpoints.screening.ScreeningTaskService")
     def test_create_run_returns_failed_resource_payload(self, service_cls) -> None:
@@ -298,6 +300,7 @@ class ScreeningApiTestCase(unittest.TestCase):
             "rank": 1,
             "rule_score": 90.5,
             "selected_for_ai": True,
+            "matched_strategies": ["volume_breakout"],
             "rule_hits": ["trend_aligned"],
             "factor_snapshot": {"close": 1500.0},
             "ai_query_id": "query-detail-1",
@@ -321,6 +324,7 @@ class ScreeningApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["code"], "600519")
+        self.assertEqual(payload["matched_strategies"], ["volume_breakout"])
         self.assertEqual(payload["analysis_history"]["query_id"], "query-detail-1")
 
     @patch("api.v1.endpoints.screening.ScreeningTaskService")

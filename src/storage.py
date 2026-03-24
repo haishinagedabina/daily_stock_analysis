@@ -713,6 +713,7 @@ class ScreeningRun(Base):
     error_summary = Column(Text)
     started_at = Column(DateTime, default=datetime.now, index=True)
     completed_at = Column(DateTime, nullable=True, index=True)
+    last_activity_at = Column(DateTime, nullable=True)
     # -- Notification lifecycle fields --
     trigger_type = Column(String(32), nullable=False, default="manual")
     notification_status = Column(String(32), nullable=True)
@@ -739,6 +740,7 @@ class ScreeningRun(Base):
             "error_summary": self.error_summary,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "last_activity_at": self.last_activity_at.isoformat() if self.last_activity_at else None,
             "trigger_type": self.trigger_type or "manual",
             "notification_status": self.notification_status,
             "notification_attempts": self.notification_attempts or 0,
@@ -759,6 +761,7 @@ class ScreeningCandidate(Base):
     rank = Column(Integer, nullable=False, index=True)
     rule_score = Column(Float, nullable=False, default=0.0)
     selected_for_ai = Column(Boolean, nullable=False, default=False)
+    matched_strategies_json = Column(Text)
     rule_hits_json = Column(Text)
     factor_snapshot_json = Column(Text)
     ai_query_id = Column(String(64), index=True)
@@ -780,6 +783,7 @@ class ScreeningCandidate(Base):
             "rank": self.rank,
             "rule_score": self.rule_score,
             "selected_for_ai": self.selected_for_ai,
+            "matched_strategies": json.loads(self.matched_strategies_json) if self.matched_strategies_json else [],
             "rule_hits": json.loads(self.rule_hits_json) if self.rule_hits_json else [],
             "factor_snapshot": json.loads(self.factor_snapshot_json) if self.factor_snapshot_json else {},
             "ai_query_id": self.ai_query_id,
@@ -846,18 +850,22 @@ class DatabaseManager:
             db_url = config.get_db_url()
         
         # 创建数据库引擎
+        _is_sqlite = db_url and db_url.startswith("sqlite")
         self._engine = create_engine(
             db_url,
-            echo=False,  # 设为 True 可查看 SQL 语句
-            pool_pre_ping=True,  # 连接健康检查
+            echo=False,
+            pool_pre_ping=True,
+            # SQLite: 锁等待 30s，防止并发写入时立即报 database is locked
+            connect_args={"timeout": 30} if _is_sqlite else {},
         )
 
-        # SQLite: enable foreign key enforcement
-        if db_url and db_url.startswith("sqlite"):
+        # SQLite: 启用外键约束 + 设置忙等超时
+        if _is_sqlite:
             @event.listens_for(self._engine, "connect")
             def _set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=30000")
                 cursor.close()
 
         # 创建 Session 工厂
@@ -922,6 +930,8 @@ class DatabaseManager:
             dialect = self._engine.dialect.name
             if dialect == "sqlite":
                 self._migrate_sqlite_screening_runs_notification_fields()
+                self._migrate_sqlite_screening_runs_heartbeat_field()
+                self._migrate_sqlite_screening_candidates_strategy_fields()
         except Exception as exc:
             logger.exception("Inline database migration failed: %s", exc)
             raise
@@ -973,6 +983,44 @@ class DatabaseManager:
                 "WHERE notification_attempts IS NULL"
             )
             logger.info("Inline SQLite migration for screening_runs completed")
+
+    def _migrate_sqlite_screening_runs_heartbeat_field(self) -> None:
+        """Ensure screening_runs has last_activity_at column on SQLite."""
+        with self._engine.begin() as conn:
+            existing = {
+                row[1]
+                for row in conn.exec_driver_sql("PRAGMA table_info(screening_runs)").fetchall()
+            }
+            if "last_activity_at" in existing:
+                return
+
+            logger.info("Applying inline SQLite migration: adding last_activity_at to screening_runs")
+            conn.exec_driver_sql(
+                "ALTER TABLE screening_runs ADD COLUMN last_activity_at DATETIME"
+            )
+            # 回填已有记录：用 started_at 作为初始值
+            conn.exec_driver_sql(
+                "UPDATE screening_runs SET last_activity_at = started_at WHERE last_activity_at IS NULL"
+            )
+            logger.info("Inline SQLite migration for last_activity_at completed")
+
+    def _migrate_sqlite_screening_candidates_strategy_fields(self) -> None:
+        """Ensure screening_candidates keeps matched strategy names on SQLite."""
+        with self._engine.begin() as conn:
+            existing = {
+                row[1]
+                for row in conn.exec_driver_sql("PRAGMA table_info(screening_candidates)").fetchall()
+            }
+            if "matched_strategies_json" in existing:
+                return
+
+            logger.info(
+                "Applying inline SQLite migration: adding matched_strategies_json to screening_candidates"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE screening_candidates ADD COLUMN matched_strategies_json TEXT"
+            )
+            logger.info("Inline SQLite migration for matched_strategies_json completed")
 
     def get_session(self) -> Session:
         """
@@ -1038,7 +1086,59 @@ class DatabaseManager:
             ).scalar_one_or_none()
             
             return result is not None
-    
+
+    def batch_has_today_data(self, codes: List[str], target_date: date) -> set:
+        """
+        批量检查哪些股票已有指定日期的数据。
+
+        比逐一调用 has_today_data 快 100x+（单次 SQL 替代 N 次）。
+
+        Args:
+            codes: 待检查的股票代码列表
+            target_date: 目标日期
+
+        Returns:
+            已有数据的股票代码集合
+        """
+        if not codes:
+            return set()
+        with self.get_session() as session:
+            rows = session.execute(
+                select(StockDaily.code)
+                .where(StockDaily.date == target_date, StockDaily.code.in_(codes))
+            ).scalars().all()
+            return set(rows)
+
+    def get_latest_date(self, code: str) -> Optional[date]:
+        """获取指定股票在 stock_daily 中的最新日期。"""
+        with self.get_session() as session:
+            result = session.execute(
+                select(func.max(StockDaily.date)).where(StockDaily.code == code)
+            ).scalar()
+            return result
+
+    def get_stock_row_count(self, code: str) -> int:
+        """获取指定股票在 stock_daily 中的总行数。"""
+        with self.get_session() as session:
+            result = session.execute(
+                select(func.count(StockDaily.id)).where(StockDaily.code == code)
+            ).scalar()
+            return result or 0
+
+    def is_data_fresh(self, code: str, max_stale_days: int = 3) -> bool:
+        """
+        判断数据是否足够新鲜（兼容周末/节假日）。
+
+        逻辑：DB 中该股票的最新日期距今不超过 max_stale_days 个自然日。
+        - 工作日：max_stale_days=3 能跨越一个周末
+        - 长假期间需要适当增大
+        """
+        latest = self.get_latest_date(code)
+        if latest is None:
+            return False
+        delta = (date.today() - latest).days
+        return delta <= max_stale_days
+
     def get_latest_data(
         self, 
         code: str, 
@@ -1626,6 +1726,7 @@ class DatabaseManager:
                 return False
 
             record.status = status
+            record.last_activity_at = datetime.now()
             if trade_date is not None:
                 record.trade_date = trade_date
             if universe_size is not None:
@@ -1640,6 +1741,16 @@ class DatabaseManager:
             elif record.completed_at is not None:
                 record.completed_at = None
             return True
+
+    def touch_screening_run_heartbeat(self, run_id: str) -> bool:
+        """更新筛选任务心跳时间，用于区分'正在运行但慢'和'已崩溃'。"""
+        with self.session_scope() as session:
+            result = session.execute(
+                update(ScreeningRun)
+                .where(ScreeningRun.run_id == run_id)
+                .values(last_activity_at=datetime.now())
+            )
+            return result.rowcount > 0
 
     def update_notification_status(
         self,
@@ -1705,6 +1816,7 @@ class DatabaseManager:
                 "error_summary": None,
                 "completed_at": None,
                 "started_at": datetime.now(),
+                "last_activity_at": datetime.now(),
             }
             if config_snapshot is not None:
                 values["config_snapshot"] = self._safe_json_dumps(config_snapshot)
@@ -1798,6 +1910,7 @@ class DatabaseManager:
                         rank=int(item.get("rank", 0)),
                         rule_score=float(item.get("rule_score", 0.0)),
                         selected_for_ai=bool(item.get("selected_for_ai", False)),
+                        matched_strategies_json=self._safe_json_dumps(item.get("matched_strategies", [])),
                         rule_hits_json=self._safe_json_dumps(item.get("rule_hits", [])),
                         factor_snapshot_json=self._safe_json_dumps(item.get("factor_snapshot", {})),
                         ai_query_id=item.get("ai_query_id"),

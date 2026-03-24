@@ -40,45 +40,68 @@ def compute_macd(
 
 def find_swing_lows(series: pd.Series, order: int = 5) -> List[int]:
     """
-    Find local minima indices using a simple rolling window comparison.
+    Find local minima indices using an asymmetric rolling window.
+
+    For interior bars the classic symmetric window [i-order, i+order] is used.
+    For the trailing `order` bars (i.e. near the right edge) we relax the
+    right-side requirement to `min(order, n-1-i)` bars so that recent swing
+    lows are not invisible.  A trailing bar qualifies when it is the minimum
+    of whatever right-side context is available (≥1 bar), provided it is also
+    lower than all `order` left-side bars.
 
     Args:
         series: 1-D numeric series
-        order: number of bars on each side to compare
+        order: number of bars on the *left* side (and right side when available)
 
     Returns:
-        List of integer indices where local minima occur.
+        List of integer indices where local minima occur, ordered ascending.
     """
     lows = []
     values = series.values
     n = len(values)
-    for i in range(order, n - order):
-        window = values[i - order: i + order + 1]
-        if np.all(np.isfinite(window)) and values[i] == np.min(window):
-            if values[i] < values[i - 1] or values[i] < values[i + 1]:
-                lows.append(i)
+    for i in range(order, n):
+        left_window = values[i - order: i]
+        right_bars = min(order, n - 1 - i)
+        if right_bars < 1:
+            # No right-side context at all — cannot confirm a swing
+            continue
+        right_window = values[i + 1: i + right_bars + 1]
+        full_window = np.concatenate([left_window, [values[i]], right_window])
+        if not np.all(np.isfinite(full_window)):
+            continue
+        # Must be strictly minimum over left side, and minimum over right side
+        if values[i] <= np.min(left_window) and values[i] <= np.min(right_window):
+            lows.append(i)
     return lows
 
 
 def find_swing_highs(series: pd.Series, order: int = 5) -> List[int]:
     """
-    Find local maxima indices using a simple rolling window comparison.
+    Find local maxima indices using an asymmetric rolling window.
+
+    Mirror of find_swing_lows — see that docstring for details.
 
     Args:
         series: 1-D numeric series
-        order: number of bars on each side to compare
+        order: number of bars on the *left* side (and right side when available)
 
     Returns:
-        List of integer indices where local maxima occur.
+        List of integer indices where local maxima occur, ordered ascending.
     """
     highs = []
     values = series.values
     n = len(values)
-    for i in range(order, n - order):
-        window = values[i - order: i + order + 1]
-        if np.all(np.isfinite(window)) and values[i] == np.max(window):
-            if values[i] > values[i - 1] or values[i] > values[i + 1]:
-                highs.append(i)
+    for i in range(order, n):
+        left_window = values[i - order: i]
+        right_bars = min(order, n - 1 - i)
+        if right_bars < 1:
+            continue
+        right_window = values[i + 1: i + right_bars + 1]
+        full_window = np.concatenate([left_window, [values[i]], right_window])
+        if not np.all(np.isfinite(full_window)):
+            continue
+        if values[i] >= np.max(left_window) and values[i] >= np.max(right_window):
+            highs.append(i)
     return highs
 
 

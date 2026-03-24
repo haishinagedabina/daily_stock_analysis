@@ -9,6 +9,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional
 
 from src.config import get_config
+from src.core.market_guard import MarketGuard
 from src.services.candidate_analysis_service import CandidateAnalysisService
 from src.services.candidate_analysis_service import CandidateAnalysisBatchResult
 from src.services.factor_service import FactorService
@@ -22,6 +23,9 @@ from src.services.universe_service import LocalUniverseNotReadyError, UniverseSe
 from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+# 全局超时（秒）：整个 execute_run 的最大允许时长
+_EXECUTE_RUN_DEADLINE_SECONDS: int = 30 * 60  # 30 分钟
 
 
 class ScreeningTaskService:
@@ -46,8 +50,28 @@ class ScreeningTaskService:
         self.universe_service = universe_service or UniverseService()
         self.screener_service = screener_service
         self.factor_service = factor_service
-        self.candidate_analysis_service = candidate_analysis_service or CandidateAnalysisService()
-        self.market_data_sync_service = market_data_sync_service or MarketDataSyncService(self.db)
+        self._candidate_analysis_service: Optional[CandidateAnalysisService] = candidate_analysis_service
+        self._market_data_sync_service: Optional[MarketDataSyncService] = market_data_sync_service
+
+    @property
+    def candidate_analysis_service(self) -> CandidateAnalysisService:
+        if self._candidate_analysis_service is None:
+            self._candidate_analysis_service = CandidateAnalysisService()
+        return self._candidate_analysis_service
+
+    @candidate_analysis_service.setter
+    def candidate_analysis_service(self, value: CandidateAnalysisService) -> None:
+        self._candidate_analysis_service = value
+
+    @property
+    def market_data_sync_service(self) -> MarketDataSyncService:
+        if self._market_data_sync_service is None:
+            self._market_data_sync_service = MarketDataSyncService(self.db)
+        return self._market_data_sync_service
+
+    @market_data_sync_service.setter
+    def market_data_sync_service(self, value: MarketDataSyncService) -> None:
+        self._market_data_sync_service = value
 
     def execute_run(
         self,
@@ -60,9 +84,11 @@ class ScreeningTaskService:
         rerun_failed: bool = False,
         resume_from: Optional[str] = None,
         trigger_type: str = "manual",
+        strategy_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         current_stage = "initializing"
         self._last_stage_hint = current_stage
+        self._active_strategy_names = strategy_names
         run_started_at = time.perf_counter()
         normalized_stock_codes = self._normalize_stock_codes(stock_codes)
         runtime_config = self.resolve_run_config(mode=mode, candidate_limit=candidate_limit, ai_top_k=ai_top_k)
@@ -75,7 +101,8 @@ class ScreeningTaskService:
             requested_trade_date=requested_trade_date,
             normalized_stock_codes=normalized_stock_codes,
             runtime_config=runtime_config,
-            ingest_failure_threshold=float(getattr(self.config, "screening_ingest_failure_threshold", 0.02)),
+            ingest_failure_threshold=float(getattr(self.config, "screening_ingest_failure_threshold", 0.20)),
+            strategy_names=strategy_names,
         )
         resume_stage = self._normalize_resume_from(resume_from)
         if resume_stage is not None:
@@ -90,6 +117,12 @@ class ScreeningTaskService:
         )
         if not isinstance(existing_run, dict):
             existing_run = None
+        recovered_stale_run_id: Optional[str] = None
+        if existing_run is not None:
+            pre_recover_id = existing_run.get("run_id")
+            existing_run = self._recover_stale_run(existing_run)
+            if existing_run is None:
+                recovered_stale_run_id = pre_recover_id
         if existing_run is not None:
             carried_failed_symbols = self._extract_failed_symbols(existing_run)
             carried_failed_symbol_reasons = self._extract_failed_symbol_reasons(existing_run)
@@ -138,8 +171,39 @@ class ScreeningTaskService:
                         return claimed_run
                     raise RuntimeError("筛选任务补跑初始化失败")
                 run_id = existing_run["run_id"]
+            elif existing_run.get("status") == "failed":
+                # BUG FIX: 旧任务已失败 + rerun_failed=False → 自动重置并重新执行
+                # 之前的逻辑会直接 return existing_run，导致用户永远看到旧的错误信息
+                logger.info(
+                    f"screening_run event=auto_retry_failed_run "
+                    f"run_id={existing_run['run_id']} "
+                    f"old_error={existing_run.get('error_summary', '')[:80]}"
+                )
+                if not self.db.reset_screening_run_for_rerun(
+                    run_id=existing_run["run_id"],
+                    config_snapshot=run_snapshot,
+                    ai_top_k=runtime_config.ai_top_k,
+                ):
+                    claimed_run = self.get_run(existing_run["run_id"])
+                    if claimed_run is not None:
+                        return claimed_run
+                    raise RuntimeError("筛选任务自动重试初始化失败")
+                run_id = existing_run["run_id"]
             else:
                 return existing_run
+        elif recovered_stale_run_id is not None:
+            if not self.db.reset_screening_run_for_rerun(
+                run_id=recovered_stale_run_id,
+                config_snapshot=run_snapshot,
+                ai_top_k=runtime_config.ai_top_k,
+            ):
+                raise RuntimeError(
+                    f"幽灵任务 {recovered_stale_run_id} 回收后重置失败"
+                )
+            run_id = recovered_stale_run_id
+            logger.info(
+                f"screening_run event=stale_run_reused run_id={run_id}"
+            )
         else:
             if resume_stage is not None:
                 raise ValueError("resume_from 仅支持失败任务补跑")
@@ -169,7 +233,9 @@ class ScreeningTaskService:
             candidate_limit=runtime_config.candidate_limit,
             ai_top_k=runtime_config.ai_top_k,
         )
-        runtime_screener_service = self._build_runtime_screener_service(runtime_config)
+        runtime_screener_service = self._build_runtime_screener_service(
+            runtime_config, strategy_names=self._active_strategy_names
+        )
         runtime_factor_service = self._build_runtime_factor_service(runtime_config)
         effective_trade_date: Optional[date] = trade_date
         if resume_stage == "factorizing":
@@ -187,6 +253,30 @@ class ScreeningTaskService:
         sync_warning_summary: Optional[str] = self._join_warning_messages(ingest_warnings)
 
         try:
+            # 全局 deadline：防止任意阶段无限阻塞
+            deadline = time.perf_counter() + _EXECUTE_RUN_DEADLINE_SECONDS
+
+            # 大盘 MA100 安全门控：生成市场情绪提示（不阻断流水线）
+            if self.config.screening_market_guard_enabled:
+                guard = MarketGuard(
+                    fetcher_manager=self.market_data_sync_service.fetcher_manager,
+                    index_code=self.config.screening_market_guard_index,
+                )
+                guard_result = guard.check()
+                if not guard_result.is_safe:
+                    market_guard_msg = (
+                        f"⚠️ 大盘情绪低迷，不建议操作 — "
+                        f"上证指数 {guard_result.index_price:.2f} "
+                        f"低于 MA100 ({guard_result.index_ma100:.2f})，"
+                        f"跌幅 {abs(guard_result.index_price - guard_result.index_ma100) / guard_result.index_ma100 * 100:.1f}%"
+                    )
+                    ingest_warnings.insert(0, market_guard_msg)
+                    sync_warning_summary = self._join_warning_messages(ingest_warnings)
+                    logger.warning(
+                        "screening_run event=market_guard_unsafe %s",
+                        guard_result.message,
+                    )
+
             current_stage = "resolving_universe"
             self._last_stage_hint = current_stage
             stage_started_at = time.perf_counter()
@@ -198,11 +288,20 @@ class ScreeningTaskService:
             )
             if universe_df.empty:
                 raise ValueError("股票池为空，无法执行筛选任务")
+            resolved_universe_size = len(universe_df.index)
+            # 立即写入 universe_size，而非等到最终完成才写入
+            # resume_from=factorizing 时跳过，避免多余的 resolving_universe 状态
+            if resume_stage != "factorizing":
+                self._must_update_status(
+                    run_id=run_id,
+                    status="resolving_universe",
+                    universe_size=resolved_universe_size,
+                )
             self._log_stage_completed(
                 screening_run_id=run_id,
                 stage=current_stage,
                 started_at=stage_started_at,
-                universe_size=len(universe_df.index),
+                universe_size=resolved_universe_size,
             )
 
             effective_trade_date = trade_date or runtime_factor_service.get_latest_trade_date(universe_df=universe_df)
@@ -223,15 +322,22 @@ class ScreeningTaskService:
                 if universe_df.empty:
                     raise ValueError("剔除已确认无数据股票后，股票池为空，无法继续筛选")
             if resume_stage != "factorizing":
+                self._check_deadline(deadline, "ingesting")
                 current_stage = "ingesting"
                 self._last_stage_hint = current_stage
                 stage_started_at = time.perf_counter()
                 self._must_update_status(run_id=run_id, status="ingesting")
                 sync_target_total = len(universe_df.index)
+
+                def _sync_heartbeat(synced: int, total: int) -> None:
+                    self.db.touch_screening_run_heartbeat(run_id)
+                    self._check_deadline(deadline, "ingesting")
+
                 sync_result = self.market_data_sync_service.sync_trade_date(
                     trade_date=effective_trade_date,
                     stock_codes=universe_df["code"].tolist(),
                     force=False,
+                    progress_callback=_sync_heartbeat,
                 )
                 self._log_sync_health_report(run_id=run_id, sync_result=sync_result)
                 skippable_sync_errors, blocking_sync_errors = self._partition_sync_errors(sync_result.get("errors", []))
@@ -287,6 +393,7 @@ class ScreeningTaskService:
                 )
                 self._update_run_context(run_id, next_resume_stage="factorizing")
 
+            self._check_deadline(deadline, "factorizing")
             current_stage = "factorizing"
             self._last_stage_hint = current_stage
             stage_started_at = time.perf_counter()
@@ -309,6 +416,7 @@ class ScreeningTaskService:
             )
             self._update_run_context(run_id, next_resume_stage="screening")
 
+            self._check_deadline(deadline, "screening")
             current_stage = "screening"
             self._last_stage_hint = current_stage
             stage_started_at = time.perf_counter()
@@ -324,6 +432,7 @@ class ScreeningTaskService:
             )
             self._update_run_context(run_id, next_resume_stage="ai_enriching")
 
+            self._check_deadline(deadline, "ai_enriching")
             current_stage = "ai_enriching"
             self._last_stage_hint = current_stage
             stage_started_at = time.perf_counter()
@@ -469,6 +578,7 @@ class ScreeningTaskService:
                 name = candidate.get("name")
                 rank = int(candidate.get("rank", 0))
                 rule_score = float(candidate.get("rule_score", 0.0))
+                matched_strategies = list(candidate.get("matched_strategies", []))
                 rule_hits = candidate.get("rule_hits", [])
                 factor_snapshot = candidate.get("factor_snapshot", {})
             else:
@@ -476,6 +586,7 @@ class ScreeningTaskService:
                 name = candidate.name
                 rank = candidate.rank
                 rule_score = candidate.rule_score
+                matched_strategies = list(candidate.matched_strategies)
                 rule_hits = candidate.rule_hits
                 factor_snapshot = candidate.factor_snapshot
 
@@ -487,6 +598,7 @@ class ScreeningTaskService:
                     "rank": rank,
                     "rule_score": rule_score,
                     "selected_for_ai": rank <= ai_top_k,
+                    "matched_strategies": matched_strategies,
                     "rule_hits": rule_hits,
                     "factor_snapshot": factor_snapshot,
                     "ai_query_id": ai_payload.get("ai_query_id"),
@@ -497,6 +609,15 @@ class ScreeningTaskService:
         return payloads
 
     @staticmethod
+    def _check_deadline(deadline: float, stage: str) -> None:
+        """检查全局 deadline，超时则抛出 TimeoutError 终止任务。"""
+        if time.perf_counter() > deadline:
+            raise TimeoutError(
+                f"选股任务全局超时（{_EXECUTE_RUN_DEADLINE_SECONDS // 60} 分钟），"
+                f"当前阶段: {stage}"
+            )
+
+    @staticmethod
     def _normalize_stock_codes(stock_codes: Optional[List[str]]) -> List[str]:
         return sorted(
             {
@@ -505,6 +626,73 @@ class ScreeningTaskService:
                 if str(code).strip()
             }
         )
+
+    # 各阶段的超时阈值（分钟）：ingesting 涉及全市场数据同步，需要更长时间
+    _stage_stale_minutes: Dict[str, int] = {
+        "ingesting": 60,
+        "syncing_universe": 30,
+        "resolving_universe": 10,
+        "factorizing": 20,
+        "screening": 15,
+        "ai_enriching": 30,
+    }
+    _default_stale_minutes: int = 15
+
+    def _recover_stale_run(self, run: Dict[str, Any], max_stale_minutes: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """
+        检测并回收卡死的幽灵任务。
+
+        优先使用 last_activity_at（心跳）判断是否卡死：
+        - 如果有心跳且心跳在阈值内 → 任务仍在运行，不回收
+        - 如果无心跳 → 回退到 started_at 判断
+        - 各阶段有不同的超时阈值（ingesting 最长，因为涉及全市场同步）
+        """
+        status = run.get("status", "")
+        terminal_statuses = {"completed", "completed_with_ai_degraded", "failed", "cancelled"}
+        if status in terminal_statuses:
+            return run
+
+        from datetime import datetime
+
+        # 确定超时阈值：优先使用外部传入，否则按阶段查表
+        effective_stale_minutes = (
+            max_stale_minutes
+            if max_stale_minutes is not None
+            else self._stage_stale_minutes.get(status, self._default_stale_minutes)
+        )
+
+        # 优先使用心跳时间，如果没有则回退到 started_at
+        reference_time = run.get("last_activity_at") or run.get("started_at")
+        if reference_time is None:
+            return run
+
+        if isinstance(reference_time, str):
+            try:
+                reference_time = datetime.fromisoformat(reference_time)
+            except (ValueError, TypeError):
+                return run
+
+        elapsed_minutes = (datetime.now() - reference_time).total_seconds() / 60
+        if elapsed_minutes <= effective_stale_minutes:
+            return run
+
+        run_id = run.get("run_id", "unknown")
+        time_source = "心跳" if run.get("last_activity_at") else "启动时间"
+        logger.warning(
+            f"screening_run event=stale_run_detected run_id={run_id} "
+            f"status={status} elapsed_minutes={elapsed_minutes:.1f} "
+            f"stale_threshold={effective_stale_minutes} time_source={time_source} "
+            f"action=marking_as_failed"
+        )
+        self.db.update_screening_run_status(
+            run_id=run_id,
+            status="failed",
+            error_summary=(
+                f"任务超时：状态 '{status}' 自最近{time_source}已过 {elapsed_minutes:.0f} 分钟"
+                f"（阈值 {effective_stale_minutes} 分钟），疑似进程崩溃后遗留"
+            ),
+        )
+        return None
 
     @staticmethod
     def _normalize_resume_from(resume_from: Optional[str]) -> Optional[str]:
@@ -521,6 +709,7 @@ class ScreeningTaskService:
         normalized_stock_codes: List[str],
         runtime_config: ResolvedScreeningRuntimeConfig,
         ingest_failure_threshold: float,
+        strategy_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         snapshot = {
             "requested_trade_date": requested_trade_date.isoformat(),
@@ -528,6 +717,8 @@ class ScreeningTaskService:
             "screening_ingest_failure_threshold": ingest_failure_threshold,
             **runtime_config.to_snapshot(),
         }
+        if strategy_names:
+            snapshot["strategy_names"] = sorted(strategy_names)
         return snapshot
 
     @staticmethod
@@ -714,7 +905,7 @@ class ScreeningTaskService:
         return failure_count / total_count
 
     def _get_sync_failure_threshold(self) -> float:
-        return float(getattr(self.config, "screening_ingest_failure_threshold", 0.02))
+        return float(getattr(self.config, "screening_ingest_failure_threshold", 0.20))
 
     @staticmethod
     def _build_sync_failure_ratio_summary(errors: List[Dict[str, Any]], failure_ratio: float, threshold: float) -> str:

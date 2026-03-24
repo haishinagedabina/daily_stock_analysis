@@ -22,8 +22,8 @@ describe('screeningStore', () => {
       strategiesLoading: false,
       selectedStrategies: [],
       mode: 'balanced',
-      candidateLimit: 30,
-      aiTopK: 5,
+      candidateLimit: 5,
+      aiTopK: 2,
       tradeDate: '2026-03-18',
       currentRun: null,
       isRunning: false,
@@ -39,7 +39,7 @@ describe('screeningStore', () => {
   });
 
   describe('fetchStrategies', () => {
-    it('loads strategies and auto-selects those with screening rules', async () => {
+    it('loads strategies without auto-selecting any by default', async () => {
       vi.mocked(screeningApi.getStrategies).mockResolvedValue({
         strategies: [
           { name: 'volume_breakout', displayName: '放量突破', description: 'desc', category: 'trend', hasScreeningRules: true },
@@ -51,7 +51,7 @@ describe('screeningStore', () => {
       const state = useScreeningStore.getState();
 
       expect(state.strategies).toHaveLength(2);
-      expect(state.selectedStrategies).toEqual(['volume_breakout']);
+      expect(state.selectedStrategies).toEqual([]);
       expect(state.strategiesLoading).toBe(false);
     });
   });
@@ -130,6 +130,53 @@ describe('screeningStore', () => {
       await useScreeningStore.getState().fetchRunHistory();
       expect(useScreeningStore.getState().runHistory).toHaveLength(1);
       expect(useScreeningStore.getState().historyLoading).toBe(false);
+    });
+
+    it('hydrates currentRun from the latest history item when empty', async () => {
+      const latestRun = {
+        runId: 'run-latest',
+        status: 'completed',
+        universeSize: 5000,
+        candidateCount: 5,
+        aiTopK: 2,
+        failedSymbols: [],
+        warnings: [],
+        syncFailureRatio: 0,
+        configSnapshot: {},
+        notificationAttempts: 0,
+      };
+      vi.mocked(screeningApi.listRuns).mockResolvedValue({
+        total: 1,
+        items: [latestRun],
+      });
+
+      await useScreeningStore.getState().fetchRunHistory();
+
+      expect(useScreeningStore.getState().currentRun).toEqual(latestRun);
+    });
+
+    it('resumes polling when the latest history item is still running', async () => {
+      const inProgressRun = {
+        runId: 'run-active',
+        status: 'screening',
+        universeSize: 5000,
+        candidateCount: 3,
+        aiTopK: 2,
+        failedSymbols: [],
+        warnings: [],
+        syncFailureRatio: 0,
+        configSnapshot: {},
+        notificationAttempts: 0,
+      };
+      vi.mocked(screeningApi.listRuns).mockResolvedValue({
+        total: 1,
+        items: [inProgressRun],
+      });
+      const pollSpy = vi.spyOn(useScreeningStore.getState(), 'pollRunStatus');
+
+      await useScreeningStore.getState().fetchRunHistory();
+
+      expect(pollSpy).toHaveBeenCalledWith('run-active');
     });
   });
 

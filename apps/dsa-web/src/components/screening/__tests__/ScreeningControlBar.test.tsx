@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScreeningControlBar } from '../ScreeningControlBar';
 
 const mockStore = {
@@ -9,15 +9,15 @@ const mockStore = {
     { name: 'legacy', displayName: '旧策略', description: 'd', category: 'trend', hasScreeningRules: false },
   ],
   strategiesLoading: false,
-  selectedStrategies: ['volume_breakout'],
+  selectedStrategies: [] as string[],
   setSelectedStrategies: vi.fn(),
   mode: 'balanced' as const,
   setMode: vi.fn(),
   tradeDate: '2026-03-18',
   setTradeDate: vi.fn(),
-  candidateLimit: 30,
+  candidateLimit: 5,
   setCandidateLimit: vi.fn(),
-  aiTopK: 5,
+  aiTopK: 2,
   setAiTopK: vi.fn(),
   isRunning: false,
   startScreening: vi.fn().mockResolvedValue(undefined),
@@ -31,7 +31,8 @@ vi.mock('../../../stores/screeningStore', () => ({
 describe('ScreeningControlBar', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockStore.selectedStrategies = ['volume_breakout'];
+    mockStore.selectedStrategies = [];
+    mockStore.isRunning = false;
   });
 
   it('renders strategy tags', () => {
@@ -47,7 +48,6 @@ describe('ScreeningControlBar', () => {
   });
 
   it('disables start button when no strategies selected', () => {
-    mockStore.selectedStrategies = [];
     render(<ScreeningControlBar />);
     expect(screen.getByRole('button', { name: /开始筛选/ })).toBeDisabled();
   });
@@ -61,7 +61,6 @@ describe('ScreeningControlBar', () => {
     mockStore.isRunning = true;
     render(<ScreeningControlBar />);
     expect(screen.getByRole('button', { name: /筛选中/ })).toBeDisabled();
-    mockStore.isRunning = false;
   });
 
   it('renders mode select', () => {
@@ -72,5 +71,11 @@ describe('ScreeningControlBar', () => {
   it('renders date input', () => {
     render(<ScreeningControlBar />);
     expect(screen.getByLabelText('交易日')).toBeInTheDocument();
+  });
+
+  it('uses the new default candidate and AI limits', () => {
+    render(<ScreeningControlBar />);
+    expect(document.getElementById('candidate-limit')).toHaveValue(5);
+    expect(document.getElementById('ai-top-k')).toHaveValue(2);
   });
 });

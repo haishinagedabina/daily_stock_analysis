@@ -143,6 +143,7 @@ def test_screening_task_service_executes_full_pipeline_and_limits_ai_top_k():
     statuses = [call.kwargs["status"] for call in db.update_screening_run_status.call_args_list]
     assert statuses == [
         "resolving_universe",
+        "resolving_universe",
         "ingesting",
         "factorizing",
         "screening",
@@ -526,9 +527,10 @@ def test_screening_task_service_syncs_universe_when_local_master_missing():
 
     db.create_screening_run.assert_called_once()
     statuses = [call.kwargs["status"] for call in db.update_screening_run_status.call_args_list]
-    assert statuses[:4] == [
+    assert statuses[:5] == [
         "resolving_universe",
         "syncing_universe",
+        "resolving_universe",
         "ingesting",
         "factorizing",
     ]
@@ -1039,8 +1041,10 @@ def test_screening_task_service_builds_mode_specific_services(
     screener_cls.assert_called_once_with(
         min_list_days=60,
         min_volume_ratio=1.0,
-        min_avg_amount=20_000_000,
+        min_avg_amount=20_000_000.0,
         breakout_lookback_days=15,
+        skill_manager=None,
+        strategy_names=None,
     )
     factor_cls.assert_called_once_with(
         db,
@@ -1281,7 +1285,7 @@ def test_screening_task_service_fails_when_market_sync_has_partial_errors():
 
     assert result["status"] == "failed"
     statuses = [call.kwargs["status"] for call in db.update_screening_run_status.call_args_list]
-    assert statuses == ["resolving_universe", "ingesting", "failed"]
+    assert statuses == ["resolving_universe", "resolving_universe", "ingesting", "failed"]
     failed_call = db.update_screening_run_status.call_args_list[-1]
     assert "000001" in failed_call.kwargs["error_summary"]
 
@@ -2169,3 +2173,396 @@ def test_screening_task_service_updates_trade_date_in_real_database():
             DatabaseManager.reset_instance()
             Config.reset_instance()
             os.environ.pop("DATABASE_PATH", None)
+
+
+# ---------------------------------------------------------------------------
+# Phase: 策略路由 + 大盘 MA100 门控
+# ---------------------------------------------------------------------------
+
+
+@patch("src.services.screening_task_service.ScreenerService")
+@patch("src.services.screening_task_service.FactorService")
+@patch("src.services.screening_task_service.get_config")
+def test_execute_run_passes_strategy_names_to_screener_service(
+    get_config_mock,
+    factor_cls,
+    screener_cls,
+):
+    """strategy_names 应从 execute_run 传递到 ScreenerService 构造函数。"""
+    get_config_mock.return_value.screening_default_mode = "balanced"
+    get_config_mock.return_value.screening_candidate_limit = 30
+    get_config_mock.return_value.screening_ai_top_k = 5
+    get_config_mock.return_value.screening_min_list_days = 120
+    get_config_mock.return_value.screening_min_volume_ratio = 1.2
+    get_config_mock.return_value.screening_min_avg_amount = 50_000_000
+    get_config_mock.return_value.screening_breakout_lookback_days = 20
+    get_config_mock.return_value.screening_factor_lookback_days = 80
+    get_config_mock.return_value.screening_market_guard_enabled = False
+    get_config_mock.return_value.screening_ingest_failure_threshold = 0.20
+
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-strat-001"
+    db.get_screening_run.return_value = {
+        "run_id": "run-strat-001",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    screener_instance = MagicMock()
+    screener_instance.evaluate.return_value.selected = []
+    screener_instance.evaluate.return_value.rejected = []
+    screener_cls.return_value = screener_instance
+
+    factor_instance = MagicMock()
+    factor_instance.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_instance.build_factor_snapshot.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+    factor_cls.return_value = factor_instance
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 1,
+        "synced": 1,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    skill_manager = MagicMock()
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=None,
+        screener_service=None,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+        skill_manager=skill_manager,
+    )
+
+    service.execute_run(
+        trade_date=date(2026, 3, 13),
+        stock_codes=None,
+        strategy_names=["pattern_123_bottom"],
+    )
+
+    screener_cls.assert_called_once_with(
+        min_list_days=120,
+        min_volume_ratio=1.2,
+        min_avg_amount=50_000_000.0,
+        breakout_lookback_days=20,
+        skill_manager=skill_manager,
+        strategy_names=["pattern_123_bottom"],
+    )
+
+
+@patch("src.services.screening_task_service.ScreenerService")
+@patch("src.services.screening_task_service.FactorService")
+@patch("src.services.screening_task_service.get_config")
+def test_execute_run_without_strategies_passes_none(
+    get_config_mock,
+    factor_cls,
+    screener_cls,
+):
+    """不指定 strategy_names 时，ScreenerService 应收到 None。"""
+    get_config_mock.return_value.screening_default_mode = "balanced"
+    get_config_mock.return_value.screening_candidate_limit = 30
+    get_config_mock.return_value.screening_ai_top_k = 5
+    get_config_mock.return_value.screening_min_list_days = 120
+    get_config_mock.return_value.screening_min_volume_ratio = 1.2
+    get_config_mock.return_value.screening_min_avg_amount = 50_000_000
+    get_config_mock.return_value.screening_breakout_lookback_days = 20
+    get_config_mock.return_value.screening_factor_lookback_days = 80
+    get_config_mock.return_value.screening_market_guard_enabled = False
+    get_config_mock.return_value.screening_ingest_failure_threshold = 0.20
+
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-strat-002"
+    db.get_screening_run.return_value = {
+        "run_id": "run-strat-002",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    screener_instance = MagicMock()
+    screener_instance.evaluate.return_value.selected = []
+    screener_instance.evaluate.return_value.rejected = []
+    screener_cls.return_value = screener_instance
+
+    factor_instance = MagicMock()
+    factor_instance.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_instance.build_factor_snapshot.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+    factor_cls.return_value = factor_instance
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 1,
+        "synced": 1,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=None,
+        screener_service=None,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+        skill_manager=None,
+    )
+
+    service.execute_run(
+        trade_date=date(2026, 3, 13),
+        stock_codes=None,
+    )
+
+    screener_cls.assert_called_once_with(
+        min_list_days=120,
+        min_volume_ratio=1.2,
+        min_avg_amount=50_000_000.0,
+        breakout_lookback_days=20,
+        skill_manager=None,
+        strategy_names=None,
+    )
+
+
+def test_execute_run_adds_warning_when_market_guard_unsafe():
+    """大盘低于 MA100 时，选股照常执行但 warnings 中包含大盘情绪提示。"""
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-guard-001"
+    db.get_screening_run.return_value = {
+        "run_id": "run-guard-001",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+        "config_snapshot": {
+            "warnings": [
+                "⚠️ 大盘情绪低迷，不建议操作 — 上证指数 3100.00 低于 MA100 (3200.00)，跌幅 3.1%"
+            ],
+        },
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.fetcher_manager = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 1,
+        "synced": 1,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_market_guard_enabled = True
+    service.config.screening_market_guard_index = "sh000001"
+
+    with patch("src.services.screening_task_service.MarketGuard") as guard_cls:
+        guard_instance = MagicMock()
+        guard_instance.check.return_value = MagicMock(
+            is_safe=False,
+            index_price=3100.0,
+            index_ma100=3200.0,
+            message="Index sh000001 below MA100 (3100.00 < 3200.00, -3.1%)",
+        )
+        guard_cls.return_value = guard_instance
+
+        result = service.execute_run(
+            trade_date=date(2026, 3, 13),
+            stock_codes=None,
+        )
+
+    # 选股正常完成，不被中断
+    assert result["status"] == "completed"
+    # 警告信息传递到 warnings 列表
+    warnings = result.get("warnings", [])
+    assert any("大盘情绪低迷" in w for w in warnings)
+    # MarketGuard 被正确构造
+    guard_cls.assert_called_once_with(
+        fetcher_manager=market_data_sync_service.fetcher_manager,
+        index_code="sh000001",
+    )
+
+
+def test_execute_run_proceeds_when_market_guard_safe():
+    """大盘在 MA100 之上时，execute_run 应正常执行。"""
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-guard-002"
+    db.get_screening_run.return_value = {
+        "run_id": "run-guard-002",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 1,
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    candidate_analysis_service = MagicMock()
+    candidate_analysis_service.analyze_top_k.return_value = {}
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.fetcher_manager = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 1,
+        "synced": 1,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=candidate_analysis_service,
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_market_guard_enabled = True
+    service.config.screening_market_guard_index = "sh000001"
+
+    with patch("src.services.screening_task_service.MarketGuard") as guard_cls:
+        guard_instance = MagicMock()
+        guard_instance.check.return_value = MagicMock(
+            is_safe=True,
+            index_price=3300.0,
+            index_ma100=3200.0,
+            message="Index sh000001 above MA100 (3300.00 > 3200.00, +3.1%)",
+        )
+        guard_cls.return_value = guard_instance
+
+        result = service.execute_run(
+            trade_date=date(2026, 3, 13),
+            stock_codes=None,
+        )
+
+    assert result["status"] == "completed"
+
+
+def test_execute_run_skips_guard_when_disabled():
+    """screening_market_guard_enabled=False 时不调用 MarketGuard。"""
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-guard-003"
+    db.get_screening_run.return_value = {
+        "run_id": "run-guard-003",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 1,
+        "synced": 1,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_market_guard_enabled = False
+
+    with patch("src.services.screening_task_service.MarketGuard") as guard_cls:
+        result = service.execute_run(
+            trade_date=date(2026, 3, 13),
+            stock_codes=None,
+        )
+
+    guard_cls.assert_not_called()
+    assert result["status"] == "completed"
+
+
+def test_strategy_names_written_to_run_config_snapshot():
+    """strategy_names 应写入 run 的 config_snapshot 以便追溯。"""
+    snapshot = ScreeningTaskService._build_run_config_snapshot(
+        requested_trade_date=date(2026, 3, 13),
+        normalized_stock_codes=[],
+        runtime_config=MagicMock(to_snapshot=lambda: {"mode": "balanced"}),
+        ingest_failure_threshold=0.20,
+        strategy_names=["pattern_123_bottom", "ma100_selection"],
+    )
+    assert snapshot["strategy_names"] == ["ma100_selection", "pattern_123_bottom"]
+
+
+def test_strategy_names_omitted_from_snapshot_when_none():
+    """strategy_names=None 时，config_snapshot 中不应包含该字段。"""
+    snapshot = ScreeningTaskService._build_run_config_snapshot(
+        requested_trade_date=date(2026, 3, 13),
+        normalized_stock_codes=[],
+        runtime_config=MagicMock(to_snapshot=lambda: {"mode": "balanced"}),
+        ingest_failure_threshold=0.20,
+        strategy_names=None,
+    )
+    assert "strategy_names" not in snapshot

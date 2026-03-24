@@ -38,22 +38,24 @@ def _make_trendline_breakout_data(n: int = 100) -> pd.DataFrame:
 
 
 def _make_123_bottom_entry_data(n: int = 100) -> pd.DataFrame:
-    """Create data with a 123 bottom pattern."""
+    """Create data with a 123 bottom pattern — breakout is recent (within last 15 bars)."""
     prices = np.zeros(n)
-    prices[:20] = np.linspace(25, 12, 20)     # downtrend
-    prices[20:35] = np.linspace(12, 18, 15)   # bounce (P2)
-    prices[35:50] = np.linspace(18, 14, 15)   # retrace (P3 higher low)
-    prices[50:70] = np.linspace(14, 20, 20)   # breakout above P2
-    prices[70:100] = np.linspace(20, 22, 30)  # continuation
+    prices[:20]  = np.linspace(25, 12, 20)   # downtrend
+    prices[20:35] = np.linspace(12, 18, 15)  # bounce (P2)
+    prices[35:50] = np.linspace(18, 14, 15)  # retrace (P3 higher low)
+    prices[50:85] = np.linspace(14, 20, 35)  # breakout above P2
+    prices[85:100] = np.linspace(20, 22, 15) # continuation — breakout is ~15 bars back
 
     noise = np.random.RandomState(42).randn(n) * 0.1
     prices = prices + noise
-    vol = np.random.RandomState(42).randint(100000, 500000, n).astype(float)
+    vol = np.random.RandomState(42).randint(100_000, 500_000, n).astype(float)
+    # Amplify volume around the breakout bar (~bar 68)
+    vol[65:72] *= 2.5
 
     return pd.DataFrame({
-        "high": prices + 0.3,
-        "low": prices - 0.3,
-        "close": prices,
+        "high":   prices + 0.3,
+        "low":    prices - 0.3,
+        "close":  prices,
         "volume": vol,
         "pct_chg": np.diff(prices, prepend=prices[0]) / np.maximum(np.abs(prices), 0.01) * 100,
     })
@@ -125,6 +127,46 @@ class TestEntryStrategyB(unittest.TestCase):
         result = EntryStrategyB.evaluate(df)
         self.assertGreaterEqual(result["score"], 0)
         self.assertLessEqual(result["score"], 100)
+
+    def test_pattern_123_key_has_metadata(self):
+        """Returned pattern_123 should include state and structural metadata."""
+        from src.strategies.entry_strategies import EntryStrategyB
+        df = _make_123_bottom_entry_data()
+        result = EntryStrategyB.evaluate(df)
+        p = result["pattern_123"]
+        # New joint-detector output schema
+        self.assertIn("state", p)
+        self.assertIn("found", p)
+        self.assertIn("point1", p)
+        self.assertIn("point2", p)
+        self.assertIn("point3", p)
+
+    def test_stale_breakout_not_triggered(self):
+        """Strategy B must NOT trigger when the breakout is too old."""
+        from src.strategies.entry_strategies import EntryStrategyB
+        # Build data where breakout happened 40+ bars ago
+        n = 100
+        prices = np.zeros(n)
+        prices[:15]  = np.linspace(20, 12, 15)
+        prices[15:25] = np.linspace(12, 17, 10)
+        prices[25:35] = np.linspace(17, 14, 10)
+        prices[35:50] = np.linspace(14, 19, 15)  # breakout here (~bar 43)
+        prices[50:100] = 18.5                     # then flat — no fresh breakout
+        noise = np.random.RandomState(9).randn(n) * 0.05
+        prices += noise
+        vol = np.random.RandomState(9).randint(100_000, 500_000, n).astype(float)
+        df = pd.DataFrame({
+            "high": prices + 0.3, "low": prices - 0.3,
+            "close": prices, "volume": vol,
+            "pct_chg": np.zeros(n),
+        })
+        result = EntryStrategyB.evaluate(df)
+        # breakout happened ~50 bars ago → beyond default breakout_window=15
+        if result["pattern_123"].get("found"):
+            self.assertFalse(
+                result["triggered"],
+                "Strategy B must not trigger for a stale (>15 bar old) breakout",
+            )
 
 
 if __name__ == "__main__":

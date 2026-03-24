@@ -553,7 +553,9 @@ class Config:
     screening_min_avg_amount: float = 50_000_000.0
     screening_breakout_lookback_days: int = 20
     screening_factor_lookback_days: int = 200
-    screening_ingest_failure_threshold: float = 0.02
+    screening_ingest_failure_threshold: float = 0.20
+    screening_market_guard_enabled: bool = True
+    screening_market_guard_index: str = "sh000001"
 
     # Discord 机器人状态
     discord_bot_status: str = "A股智能分析 | /help"
@@ -1119,7 +1121,9 @@ class Config:
             screening_min_avg_amount=float(os.getenv('SCREENING_MIN_AVG_AMOUNT', '50000000')),
             screening_breakout_lookback_days=int(os.getenv('SCREENING_BREAKOUT_LOOKBACK_DAYS', '20')),
             screening_factor_lookback_days=int(os.getenv('SCREENING_FACTOR_LOOKBACK_DAYS', '200')),
-            screening_ingest_failure_threshold=float(os.getenv('SCREENING_INGEST_FAILURE_THRESHOLD', '0.02')),
+            screening_ingest_failure_threshold=float(os.getenv('SCREENING_INGEST_FAILURE_THRESHOLD', '0.20')),
+            screening_market_guard_enabled=parse_env_bool(os.getenv('SCREENING_MARKET_GUARD_ENABLED'), default=True),
+            screening_market_guard_index=os.getenv('SCREENING_MARKET_GUARD_INDEX', 'sh000001'),
         )
     
     @classmethod
@@ -1664,6 +1668,17 @@ class Config:
                     "当前值已自动迁移，建议更新配置文件以消除此提示。"
                 ),
                 field="OPENAI_VISION_MODEL",
+            ))
+
+        # --- Screening cross-field checks ---
+        if self.screening_ai_top_k > self.screening_candidate_limit:
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    f"SCREENING_AI_TOP_K ({self.screening_ai_top_k}) 不能大于 "
+                    f"SCREENING_CANDIDATE_LIMIT ({self.screening_candidate_limit})"
+                ),
+                field="SCREENING_AI_TOP_K",
             ))
 
         # --- Vision key availability ---

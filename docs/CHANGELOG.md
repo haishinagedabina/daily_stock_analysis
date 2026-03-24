@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Web 智能选股页优化
+
+- 选股策略改为默认不选中，候选上限默认 5，AI 分析默认前 2 个
+- 运行状态面板会在进入页面后自动回填最近一次任务，并在任务未结束时继续轮询
+- 候选结果新增所用策略展示，前端显示为策略中文名
+
 ### 说明
 
 - 暂无。

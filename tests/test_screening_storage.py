@@ -50,6 +50,7 @@ class ScreeningStorageTestCase(unittest.TestCase):
                     "rank": 1,
                     "rule_score": 91.5,
                     "selected_for_ai": True,
+                    "matched_strategies": ["volume_breakout", "dragon_head"],
                     "rule_hits": ["trend_aligned", "volume_expanding"],
                     "factor_snapshot": {"close": 1500.0, "ma20": 1480.0},
                     "ai_summary": "趋势完好，等待回踩确认。",
@@ -87,6 +88,7 @@ class ScreeningStorageTestCase(unittest.TestCase):
 
         candidates = self.db.list_screening_candidates(run_id)
         self.assertEqual([item["code"] for item in candidates], ["600519", "000001"])
+        self.assertEqual(candidates[0]["matched_strategies"], ["volume_breakout", "dragon_head"])
         self.assertEqual(candidates[0]["rule_hits"], ["trend_aligned", "volume_expanding"])
         self.assertEqual(candidates[0]["factor_snapshot"]["ma20"], 1480.0)
         self.assertEqual(candidates[0]["ai_query_id"], "query-1")

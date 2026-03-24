@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from datetime import date
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -41,6 +42,12 @@ class MarketDataSyncServiceTestCase(unittest.TestCase):
         DatabaseManager.reset_instance()
         self.db = DatabaseManager.get_instance()
 
+        # 隔离 Tushare 批量同步，避免真实 API 调用干扰单元测试
+        self._bulk_sync_patcher = patch.object(
+            MarketDataSyncService, "_try_bulk_sync", return_value=None
+        )
+        self._bulk_sync_patcher.start()
+
         self.db.upsert_instruments(
             [
                 {
@@ -67,6 +74,7 @@ class MarketDataSyncServiceTestCase(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self._bulk_sync_patcher.stop()
         DatabaseManager.reset_instance()
         Config.reset_instance()
         os.environ.pop("DATABASE_PATH", None)

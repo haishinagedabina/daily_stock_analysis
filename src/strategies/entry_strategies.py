@@ -38,6 +38,7 @@ from src.indicators.limit_up_detector import LimitUpDetector
 from src.indicators.trendline_detector import TrendlineDetector
 from src.indicators.pattern_detector import PatternDetector
 from src.indicators.multi_timeframe_analyzer import MultiTimeframeAnalyzer
+from src.indicators.low_123_trendline_detector import Low123TrendlineDetector
 
 
 class EntryStrategyC:
@@ -325,54 +326,67 @@ class EntryStrategyA:
 
 
 class EntryStrategyB:
-    """123 Bottom Reversal strategy."""
+    """
+    Low-position 123 Bottom Reversal with Downtrend Trendline Confirmation.
+
+    Triggered only when the joint detector returns state='confirmed':
+      - Prior downtrend context verified
+      - P1 at low position
+      - Close breaks P2 AND downtrend trendline in sync (within sync_window bars)
+    """
 
     @classmethod
     def evaluate(cls, df: pd.DataFrame) -> Dict[str, Any]:
-        if df is None or len(df) < 30:
+        if df is None or len(df) < 40:
             return {
                 "triggered": False,
                 "pattern_123": {"found": False},
+                "pattern_123_state": "rejected",
+                "entry_price": None,
+                "stop_loss_price": None,
                 "score": 0,
                 "reason": "insufficient data",
             }
 
-        pattern = PatternDetector.detect_123_bottom(df)
-        found = pattern.get("found", False)
-        confirmed = pattern.get("breakout_confirmed", False)
-
-        triggered = found and confirmed
+        joint = Low123TrendlineDetector.detect(df)
+        state = joint.get("state", "rejected")
+        triggered = state == "confirmed"
 
         score = 0
-        reasons = []
+        reasons: list = []
 
-        if found:
-            score += 30
-            reasons.append("123 bottom detected")
-        if confirmed:
-            score += 40
-            reasons.append("breakout above Point 2 confirmed")
+        if joint.get("found"):
+            score += 20
+            reasons.append("123 structure detected")
+        if joint.get("is_low_level"):
+            score += 10
+            reasons.append("low-level position confirmed")
+        if joint.get("breakout_point2_confirmed"):
+            score += 25
+            reasons.append("breakout above P2")
+        if joint.get("breakout_trendline_confirmed"):
+            score += 25
+            reasons.append("trendline broken")
+        if joint.get("ma_confirmation"):
+            score += 10
+            reasons.append("MA confirmation")
 
-        # Volume confirmation at breakout
-        if triggered and len(df) >= 6 and "volume" in df.columns:
-            vol_avg = float(df["volume"].iloc[-6:-1].mean())
-            vol_curr = float(df["volume"].iloc[-1])
-            vol_ratio = vol_curr / vol_avg if vol_avg > 0 else 0
-            if vol_ratio >= 1.5:
-                score += 15
-                reasons.append(f"volume confirmation ({vol_ratio:.1f}x)")
+        # Trendline quality bonus
+        dtl = joint.get("downtrend_line") or {}
+        if dtl.get("touch_count", 0) >= 3:
+            score += 10
+            reasons.append(f"trendline {dtl['touch_count']}-touch quality")
 
-        # Point 3 higher than Point 1 confidence bonus
-        if found and pattern.get("point1") and pattern.get("point3"):
-            p1 = pattern["point1"]["price"]
-            p3 = pattern["point3"]["price"]
-            if p1 > 0 and (p3 - p1) / p1 > 0.05:
-                score += 15
-                reasons.append("strong higher low")
+        # signal_strength bonus (caps at 100)
+        strength_bonus = int(joint.get("signal_strength", 0.0) * 10)
+        score = min(100, score + strength_bonus)
 
         return {
             "triggered": triggered,
-            "pattern_123": pattern,
-            "score": min(100, score),
-            "reason": " + ".join(reasons) if reasons else "no signal",
+            "pattern_123": joint,           # full joint result; backward compat key
+            "pattern_123_state": state,
+            "entry_price": joint.get("entry_price"),
+            "stop_loss_price": joint.get("stop_loss_price"),
+            "score": score,
+            "reason": " + ".join(reasons) if reasons else f"no signal (state={state})",
         }

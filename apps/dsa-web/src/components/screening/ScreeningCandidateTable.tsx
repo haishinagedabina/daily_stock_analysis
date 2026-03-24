@@ -35,7 +35,7 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
 }
 
 export const ScreeningCandidateTable: React.FC = () => {
-  const { currentRun, candidates, candidatesLoading, selectCandidate, sendNotification } =
+  const { currentRun, candidates, candidatesLoading, strategies, selectCandidate, sendNotification } =
     useScreeningStore();
   const [sortKey, setSortKey] = useState<SortKey>('rank');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -55,6 +55,9 @@ export const ScreeningCandidateTable: React.FC = () => {
   }
 
   const sorted = sortCandidates(candidates, sortKey, sortDir);
+  const strategyNameMap = new Map(
+    strategies.map((strategy) => [strategy.name, strategy.displayName]),
+  );
 
   const thClass = 'px-3 py-2.5 text-left text-xs font-medium text-secondary-text cursor-pointer select-none hover:text-foreground transition-colors';
 
@@ -121,7 +124,9 @@ export const ScreeningCandidateTable: React.FC = () => {
                 <td className="px-3 py-2.5">
                   <div className="flex flex-wrap gap-1">
                     {c.matchedStrategies?.map((s) => (
-                      <Badge key={s} variant="info" size="sm">{s}</Badge>
+                      <Badge key={s} variant="info" size="sm">
+                        {strategyNameMap.get(s) ?? s}
+                      </Badge>
                     ))}
                   </div>
                 </td>

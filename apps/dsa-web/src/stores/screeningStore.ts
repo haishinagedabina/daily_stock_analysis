@@ -1,14 +1,15 @@
-import { create } from 'zustand';
-import { screeningApi } from '../api/screening';
-import type { ParsedApiError } from '../api/error';
+import { create } from "zustand";
+import { screeningApi } from "../api/screening";
+import type { ParsedApiError } from "../api/error";
+import { createParsedApiError } from "../api/error";
 import type {
   ScreeningCandidate,
   ScreeningCandidateDetail,
   ScreeningMode,
   ScreeningRun,
   ScreeningStrategy,
-} from '../types/screening';
-import { isTerminalStatus } from '../types/screening';
+} from "../types/screening";
+import { isTerminalStatus } from "../types/screening";
 
 interface ScreeningState {
   // strategies
@@ -59,15 +60,15 @@ interface ScreeningState {
   reset: () => void;
 }
 
-const today = () => new Date().toISOString().split('T')[0];
+const today = () => new Date().toISOString().split("T")[0];
 
 export const useScreeningStore = create<ScreeningState>((set, get) => ({
   strategies: [],
   strategiesLoading: false,
   selectedStrategies: [],
-  mode: 'balanced',
-  candidateLimit: 30,
-  aiTopK: 5,
+  mode: "balanced",
+  candidateLimit: 5,
+  aiTopK: 2,
   tradeDate: today(),
   currentRun: null,
   isRunning: false,
@@ -83,10 +84,9 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
     set({ strategiesLoading: true });
     try {
       const data = await screeningApi.getStrategies();
-      const withRules = data.strategies.filter((s) => s.hasScreeningRules);
       set({
         strategies: data.strategies,
-        selectedStrategies: withRules.map((s) => s.name),
+        selectedStrategies: [],
         strategiesLoading: false,
       });
     } catch {
@@ -101,43 +101,70 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
   setTradeDate: (date) => set({ tradeDate: date }),
 
   startScreening: async () => {
-    const { mode, candidateLimit, aiTopK, selectedStrategies, tradeDate } = get();
+    const { mode, candidateLimit, aiTopK, selectedStrategies, tradeDate } =
+      get();
     set({ isRunning: true, error: null });
     try {
       const run = await screeningApi.createRun({
         mode,
         candidateLimit,
         aiTopK,
-        strategies: selectedStrategies.length > 0 ? selectedStrategies : undefined,
+        strategies:
+          selectedStrategies.length > 0 ? selectedStrategies : undefined,
         tradeDate: tradeDate || undefined,
       });
       set({ currentRun: run });
       get().pollRunStatus(run.runId);
     } catch (err) {
-      set({ isRunning: false, error: (err as { parsedApiError?: ParsedApiError }).parsedApiError || null });
+      set({
+        isRunning: false,
+        error:
+          (err as { parsedApiError?: ParsedApiError }).parsedApiError || null,
+      });
     }
   },
 
   pollRunStatus: (runId) => {
     get().stopPolling();
+    let pollCount = 0;
+    let consecutiveErrors = 0;
+    const MAX_POLLS = 200;
     const timer = setInterval(async () => {
+      pollCount++;
+      if (pollCount > MAX_POLLS) {
+        get().stopPolling();
+        set({
+          isRunning: false,
+          error: createParsedApiError({
+            title: "轮询超时",
+            message: "轮询超时，请刷新页面重试",
+            category: "unknown",
+          }),
+        });
+        return;
+      }
       try {
         const run = await screeningApi.getRun(runId);
+        consecutiveErrors = 0;
         set({ currentRun: run });
         if (isTerminalStatus(run.status)) {
           get().stopPolling();
           set({ isRunning: false });
-          if (run.status !== 'failed') {
+          if (run.status !== "failed") {
             get().fetchCandidates(runId);
           }
           get().fetchRunHistory();
         }
       } catch {
-        get().stopPolling();
-        set({ isRunning: false });
+        consecutiveErrors++;
+        if (consecutiveErrors >= 3) {
+          get().stopPolling();
+          set({ isRunning: false });
+          void get().fetchRunHistory();
+        }
       }
-    }, 3000);
-    set({ pollingTimer: timer });
+    }, 30000);
+    set({ pollingTimer: timer, isRunning: true });
   },
 
   stopPolling: () => {
@@ -152,7 +179,27 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
     set({ historyLoading: true });
     try {
       const data = await screeningApi.listRuns(20);
-      set({ runHistory: data.items, historyLoading: false });
+      const latestRun = data.items[0] ?? null;
+      const currentRun = get().currentRun;
+      const nextCurrentRun =
+        latestRun && (!currentRun || currentRun.runId === latestRun.runId)
+          ? latestRun
+          : currentRun;
+
+      set({
+        runHistory: data.items,
+        currentRun: nextCurrentRun,
+        historyLoading: false,
+        isRunning: nextCurrentRun ? !isTerminalStatus(nextCurrentRun.status) : false,
+      });
+
+      if (
+        nextCurrentRun &&
+        !isTerminalStatus(nextCurrentRun.status) &&
+        get().pollingTimer == null
+      ) {
+        get().pollRunStatus(nextCurrentRun.runId);
+      }
     } catch {
       set({ historyLoading: false });
     }
@@ -160,7 +207,7 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
 
   selectRun: async (run) => {
     set({ currentRun: run, candidates: [], selectedCandidate: null });
-    if (isTerminalStatus(run.status) && run.status !== 'failed') {
+    if (isTerminalStatus(run.status) && run.status !== "failed") {
       await get().fetchCandidates(run.runId);
     }
   },
@@ -191,7 +238,10 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
       await screeningApi.notifyRun(runId, { force });
       get().fetchRunHistory();
     } catch (err) {
-      set({ error: (err as { parsedApiError?: ParsedApiError }).parsedApiError || null });
+      set({
+        error:
+          (err as { parsedApiError?: ParsedApiError }).parsedApiError || null,
+      });
     }
   },
 

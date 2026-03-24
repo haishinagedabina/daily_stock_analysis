@@ -40,7 +40,6 @@ export const ScreeningControlBar: React.FC = () => {
   };
 
   const handleStart = () => {
-    console.log("handleStart", selectedStrategies);
     void startScreening();
   };
 

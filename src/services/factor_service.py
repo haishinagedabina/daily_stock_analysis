@@ -15,6 +15,7 @@ from src.indicators.limit_up_detector import LimitUpDetector
 from src.indicators.divergence_detector import DivergenceDetector
 from src.indicators.trendline_detector import TrendlineDetector
 from src.indicators.pattern_detector import PatternDetector
+from src.indicators.low_123_trendline_detector import Low123TrendlineDetector
 
 
 class FactorService:
@@ -58,18 +59,23 @@ class FactorService:
             return pd.DataFrame()
 
         start_date = trade_date - timedelta(days=self.lookback_days * 2)
-        with self.db.get_session() as session:
-            rows = session.execute(
-                select(StockDaily)
-                .where(StockDaily.code.in_(codes), StockDaily.date >= start_date, StockDaily.date <= trade_date)
-                .order_by(StockDaily.code, StockDaily.date)
-            ).scalars().all()
 
-        if not rows:
-            return pd.DataFrame()
-
-        bars = pd.DataFrame(
-            [
+        # 分批加载日线数据，防止一次性 OOM（5000 只 × 400 天 ≈ 200 万行）
+        _FACTOR_BATCH_SIZE = 500
+        all_bar_dicts: list = []
+        for batch_start in range(0, len(codes), _FACTOR_BATCH_SIZE):
+            batch_codes = codes[batch_start:batch_start + _FACTOR_BATCH_SIZE]
+            with self.db.get_session() as session:
+                rows = session.execute(
+                    select(StockDaily)
+                    .where(
+                        StockDaily.code.in_(batch_codes),
+                        StockDaily.date >= start_date,
+                        StockDaily.date <= trade_date,
+                    )
+                    .order_by(StockDaily.code, StockDaily.date)
+                ).scalars().all()
+            all_bar_dicts.extend(
                 {
                     "code": row.code,
                     "date": row.date,
@@ -82,8 +88,12 @@ class FactorService:
                     "pct_chg": row.pct_chg,
                 }
                 for row in rows
-            ]
-        )
+            )
+
+        if not all_bar_dicts:
+            return pd.DataFrame()
+
+        bars = pd.DataFrame(all_bar_dicts)
 
         snapshots = []
         universe_map = universe_df.set_index("code").to_dict("index")
@@ -163,8 +173,22 @@ class FactorService:
             self.db.replace_factor_snapshots(trade_date=trade_date, snapshots=snapshot_df.to_dict("records"))
         return snapshot_df
 
-    def get_latest_trade_date(self, universe_df: pd.DataFrame) -> Optional[date]:
-        """返回当前股票池在本地日线表中的最新交易日。"""
+    def get_latest_trade_date(
+        self,
+        universe_df: pd.DataFrame,
+        min_coverage_ratio: float = 0.5,
+    ) -> Optional[date]:
+        """
+        返回本地日线表中覆盖率足够的最新交易日。
+
+        避免被少量"毒数据"（如部分同步导致的零星未来日期记录）污染：
+        只有当某个日期拥有 >= universe 数量 * min_coverage_ratio 条记录时，
+        才认定该日期为可用交易日。
+
+        Args:
+            universe_df: 股票池 DataFrame，需含 code 列
+            min_coverage_ratio: 覆盖率下限，默认 0.5（至少覆盖一半股票池）
+        """
         if universe_df is None or universe_df.empty:
             return None
 
@@ -172,11 +196,20 @@ class FactorService:
         if not codes:
             return None
 
+        min_count = max(1, int(len(codes) * min_coverage_ratio))
+
         with self.db.get_session() as session:
-            latest = session.execute(
-                select(func.max(StockDaily.date)).where(StockDaily.code.in_(codes))
-            ).scalar_one_or_none()
-        return latest
+            # 按日期倒序查找，取第一个覆盖率达标的日期
+            from sqlalchemy import desc
+            row = session.execute(
+                select(StockDaily.date, func.count(StockDaily.code.distinct()).label("cnt"))
+                .where(StockDaily.code.in_(codes))
+                .group_by(StockDaily.date)
+                .having(func.count(StockDaily.code.distinct()) >= min_count)
+                .order_by(desc(StockDaily.date))
+                .limit(1)
+            ).first()
+        return row[0] if row else None
 
     @staticmethod
     def _compute_trend_score(close: float, ma5: float, ma10: float, ma20: float, breakout_ratio: float) -> float:
@@ -360,25 +393,48 @@ class FactorService:
     @staticmethod
     def _compute_pattern_123_factors(group: pd.DataFrame) -> dict:
         """Compute 123 bottom pattern factors for screening strategy B."""
-        if len(group) < 30:
+        if len(group) < 40:
             return {
+                # Legacy fields (kept for backward compatibility)
                 "pattern_123_bottom": False,
                 "pattern_123_breakout": False,
                 "pattern_123_higher_low_pct": 0.0,
+                # New joint-detector fields
+                "pattern_123_low_trendline": False,
+                "pattern_123_state": "rejected",
+                "pattern_123_entry_price": None,
+                "pattern_123_stop_loss": None,
+                "pattern_123_signal_strength": 0.0,
+                "pattern_123_rejection_reason": "insufficient_data",
             }
-        pattern = PatternDetector.detect_123_bottom(group)
-        found = pattern.get("found", False)
-        confirmed = pattern.get("breakout_confirmed", False)
+
+        # Legacy (PatternDetector) — kept for backward compat
+        legacy = PatternDetector.detect_123_bottom(group)
+        found_legacy = legacy.get("found", False)
+        confirmed_legacy = legacy.get("breakout_confirmed", False)
         higher_low_pct = 0.0
-        if found and pattern.get("point1") and pattern.get("point3"):
-            p1 = pattern["point1"]["price"]
-            p3 = pattern["point3"]["price"]
+        if found_legacy and legacy.get("point1") and legacy.get("point3"):
+            p1 = legacy["point1"]["price"]
+            p3 = legacy["point3"]["price"]
             if p1 > 0:
                 higher_low_pct = round((p3 - p1) / p1 * 100.0, 4)
+
+        # Joint detector
+        joint = Low123TrendlineDetector.detect(group)
+        state = joint.get("state", "rejected")
+
         return {
-            "pattern_123_bottom": found,
-            "pattern_123_breakout": confirmed,
+            # Legacy fields
+            "pattern_123_bottom": found_legacy,
+            "pattern_123_breakout": confirmed_legacy,
             "pattern_123_higher_low_pct": higher_low_pct,
+            # New joint-detector fields
+            "pattern_123_low_trendline": state == "confirmed",
+            "pattern_123_state": state,
+            "pattern_123_entry_price": joint.get("entry_price"),
+            "pattern_123_stop_loss": joint.get("stop_loss_price"),
+            "pattern_123_signal_strength": joint.get("signal_strength", 0.0),
+            "pattern_123_rejection_reason": joint.get("rejection_reason"),
         }
 
     @staticmethod

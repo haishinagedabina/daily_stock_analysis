@@ -47,7 +47,10 @@ def list_screening_strategies() -> ScreeningStrategyListResponse:
 
 @router.post("/runs", response_model=ScreeningRunResponse, summary="执行一次全市场筛选")
 def create_screening_run(request: CreateScreeningRunRequest) -> ScreeningRunResponse:
-    service = ScreeningTaskService()
+    from src.agent.skills.base import SkillManager
+    skill_manager = SkillManager()
+    skill_manager.load_builtin_strategies()
+    service = ScreeningTaskService(skill_manager=skill_manager)
     normalized_stock_codes = [
         str(code).strip()
         for code in (request.stock_codes or [])
@@ -84,6 +87,7 @@ def create_screening_run(request: CreateScreeningRunRequest) -> ScreeningRunResp
             market=request.market,
             rerun_failed=request.rerun_failed,
             resume_from=request.resume_from,
+            strategy_names=request.strategies,
         )
     except ValueError as exc:
         raise HTTPException(

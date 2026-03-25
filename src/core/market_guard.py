@@ -12,7 +12,7 @@ risk flagging.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -40,9 +40,19 @@ class MarketGuard:
         self._fetcher = fetcher_manager
         self._index_code = index_code
 
+    def _fetch_index_data(self) -> tuple[pd.DataFrame, str]:
+        """Fetch index history, using a dedicated path for the Shanghai Composite."""
+        if self._index_code == DEFAULT_INDEX_CODE:
+            import akshare as ak
+
+            df = ak.stock_zh_index_daily(symbol=DEFAULT_INDEX_CODE)
+            return df, "AkshareIndexDaily"
+
+        return self._fetcher.get_daily_data(self._index_code, days=200)
+
     def check(self) -> MarketGuardResult:
         try:
-            df, _source = self._fetcher.get_daily_data(self._index_code, days=200)
+            df, _source = self._fetch_index_data()
         except Exception as e:
             logger.warning("MarketGuard: failed to fetch index data: %s", e)
             return MarketGuardResult(

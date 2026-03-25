@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 智能选股策略引擎
+
+- 📈 **底背离双突破策略 (Strategy E)** — 基于 DIF/DEA 六形态底背离检测 + 下降趋势线/水平阻力线双突破联合确认
+  - 新增 `BottomDivergenceBreakoutDetector` 检测器，支持六种底背离形态（price_down_macd_up、price_down_macd_flat、price_flat_macd_up、price_flat_macd_down、price_up_macd_down、price_up_macd_flat）
+  - 新增上下文门控：底部反转型需前置下跌，强势回撤型需前置上涨
+  - 新增双突破同步窗口（3 bars）确认机制，区分 confirmed / late_or_weak
+  - FactorService 新增 10 个底背离因子（bottom_divergence_*）
+  - 新增 `EntryStrategyE` 封装，仅 confirmed 状态触发
+  - 新增 `bottom_divergence_double_breakout.yaml` YAML 策略文件
+  - TDD 覆盖：detector 15 测试 + FactorService 5 测试 + EntryStrategyE 5 测试
+
 ### Web 智能选股页优化
 
 - 选股策略改为默认不选中，候选上限默认 5，AI 分析默认前 2 个

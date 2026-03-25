@@ -16,6 +16,9 @@ from src.indicators.divergence_detector import DivergenceDetector
 from src.indicators.trendline_detector import TrendlineDetector
 from src.indicators.pattern_detector import PatternDetector
 from src.indicators.low_123_trendline_detector import Low123TrendlineDetector
+from src.indicators.bottom_divergence_breakout_detector import (
+    BottomDivergenceBreakoutDetector,
+)
 
 
 class FactorService:
@@ -293,6 +296,9 @@ class FactorService:
         # 123 pattern factors
         pattern_123_factors = self._compute_pattern_123_factors(group)
 
+        # Bottom divergence double breakout factors
+        bottom_div_factors = self._compute_bottom_divergence_factors(group)
+
         return {
             "pct_chg_5d": pct_chg_5d,
             "pct_chg_20d": pct_chg_20d,
@@ -304,6 +310,7 @@ class FactorService:
             **macd_factors,
             **trendline_factors,
             **pattern_123_factors,
+            **bottom_div_factors,
         }
 
     @staticmethod
@@ -435,6 +442,45 @@ class FactorService:
             "pattern_123_stop_loss": joint.get("stop_loss_price"),
             "pattern_123_signal_strength": joint.get("signal_strength", 0.0),
             "pattern_123_rejection_reason": joint.get("rejection_reason"),
+        }
+
+    @staticmethod
+    def _compute_bottom_divergence_factors(group: pd.DataFrame) -> dict:
+        """Compute bottom divergence double breakout factors."""
+        if len(group) < 60:
+            return {
+                "bottom_divergence_double_breakout": False,
+                "bottom_divergence_state": "rejected",
+                "bottom_divergence_pattern_code": None,
+                "bottom_divergence_pattern_label": None,
+                "bottom_divergence_signal_strength": 0.0,
+                "bottom_divergence_entry_price": None,
+                "bottom_divergence_stop_loss": None,
+                "bottom_divergence_horizontal_breakout": False,
+                "bottom_divergence_trendline_breakout": False,
+                "bottom_divergence_sync_breakout": False,
+                "bottom_divergence_hit_reasons": [],
+            }
+
+        result = BottomDivergenceBreakoutDetector.detect(group)
+        state = result.get("state", "rejected")
+
+        return {
+            "bottom_divergence_double_breakout": state == "confirmed",
+            "bottom_divergence_state": state,
+            "bottom_divergence_pattern_code": result.get("pattern_code"),
+            "bottom_divergence_pattern_label": result.get("pattern_label"),
+            "bottom_divergence_signal_strength": result.get("signal_strength", 0.0),
+            "bottom_divergence_entry_price": result.get("entry_price"),
+            "bottom_divergence_stop_loss": result.get("stop_loss_price"),
+            "bottom_divergence_horizontal_breakout": result.get(
+                "horizontal_breakout_confirmed", False
+            ),
+            "bottom_divergence_trendline_breakout": result.get(
+                "trendline_breakout_confirmed", False
+            ),
+            "bottom_divergence_sync_breakout": result.get("double_breakout_sync", False),
+            "bottom_divergence_hit_reasons": result.get("hit_reasons", []),
         }
 
     @staticmethod

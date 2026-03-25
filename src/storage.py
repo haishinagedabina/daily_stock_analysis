@@ -1894,6 +1894,16 @@ class DatabaseManager:
             ).scalars().all()
             return [row.to_dict() for row in rows]
 
+    def clear_screening_runs(self) -> int:
+        """删除所有筛选任务及其候选结果，返回删除的任务数。"""
+        with self.session_scope() as session:
+            count = session.execute(
+                select(func.count()).select_from(ScreeningRun)
+            ).scalar() or 0
+            session.execute(delete(ScreeningCandidate))
+            session.execute(delete(ScreeningRun))
+        return int(count)
+
     def save_screening_candidates(self, run_id: str, candidates: List[Dict[str, Any]]) -> int:
         """批量保存筛选候选结果。"""
         with self.session_scope() as session:

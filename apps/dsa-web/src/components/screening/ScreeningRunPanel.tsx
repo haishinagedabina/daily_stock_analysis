@@ -1,5 +1,6 @@
 import type React from 'react';
-import { Clock, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
+import { useState } from 'react';
+import { Clock, AlertTriangle, CheckCircle2, XCircle, Trash2 } from 'lucide-react';
 import { Card, Badge, EmptyState, Loading } from '../common';
 import { ScreeningProgressBar } from './ScreeningProgressBar';
 import { useScreeningStore } from '../../stores/screeningStore';
@@ -68,7 +69,19 @@ export const ScreeningRunPanel: React.FC = () => {
     runHistory,
     historyLoading,
     selectRun,
+    clearRunHistory,
   } = useScreeningStore();
+  const [clearing, setClearing] = useState(false);
+
+  const handleClear = async () => {
+    if (runHistory.length === 0) return;
+    setClearing(true);
+    try {
+      await clearRunHistory();
+    } finally {
+      setClearing(false);
+    }
+  };
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3" data-testid="screening-run-panel">
@@ -119,13 +132,27 @@ export const ScreeningRunPanel: React.FC = () => {
 
       {/* History sidebar */}
       <Card variant="bordered" padding="md">
-        <h3 className="mb-3 text-sm font-semibold text-foreground">历史记录</h3>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-foreground">历史记录</h3>
+          {runHistory.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClear}
+              disabled={clearing || isRunning}
+              data-testid="clear-history-btn"
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-secondary-text transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
+            >
+              <Trash2 className="h-3 w-3" />
+              {clearing ? '清除中...' : '清除'}
+            </button>
+          )}
+        </div>
         {historyLoading ? (
           <Loading label="加载历史..." />
         ) : runHistory.length === 0 ? (
           <p className="text-center text-xs text-secondary-text py-6">暂无历史记录</p>
         ) : (
-          <div className="flex flex-col gap-2 max-h-[400px] overflow-y-auto" data-testid="run-history-list">
+          <div className="flex flex-col gap-2 max-h-100 overflow-y-auto" data-testid="run-history-list">
             {runHistory.map((run) => (
               <RunHistoryItem
                 key={run.runId}

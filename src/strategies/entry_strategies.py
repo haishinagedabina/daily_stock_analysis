@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Entry Strategies A, B, C, D, and D-Enhanced.
+Entry Strategies A, B, C, D, D-Enhanced, and E.
 
 Strategy A: Trendline Breakout
   - Detect downtrend resistance line
@@ -39,6 +39,7 @@ from src.indicators.trendline_detector import TrendlineDetector
 from src.indicators.pattern_detector import PatternDetector
 from src.indicators.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from src.indicators.low_123_trendline_detector import Low123TrendlineDetector
+from src.indicators.bottom_divergence_breakout_detector import BottomDivergenceBreakoutDetector
 
 
 class EntryStrategyC:
@@ -387,6 +388,84 @@ class EntryStrategyB:
             "pattern_123_state": state,
             "entry_price": joint.get("entry_price"),
             "stop_loss_price": joint.get("stop_loss_price"),
+            "score": score,
+            "reason": " + ".join(reasons) if reasons else f"no signal (state={state})",
+        }
+
+
+class EntryStrategyE:
+    """底背离双突破策略 (Bottom Divergence Double Breakout).
+
+    Uses DIF/DEA-based six-pattern bottom divergence detection combined with
+    double breakout confirmation (descending trendline + horizontal resistance).
+    Only triggers when the detector state reaches "confirmed".
+    """
+
+    @classmethod
+    def evaluate(cls, df: pd.DataFrame) -> Dict[str, Any]:
+        """Evaluate the bottom divergence double breakout strategy.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            OHLCV DataFrame with columns: high, low, close, volume.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Result dict with keys: triggered, pattern_123, pattern_123_state,
+            entry_price, stop_loss_price, score, reason.
+        """
+        if len(df) < 60:
+            return {
+                "triggered": False,
+                "pattern_123": {},
+                "pattern_123_state": "rejected",
+                "entry_price": None,
+                "stop_loss_price": None,
+                "score": 0,
+                "reason": "insufficient data",
+            }
+
+        result = BottomDivergenceBreakoutDetector.detect(df)
+        state = result.get("state", "rejected")
+        triggered = state == "confirmed"
+
+        # --- scoring ---
+        score = 0
+        reasons: list[str] = []
+
+        if triggered:
+            score = 50
+            reasons.append("bottom divergence confirmed")
+
+            pattern_label = result.get("pattern_label", "")
+            if pattern_label:
+                reasons.append(pattern_label)
+
+            if result.get("sync_breakout"):
+                score += 15
+                reasons.append("sync double breakout")
+
+            strength = result.get("signal_strength", 0.0)
+            strength_bonus = int(strength * 20)
+            score = min(100, score + strength_bonus)
+        elif state == "divergence_only":
+            score = 15
+            reasons.append("divergence detected but no breakout")
+        elif state == "structure_ready":
+            score = 25
+            reasons.append("structure ready, awaiting breakout")
+        elif state == "late_or_weak":
+            score = 10
+            reasons.append("late or weak signal")
+
+        return {
+            "triggered": triggered,
+            "pattern_123": result,
+            "pattern_123_state": state,
+            "entry_price": result.get("entry_price"),
+            "stop_loss_price": result.get("stop_loss_price"),
             "score": score,
             "reason": " + ".join(reasons) if reasons else f"no signal (state={state})",
         }

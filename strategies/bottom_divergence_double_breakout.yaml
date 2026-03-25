@@ -1,0 +1,62 @@
+# Bottom Divergence Double Breakout Strategy / 底背离双突破 (Strategy E)
+# DIF/DEA six-pattern bottom divergence + double breakout confirmation.
+
+name: bottom_divergence_double_breakout
+display_name: 底背离双突破
+description: 基于DIF/DEA六形态底背离 + 下降趋势线/水平阻力线双突破确认的联合买入策略。
+category: reversal
+core_rules: [1, 3]
+required_tools:
+  - get_daily_history
+  - get_realtime_quote
+
+screening:
+  filters:
+    - field: bottom_divergence_double_breakout
+      op: "=="
+      value: true
+  scoring:
+    - field: bottom_divergence_signal_strength
+      weight: 40
+      cap: 1.0
+    - field: volume_ratio
+      weight: 25
+      cap: 5.0
+    - field: trend_score
+      weight: 20
+    - field: liquidity_score
+      weight: 15
+
+instructions: |
+  **底背离双突破（Strategy E — 联合检测器版）**
+
+  本策略使用 BottomDivergenceBreakoutDetector 检测基于 DIF/DEA 的六种底背离形态，
+  并通过双突破（下降趋势线 + 水平阻力线）进行联合确认。
+
+  信号判定标准（state == "confirmed"）：
+
+  1. **底背离检测**：
+     - 在价格 swing lows 中找到 A/B 低点对（间隔 >= 10 bars，中间有反弹高点 H）。
+     - 匹配 DIF/DEA 在 A/B 附近的局部最低值。
+     - 对价格和 MACD 各自进行三态分类（down/flat/up），映射到六种有效形态：
+       - 底部反转型：price_down_macd_up、price_down_macd_flat、price_flat_macd_up
+       - 弱势底背离：price_flat_macd_down
+       - 强势回撤型：price_up_macd_down、price_up_macd_flat
+
+  2. **上下文门控**：
+     - 底部反转型（price_down/flat）：前置下跌验证（MA5<MA20 或价格斜率为负）。
+     - 强势回撤型（price_up）：前置上涨验证。
+
+  3. **双突破确认（同步窗口 3 bars）**：
+     - 水平阻力线：反弹高点 H 的价格。
+     - 下降趋势线：基于结构 swing highs 拟合。
+     - 收盘价同时突破两者。
+
+  4. **同步性判断**：
+     - 两种突破在 3 bars 窗口内发生 → confirmed（sync_breakout=True）。
+     - 间隔超过 3 bars → late_or_weak。
+
+  评分调整：
+  - signal_strength（综合评分：touch_count、volume_ratio、突破幅度、背离强度）权重最高。
+  - 量比作为流动性确认。
+  - 趋势评分和流动性作为辅助确认。

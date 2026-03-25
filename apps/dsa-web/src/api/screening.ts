@@ -73,4 +73,9 @@ export const screeningApi = {
     );
     return toCamelCase<{ success: boolean; message: string }>(response.data);
   },
+
+  clearRuns: async (): Promise<{ success: boolean; message: string }> => {
+    const response = await apiClient.delete<Record<string, unknown>>('/api/v1/screening/runs');
+    return toCamelCase<{ success: boolean; message: string }>(response.data);
+  },
 };

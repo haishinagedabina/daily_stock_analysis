@@ -189,6 +189,19 @@ class ScreeningTaskService:
                         return claimed_run
                     raise RuntimeError("筛选任务自动重试初始化失败")
                 run_id = existing_run["run_id"]
+            elif existing_run.get("status") in {"completed", "completed_with_ai_degraded"}:
+                create_result = self.db.create_screening_run(
+                    trade_date=requested_trade_date,
+                    market=market,
+                    config_snapshot=run_snapshot,
+                    ai_top_k=runtime_config.ai_top_k,
+                    return_created=True,
+                    trigger_type=trigger_type,
+                )
+                if isinstance(create_result, tuple):
+                    run_id, _created = create_result
+                else:
+                    run_id = create_result
             else:
                 return existing_run
         elif recovered_stale_run_id is not None:
@@ -525,6 +538,10 @@ class ScreeningTaskService:
 
     def list_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
         return [item for item in (self._enrich_run_payload(row) for row in self.db.list_screening_runs(limit=limit)) if item]
+
+    def clear_runs(self) -> int:
+        """删除所有筛选历史记录，返回删除数量。"""
+        return self.db.clear_screening_runs()
 
     def list_candidates(self, run_id: str, limit: int = 100, with_ai_only: bool = False) -> List[Dict[str, Any]]:
         return self.db.list_screening_candidates(run_id=run_id, limit=limit, with_ai_only=with_ai_only)

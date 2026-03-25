@@ -79,6 +79,10 @@ instructions: |
 | `pct_chg_5d` | 5日涨跌幅（%） | - |
 | `pct_chg_20d` | 20日涨跌幅（%） | 底部放量 |
 | `ma5_distance_pct` | 与MA5距离百分比 | 缩量回踩 |
+| `bottom_divergence_double_breakout` | 底背离双突破确认（bool） | 底背离双突破 |
+| `bottom_divergence_state` | 底背离状态（rejected/divergence_only/structure_ready/confirmed/late_or_weak） | 底背离双突破 |
+| `bottom_divergence_signal_strength` | 底背离信号强度（0-1） | 底背离双突破 |
+| `bottom_divergence_pattern_code` | 底背离形态编码（六种形态） | 底背离双突破 |
 | `amplitude` | 振幅（%） | - |
 | `candle_pattern` | K线形态标识 | 一阳夹三阴 |
 | `avg_amount` | 5日均成交额 | 流动性过滤 |

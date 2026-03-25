@@ -214,6 +214,10 @@ class StrategyScreeningEngine:
             field_val = row.get(fc.field)
             if field_val is not None:
                 hits.append(f"{fc.field}:{fc.op}:{fc.value or fc.value_ref}")
+        # 合并因子中以 _hit_reasons 结尾的字段（如 bottom_divergence_hit_reasons）
+        for key, val in row.items():
+            if key.endswith("_hit_reasons") and isinstance(val, list):
+                hits.extend(val)
         return hits
 
     @staticmethod

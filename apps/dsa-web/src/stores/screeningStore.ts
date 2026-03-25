@@ -51,6 +51,7 @@ interface ScreeningState {
   pollRunStatus: (runId: string) => void;
   stopPolling: () => void;
   fetchRunHistory: () => Promise<void>;
+  clearRunHistory: () => Promise<void>;
   selectRun: (run: ScreeningRun) => Promise<void>;
   fetchCandidates: (runId: string) => Promise<void>;
   selectCandidate: (runId: string, code: string) => Promise<void>;
@@ -103,7 +104,31 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
   startScreening: async () => {
     const { mode, candidateLimit, aiTopK, selectedStrategies, tradeDate } =
       get();
-    set({ isRunning: true, error: null });
+    set({
+      currentRun: {
+        runId: "pending-local-run",
+        mode,
+        status: "pending",
+        tradeDate: tradeDate || undefined,
+        universeSize: 0,
+        candidateCount: 0,
+        aiTopK,
+        failedSymbols: [],
+        warnings: [],
+        syncFailureRatio: 0,
+        configSnapshot: {
+          mode,
+          candidate_limit: candidateLimit,
+          ai_top_k: aiTopK,
+          strategies: selectedStrategies,
+        },
+        notificationAttempts: 0,
+      },
+      isRunning: true,
+      candidates: [],
+      selectedCandidate: null,
+      error: null,
+    });
     try {
       const run = await screeningApi.createRun({
         mode,
@@ -209,6 +234,25 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
     set({ currentRun: run, candidates: [], selectedCandidate: null });
     if (isTerminalStatus(run.status) && run.status !== "failed") {
       await get().fetchCandidates(run.runId);
+    }
+  },
+
+  clearRunHistory: async () => {
+    try {
+      await screeningApi.clearRuns();
+      set({
+        runHistory: [],
+        currentRun: null,
+        candidates: [],
+        selectedCandidate: null,
+        isRunning: false,
+      });
+      get().stopPolling();
+    } catch (err) {
+      set({
+        error:
+          (err as { parsedApiError?: ParsedApiError }).parsedApiError || null,
+      });
     }
   },
 

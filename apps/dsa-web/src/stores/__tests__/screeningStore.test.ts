@@ -107,6 +107,73 @@ describe('screeningStore', () => {
       expect(screeningApi.createRun).toHaveBeenCalled();
       expect(useScreeningStore.getState().currentRun).not.toBeNull();
     });
+
+    it('shows a pending placeholder immediately before createRun resolves', async () => {
+      let resolveRun: ((value: {
+        runId: string;
+        status: 'pending';
+        universeSize: number;
+        candidateCount: number;
+        aiTopK: number;
+        failedSymbols: string[];
+        warnings: string[];
+        syncFailureRatio: number;
+        configSnapshot: Record<string, unknown>;
+        notificationAttempts: number;
+      }) => void) | null = null;
+
+      vi.mocked(screeningApi.createRun).mockReturnValue(
+        new Promise((resolve) => {
+          resolveRun = resolve;
+        }),
+      );
+
+      useScreeningStore.setState({
+        currentRun: {
+          runId: 'run-old',
+          status: 'completed',
+          universeSize: 5000,
+          candidateCount: 5,
+          aiTopK: 2,
+          failedSymbols: [],
+          warnings: [],
+          syncFailureRatio: 0,
+          configSnapshot: {},
+          notificationAttempts: 0,
+        },
+        candidates: [{ code: '600519' } as never],
+      });
+
+      const startPromise = useScreeningStore.getState().startScreening();
+
+      expect(useScreeningStore.getState().currentRun).toMatchObject({
+        runId: 'pending-local-run',
+        status: 'pending',
+        candidateCount: 0,
+        aiTopK: 2,
+      });
+      expect(useScreeningStore.getState().candidates).toEqual([]);
+
+      resolveRun?.({
+        runId: 'run-new',
+        status: 'pending',
+        universeSize: 0,
+        candidateCount: 0,
+        aiTopK: 2,
+        failedSymbols: [],
+        warnings: [],
+        syncFailureRatio: 0,
+        configSnapshot: {},
+        notificationAttempts: 0,
+      });
+
+      await startPromise;
+
+      expect(useScreeningStore.getState().currentRun).toMatchObject({
+        runId: 'run-new',
+        status: 'pending',
+      });
+    });
   });
 
   describe('fetchRunHistory', () => {

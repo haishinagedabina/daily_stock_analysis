@@ -10,6 +10,8 @@ Tests cover:
 5. Pipeline integration: MarketGuard result is stored
 """
 
+import sys
+import types
 import unittest
 from unittest.mock import patch, MagicMock
 from dataclasses import dataclass
@@ -87,7 +89,7 @@ class TestMarketGuardCheck(unittest.TestCase):
         df = _make_index_df(n=120, trend=0.002)
         mock_fetcher = MagicMock()
         mock_fetcher.get_daily_data.return_value = (df, "mock")
-        guard = MarketGuard(fetcher_manager=mock_fetcher)
+        guard = MarketGuard(fetcher_manager=mock_fetcher, index_code="sz399001")
         result = guard.check()
         self.assertTrue(result.is_safe)
         self.assertGreater(result.index_ma100, 0)
@@ -97,7 +99,7 @@ class TestMarketGuardCheck(unittest.TestCase):
         df = _make_bear_index_df(n=120)
         mock_fetcher = MagicMock()
         mock_fetcher.get_daily_data.return_value = (df, "mock")
-        guard = MarketGuard(fetcher_manager=mock_fetcher)
+        guard = MarketGuard(fetcher_manager=mock_fetcher, index_code="sz399001")
         result = guard.check()
         self.assertFalse(result.is_safe)
 
@@ -106,7 +108,7 @@ class TestMarketGuardCheck(unittest.TestCase):
         from src.core.market_guard import MarketGuard
         mock_fetcher = MagicMock()
         mock_fetcher.get_daily_data.side_effect = Exception("network error")
-        guard = MarketGuard(fetcher_manager=mock_fetcher)
+        guard = MarketGuard(fetcher_manager=mock_fetcher, index_code="sz399001")
         result = guard.check()
         self.assertTrue(result.is_safe)
         self.assertIn("error", result.message.lower())
@@ -115,7 +117,7 @@ class TestMarketGuardCheck(unittest.TestCase):
         from src.core.market_guard import MarketGuard
         mock_fetcher = MagicMock()
         mock_fetcher.get_daily_data.return_value = (pd.DataFrame(), "mock")
-        guard = MarketGuard(fetcher_manager=mock_fetcher)
+        guard = MarketGuard(fetcher_manager=mock_fetcher, index_code="sz399001")
         result = guard.check()
         self.assertTrue(result.is_safe)
 
@@ -124,7 +126,7 @@ class TestMarketGuardCheck(unittest.TestCase):
         df = _make_index_df(n=30)
         mock_fetcher = MagicMock()
         mock_fetcher.get_daily_data.return_value = (df, "mock")
-        guard = MarketGuard(fetcher_manager=mock_fetcher)
+        guard = MarketGuard(fetcher_manager=mock_fetcher, index_code="sz399001")
         result = guard.check()
         self.assertTrue(result.is_safe)
         self.assertIn("insufficient", result.message.lower())
@@ -134,7 +136,7 @@ class TestMarketGuardCheck(unittest.TestCase):
         df = _make_index_df(n=120)
         mock_fetcher = MagicMock()
         mock_fetcher.get_daily_data.return_value = (df, "mock")
-        guard = MarketGuard(fetcher_manager=mock_fetcher)
+        guard = MarketGuard(fetcher_manager=mock_fetcher, index_code="sz399001")
         guard.check()
         call_args = mock_fetcher.get_daily_data.call_args
         self.assertGreaterEqual(call_args[1].get("days", call_args[0][1] if len(call_args[0]) > 1 else 0), 120)
@@ -151,6 +153,22 @@ class TestMarketGuardCustomIndex(unittest.TestCase):
         guard = MarketGuard(fetcher_manager=mock_fetcher, index_code="sz399001")
         result = guard.check()
         self.assertEqual(result.index_code, "sz399001")
+
+    def test_shanghai_composite_uses_dedicated_index_history(self):
+        from src.core.market_guard import MarketGuard
+
+        df = _make_index_df(n=120)
+        mock_fetcher = MagicMock()
+        mock_akshare = types.SimpleNamespace(
+            stock_zh_index_daily=MagicMock(return_value=df)
+        )
+
+        with patch.dict(sys.modules, {"akshare": mock_akshare}):
+            guard = MarketGuard(fetcher_manager=mock_fetcher, index_code="sh000001")
+            guard.check()
+
+        mock_akshare.stock_zh_index_daily.assert_called_once_with(symbol="sh000001")
+        mock_fetcher.get_daily_data.assert_not_called()
 
 
 if __name__ == "__main__":

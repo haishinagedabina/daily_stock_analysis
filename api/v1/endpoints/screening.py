@@ -107,6 +107,13 @@ def list_screening_runs(limit: int = Query(20, ge=1, le=100)) -> ScreeningRunLis
     return ScreeningRunListResponse(total=len(items), items=items)
 
 
+@router.delete("/runs", response_model=SuccessResponse, summary="清除所有筛选历史记录")
+def clear_screening_runs() -> SuccessResponse:
+    service = ScreeningTaskService()
+    count = service.clear_runs()
+    return SuccessResponse(success=True, message=f"已清除 {count} 条筛选记录")
+
+
 @router.get("/runs/{run_id}", response_model=ScreeningRunResponse, summary="查询单次筛选任务")
 def get_screening_run(run_id: str) -> ScreeningRunResponse:
     service = ScreeningTaskService()

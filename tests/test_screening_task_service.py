@@ -129,6 +129,7 @@ def test_screening_task_service_executes_full_pipeline_and_limits_ai_top_k():
         candidate_analysis_service=candidate_analysis_service,
         market_data_sync_service=market_data_sync_service,
     )
+    service.config.screening_market_guard_enabled = False
 
     result = service.execute_run(
         trade_date=date(2026, 3, 13),
@@ -448,7 +449,7 @@ def test_screening_task_service_logs_health_report_before_partial_sync_failure(c
     assert "health_success_rate=0.5" in caplog.text
 
 
-def test_screening_task_service_reuses_existing_completed_run_for_same_scope():
+def test_screening_task_service_creates_new_run_when_latest_matching_run_is_completed():
     db = MagicMock()
     db.find_latest_screening_run.return_value = {
         "run_id": "run-duplicate",
@@ -466,6 +467,14 @@ def test_screening_task_service_reuses_existing_completed_run_for_same_scope():
         candidate_analysis_service=MagicMock(),
         market_data_sync_service=MagicMock(),
     )
+    db.create_screening_run.return_value = "run-new"
+    db.get_screening_run.return_value = {
+        "run_id": "run-new",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+    }
+    service._resolve_or_sync_universe = MagicMock(return_value=MagicMock(empty=True))
 
     result = service.execute_run(
         trade_date=date(2026, 3, 13),
@@ -474,8 +483,9 @@ def test_screening_task_service_reuses_existing_completed_run_for_same_scope():
         ai_top_k=5,
     )
 
-    assert result["run_id"] == "run-duplicate"
-    db.create_screening_run.assert_not_called()
+    assert result["run_id"] == "run-new"
+    assert result["status"] == "completed"
+    db.create_screening_run.assert_called_once()
 
 
 def test_screening_task_service_syncs_universe_when_local_master_missing():
@@ -718,7 +728,7 @@ def test_screening_task_service_reruns_failed_run_from_factorizing_stage():
     assert statuses == ["factorizing", "screening", "ai_enriching", "completed"]
 
 
-def test_screening_task_service_deduplicates_without_explicit_trade_date_by_requested_date():
+def test_screening_task_service_creates_new_run_without_explicit_trade_date_when_latest_match_is_completed():
     db = MagicMock()
     db.find_latest_screening_run.return_value = {
         "run_id": "run-latest-trading-day",
@@ -748,13 +758,22 @@ def test_screening_task_service_deduplicates_without_explicit_trade_date_by_requ
         candidate_analysis_service=MagicMock(),
         market_data_sync_service=MagicMock(),
     )
+    db.create_screening_run.return_value = "run-new-latest-trading-day"
+    db.get_screening_run.return_value = {
+        "run_id": "run-new-latest-trading-day",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+    }
+    service._resolve_or_sync_universe = MagicMock(return_value=MagicMock(empty=True))
+    service.config.screening_market_guard_enabled = False
 
     with patch("src.services.screening_task_service.date") as date_mock:
         date_mock.today.return_value = date(2026, 3, 15)
         result = service.execute_run(trade_date=None)
 
-    assert result["run_id"] == "run-latest-trading-day"
-    db.create_screening_run.assert_not_called()
+    assert result["run_id"] == "run-new-latest-trading-day"
+    db.create_screening_run.assert_called_once()
 
 
 def test_screening_task_service_treats_different_effective_config_as_new_run():
@@ -1386,6 +1405,7 @@ def test_screening_task_service_ignores_delisted_sync_errors_and_continues():
         market_data_sync_service=market_data_sync_service,
     )
     service.config.screening_ingest_failure_threshold = 0.8
+    service.config.screening_market_guard_enabled = False
 
     result = service.execute_run(
         trade_date=date(2026, 3, 13),

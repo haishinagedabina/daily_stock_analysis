@@ -376,8 +376,8 @@ class TestMultiStrategyEvaluation:
 # ── score aggregation tests ─────────────────────────────────────────────────
 
 class TestScoreAggregation:
-    def test_multi_strategy_score_is_max(self):
-        """Default aggregation: max score across strategies."""
+    def test_multi_strategy_score_is_sum(self):
+        """Aggregation: sum of scores across matched strategies."""
         rule_a = _make_rule(
             name="weak",
             filters=[],
@@ -398,4 +398,33 @@ class TestScoreAggregation:
 
         candidate = result.selected[0]
         assert candidate.strategy_scores["strong"] > candidate.strategy_scores["weak"]
-        assert candidate.final_score == max(candidate.strategy_scores.values())
+        assert candidate.final_score == sum(candidate.strategy_scores.values())
+
+    def test_dual_strategy_stock_ranks_higher_than_single(self):
+        """Stock matching 2 strategies should score higher than single-match."""
+        rule_a = _make_rule(
+            name="strategy_a",
+            filters=[FilterCondition(field="volume_ratio", op=">=", value=2.0)],
+            scoring=[ScoringWeight(field="trend_score", weight=50)],
+        )
+        rule_b = _make_rule(
+            name="strategy_b",
+            filters=[FilterCondition(field="trend_score", op=">=", value=80)],
+            scoring=[ScoringWeight(field="trend_score", weight=50)],
+        )
+        snapshot = _make_snapshot(
+            _bullish_row("600001", volume_ratio=2.5, trend_score=85),  # matches both
+            _bullish_row("600002", volume_ratio=1.0, trend_score=90),  # matches only B
+        )
+        engine = StrategyScreeningEngine()
+        result = engine.evaluate(
+            snapshot_df=snapshot,
+            rules=[rule_a, rule_b],
+            common_filters=_default_common_filters(),
+        )
+
+        codes = [c.code for c in result.selected]
+        assert codes[0] == "600001", "dual-match stock should rank first"
+        dual = result.selected[0]
+        assert len(dual.matched_strategies) == 2
+        assert dual.final_score == sum(dual.strategy_scores.values())

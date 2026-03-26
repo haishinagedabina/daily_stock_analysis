@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { ScreeningRunPanel } from '../ScreeningRunPanel';
 import type { ScreeningRun } from '../../../types/screening';
@@ -24,6 +24,8 @@ const defaultStore = {
   runHistory: [] as ScreeningRun[],
   historyLoading: false,
   selectRun: vi.fn(),
+  deleteRun: vi.fn(),
+  clearRunHistory: vi.fn(),
 };
 
 vi.mock('../../../stores/screeningStore', () => ({
@@ -81,5 +83,14 @@ describe('ScreeningRunPanel', () => {
     defaultStore.runHistory = [];
     render(<ScreeningRunPanel />);
     expect(screen.getByText('暂无历史记录')).toBeInTheDocument();
+  });
+
+  it('deletes a run from history when delete button is clicked', () => {
+    defaultStore.runHistory = [baseRun];
+    render(<ScreeningRunPanel />);
+
+    fireEvent.click(screen.getByTestId('delete-run-run-1'));
+
+    expect(defaultStore.deleteRun).toHaveBeenCalledWith('run-1');
   });
 });

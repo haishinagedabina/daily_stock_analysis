@@ -6,6 +6,7 @@ export type ApiErrorCategory =
   | 'llm_not_configured'
   | 'model_tool_incompatible'
   | 'invalid_tool_call'
+  | 'screening_trade_time_not_ready'
   | 'portfolio_oversell'
   | 'upstream_llm_400'
   | 'upstream_timeout'
@@ -329,6 +330,16 @@ export function parseApiError(error: unknown): ParsedApiError {
       rawMessage,
       status,
       category: 'portfolio_oversell',
+    });
+  }
+
+  if (errorCode === 'screening_trade_time_not_ready') {
+    return createParsedApiError({
+      title: '今日数据未就绪',
+      message: '当前时间未到 15:00（Asia/Shanghai），今日 A 股日线数据未完全收盘，请选择上一交易日或 15:00 后再试。',
+      rawMessage,
+      status,
+      category: 'screening_trade_time_not_ready',
     });
   }
 

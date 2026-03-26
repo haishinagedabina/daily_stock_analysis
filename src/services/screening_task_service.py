@@ -5,10 +5,12 @@ import json
 import logging
 import time
 from urllib.parse import quote
-from datetime import date
+from datetime import date, datetime, time as dt_time, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from src.config import get_config
+from src.core.trading_calendar import MARKET_TIMEZONE, is_market_open
 from src.core.market_guard import MarketGuard
 from src.services.candidate_analysis_service import CandidateAnalysisService
 from src.services.candidate_analysis_service import CandidateAnalysisBatchResult
@@ -26,6 +28,13 @@ logger = logging.getLogger(__name__)
 
 # 全局超时（秒）：整个 execute_run 的最大允许时长
 _EXECUTE_RUN_DEADLINE_SECONDS: int = 30 * 60  # 30 分钟
+_CN_MARKET_CLOSE_TIME = dt_time(hour=15, minute=0)
+
+
+class ScreeningTradeDateNotReadyError(ValueError):
+    def __init__(self, message: str, error_code: str = "screening_trade_time_not_ready") -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class ScreeningTaskService:
@@ -96,7 +105,14 @@ class ScreeningTaskService:
             raise ValueError("ai_top_k 不能大于 candidate_limit")
         if runtime_config.mode != "balanced" and (self._custom_screener_service or self._custom_factor_service):
             raise ValueError("自定义注入的筛选服务不支持非 balanced mode，请改为使用默认服务构建")
-        requested_trade_date = trade_date or date.today()
+        requested_trade_date = trade_date or self._get_market_today(market)
+        resolved_trade_date = requested_trade_date
+        trade_date_warning: Optional[str] = None
+        if trade_date is not None:
+            resolved_trade_date, trade_date_warning = self._resolve_screening_trade_date(
+                requested_trade_date=requested_trade_date,
+                market=market,
+            )
         run_snapshot = self._build_run_config_snapshot(
             requested_trade_date=requested_trade_date,
             normalized_stock_codes=normalized_stock_codes,
@@ -104,6 +120,8 @@ class ScreeningTaskService:
             ingest_failure_threshold=float(getattr(self.config, "screening_ingest_failure_threshold", 0.20)),
             strategy_names=strategy_names,
         )
+        if trade_date is not None and resolved_trade_date != requested_trade_date:
+            run_snapshot["resolved_trade_date"] = resolved_trade_date.isoformat()
         resume_stage = self._normalize_resume_from(resume_from)
         if resume_stage is not None:
             run_snapshot["next_resume_stage"] = resume_stage
@@ -191,7 +209,7 @@ class ScreeningTaskService:
                 run_id = existing_run["run_id"]
             elif existing_run.get("status") in {"completed", "completed_with_ai_degraded"}:
                 create_result = self.db.create_screening_run(
-                    trade_date=requested_trade_date,
+                    trade_date=resolved_trade_date,
                     market=market,
                     config_snapshot=run_snapshot,
                     ai_top_k=runtime_config.ai_top_k,
@@ -221,7 +239,7 @@ class ScreeningTaskService:
             if resume_stage is not None:
                 raise ValueError("resume_from 仅支持失败任务补跑")
             create_result = self.db.create_screening_run(
-                trade_date=requested_trade_date,
+                trade_date=resolved_trade_date,
                 market=market,
                 config_snapshot=run_snapshot,
                 ai_top_k=runtime_config.ai_top_k,
@@ -256,7 +274,7 @@ class ScreeningTaskService:
             failed_symbols = list(carried_failed_symbols)
             failed_symbol_reasons = dict(carried_failed_symbol_reasons)
         else:
-            ingest_warnings = []
+            ingest_warnings = [trade_date_warning] if trade_date_warning else []
             failed_symbols = list(rerunnable_failed_symbols)
             failed_symbol_reasons = {
                 code: reason
@@ -317,7 +335,11 @@ class ScreeningTaskService:
                 universe_size=resolved_universe_size,
             )
 
-            effective_trade_date = trade_date or runtime_factor_service.get_latest_trade_date(universe_df=universe_df)
+            effective_trade_date = (
+                resolved_trade_date
+                if trade_date is not None
+                else runtime_factor_service.get_latest_trade_date(universe_df=universe_df)
+            )
             if effective_trade_date is None:
                 raise ValueError("未找到可用的本地交易日数据，请先同步日线数据")
 
@@ -346,9 +368,17 @@ class ScreeningTaskService:
                     self.db.touch_screening_run_heartbeat(run_id)
                     self._check_deadline(deadline, "ingesting")
 
+                sync_stock_codes = self._resolve_sync_stock_codes(
+                    requested_trade_date=requested_trade_date,
+                    effective_trade_date=effective_trade_date,
+                    stock_codes=stock_codes,
+                    rerun_failed=rerun_failed,
+                    resume_stage=resume_stage,
+                    universe_df=universe_df,
+                )
                 sync_result = self.market_data_sync_service.sync_trade_date(
                     trade_date=effective_trade_date,
-                    stock_codes=universe_df["code"].tolist(),
+                    stock_codes=sync_stock_codes,
                     force=False,
                     progress_callback=_sync_heartbeat,
                 )
@@ -534,14 +564,25 @@ class ScreeningTaskService:
             return failed
 
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
-        return self._enrich_run_payload(self.db.get_screening_run(run_id))
+        return self._enrich_run_payload(self._read_run_with_recovery(self.db.get_screening_run(run_id)))
 
     def list_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
-        return [item for item in (self._enrich_run_payload(row) for row in self.db.list_screening_runs(limit=limit)) if item]
+        return [
+            item
+            for item in (
+                self._enrich_run_payload(self._read_run_with_recovery(row))
+                for row in self.db.list_screening_runs(limit=limit)
+            )
+            if item
+        ]
 
     def clear_runs(self) -> int:
         """删除所有筛选历史记录，返回删除数量。"""
         return self.db.clear_screening_runs()
+
+    def delete_run(self, run_id: str) -> bool:
+        """删除单条筛选任务及其候选结果。"""
+        return self.db.delete_screening_run(run_id)
 
     def list_candidates(self, run_id: str, limit: int = 100, with_ai_only: bool = False) -> List[Dict[str, Any]]:
         return self.db.list_screening_candidates(run_id=run_id, limit=limit, with_ai_only=with_ai_only)
@@ -711,6 +752,18 @@ class ScreeningTaskService:
         )
         return None
 
+    def _read_run_with_recovery(self, run: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(run, dict):
+            return None
+        recovered = self._recover_stale_run(run)
+        if recovered is not None:
+            return recovered
+        run_id = run.get("run_id")
+        if not run_id:
+            return None
+        refreshed = self.db.get_screening_run(run_id)
+        return refreshed if isinstance(refreshed, dict) else None
+
     @staticmethod
     def _normalize_resume_from(resume_from: Optional[str]) -> Optional[str]:
         if resume_from is None:
@@ -832,6 +885,73 @@ class ScreeningTaskService:
             and not self._custom_factor_service
             and not self._custom_screener_service
         )
+
+    @staticmethod
+    def _get_market_now(market: str) -> datetime:
+        tz_name = MARKET_TIMEZONE.get(market, "Asia/Shanghai")
+        return datetime.now(ZoneInfo(tz_name))
+
+    @classmethod
+    def _get_market_today(cls, market: str) -> date:
+        return cls._get_market_now(market).date()
+
+    @classmethod
+    def _resolve_screening_trade_date(
+        cls,
+        requested_trade_date: date,
+        market: str,
+        market_now: Optional[datetime] = None,
+    ) -> tuple[date, Optional[str]]:
+        resolved_trade_date = requested_trade_date
+        warning: Optional[str] = None
+
+        if not is_market_open(market, requested_trade_date):
+            resolved_trade_date = cls._find_previous_trading_date(requested_trade_date, market)
+            warning = (
+                f"所选日期 {requested_trade_date.isoformat()} 非交易日，"
+                f"已自动切换到最近交易日 {resolved_trade_date.isoformat()}"
+            )
+
+        if market == "cn":
+            now_in_market = market_now or cls._get_market_now(market)
+            if resolved_trade_date == now_in_market.date() and now_in_market.time() < _CN_MARKET_CLOSE_TIME:
+                raise ScreeningTradeDateNotReadyError(
+                    "当前时间未到 15:00（Asia/Shanghai），今日 A 股日线数据未完全收盘，请选择上一交易日或 15:00 后再试。"
+                )
+
+        return resolved_trade_date, warning
+
+    @staticmethod
+    def _find_previous_trading_date(anchor_date: date, market: str) -> date:
+        candidate = anchor_date - timedelta(days=1)
+        for _ in range(366):
+            if is_market_open(market, candidate):
+                return candidate
+            candidate -= timedelta(days=1)
+        raise ValueError(f"无法为 {anchor_date.isoformat()} 找到最近交易日")
+
+    @staticmethod
+    def _resolve_sync_stock_codes(
+        requested_trade_date: date,
+        effective_trade_date: date,
+        stock_codes: Optional[List[str]],
+        rerun_failed: bool,
+        resume_stage: Optional[str],
+        universe_df: Any,
+    ) -> Optional[List[str]]:
+        # For a manual full-market run targeting today, let the sync service
+        # drive its own full-universe batch sync instead of enumerating symbols.
+        if (
+            not stock_codes
+            and not rerun_failed
+            and resume_stage != "factorizing"
+            and requested_trade_date == ScreeningTaskService._get_market_today("cn")
+            and effective_trade_date == requested_trade_date
+        ):
+            return None
+        if universe_df is None or getattr(universe_df, "empty", True):
+            return []
+        return universe_df["code"].tolist()
 
     @staticmethod
     def _build_sync_error_summary(errors: List[Dict[str, Any]]) -> str:

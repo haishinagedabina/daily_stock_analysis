@@ -17,7 +17,7 @@ from src.services.screening_notification_service import (
     ScreeningRunNotFoundError,
     ScreeningRunNotReadyError,
 )
-from src.services.screening_task_service import ScreeningTaskService
+from src.services.screening_task_service import ScreeningTaskService, ScreeningTradeDateNotReadyError
 
 router = APIRouter()
 
@@ -89,6 +89,14 @@ def create_screening_run(request: CreateScreeningRunRequest) -> ScreeningRunResp
             resume_from=request.resume_from,
             strategy_names=request.strategies,
         )
+    except ScreeningTradeDateNotReadyError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": exc.error_code,
+                "message": str(exc),
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -112,6 +120,15 @@ def clear_screening_runs() -> SuccessResponse:
     service = ScreeningTaskService()
     count = service.clear_runs()
     return SuccessResponse(success=True, message=f"已清除 {count} 条筛选记录")
+
+
+@router.delete("/runs/{run_id}", response_model=SuccessResponse, summary="删除单条筛选任务")
+def delete_screening_run(run_id: str) -> SuccessResponse:
+    service = ScreeningTaskService()
+    deleted = service.delete_run(run_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail={"error": "not_found", "message": "筛选任务不存在"})
+    return SuccessResponse(success=True, message=f"已删除筛选任务 {run_id}")
 
 
 @router.get("/runs/{run_id}", response_model=ScreeningRunResponse, summary="查询单次筛选任务")

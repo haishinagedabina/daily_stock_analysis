@@ -1904,6 +1904,17 @@ class DatabaseManager:
             session.execute(delete(ScreeningRun))
         return int(count)
 
+    def delete_screening_run(self, run_id: str) -> bool:
+        """删除单条筛选任务及其候选结果。"""
+        with self.session_scope() as session:
+            session.execute(
+                delete(ScreeningCandidate).where(ScreeningCandidate.run_id == run_id)
+            )
+            result = session.execute(
+                delete(ScreeningRun).where(ScreeningRun.run_id == run_id)
+            )
+            return result.rowcount > 0
+
     def save_screening_candidates(self, run_id: str, candidates: List[Dict[str, Any]]) -> int:
         """批量保存筛选候选结果。"""
         with self.session_scope() as session:

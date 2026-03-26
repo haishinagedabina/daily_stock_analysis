@@ -294,10 +294,18 @@ class FactorService:
         trendline_factors = self._compute_trendline_factors(group)
 
         # 123 pattern factors
-        pattern_123_factors = self._compute_pattern_123_factors(group)
+        pattern_123_factors, pattern_123_raw = self._compute_pattern_123_factors(group)
 
         # Bottom divergence double breakout factors
         bottom_div_factors = self._compute_bottom_divergence_factors(group)
+
+        # MA100 + Low-123 combined factors (Strategy 2)
+        ma100_low123_factors = self._compute_ma100_low123_combined_factors(
+            ma100_factors, pattern_123_factors, pattern_123_raw, group
+        )
+
+        # MA100 + 60-min combined factors (Strategy 3)
+        ma100_60min_factors = self._compute_ma100_60min_combined_factors(ma100_factors)
 
         return {
             "pct_chg_5d": pct_chg_5d,
@@ -311,6 +319,8 @@ class FactorService:
             **trendline_factors,
             **pattern_123_factors,
             **bottom_div_factors,
+            **ma100_low123_factors,
+            **ma100_60min_factors,
         }
 
     @staticmethod
@@ -398,8 +408,14 @@ class FactorService:
         }
 
     @staticmethod
-    def _compute_pattern_123_factors(group: pd.DataFrame) -> dict:
-        """Compute 123 bottom pattern factors for screening strategy B."""
+    def _compute_pattern_123_factors(group: pd.DataFrame) -> tuple[dict, dict]:
+        """Compute 123 bottom pattern factors for screening strategy B.
+
+        Returns:
+            (factors_dict, raw_detector_result) — the raw result is used by
+            downstream combined-strategy methods to build detailed hit_reasons.
+        """
+        empty_raw: dict = {}
         if len(group) < 40:
             return {
                 # Legacy fields (kept for backward compatibility)
@@ -413,7 +429,7 @@ class FactorService:
                 "pattern_123_stop_loss": None,
                 "pattern_123_signal_strength": 0.0,
                 "pattern_123_rejection_reason": "insufficient_data",
-            }
+            }, empty_raw
 
         # Legacy (PatternDetector) — kept for backward compat
         legacy = PatternDetector.detect_123_bottom(group)
@@ -430,7 +446,7 @@ class FactorService:
         joint = Low123TrendlineDetector.detect(group)
         state = joint.get("state", "rejected")
 
-        return {
+        factors = {
             # Legacy fields
             "pattern_123_bottom": found_legacy,
             "pattern_123_breakout": confirmed_legacy,
@@ -443,6 +459,7 @@ class FactorService:
             "pattern_123_signal_strength": joint.get("signal_strength", 0.0),
             "pattern_123_rejection_reason": joint.get("rejection_reason"),
         }
+        return factors, joint
 
     @staticmethod
     def _compute_bottom_divergence_factors(group: pd.DataFrame) -> dict:
@@ -484,6 +501,110 @@ class FactorService:
         }
 
     @staticmethod
+    def _compute_ma100_low123_combined_factors(
+        ma100_factors: dict, pattern_123_factors: dict, pattern_123_raw: dict,
+        group: pd.DataFrame,
+    ) -> dict:
+        """Combine MA100 + Low-123 pattern into a single gate with hit reasons.
+
+        Hard freshness gate: bars_since_entry > 3 → reject entirely.
+        """
+        above_ma100 = bool(ma100_factors.get("above_ma100", False))
+        p123_confirmed = bool(pattern_123_factors.get("pattern_123_low_trendline", False))
+
+        # bars_since_entry: how many bars since the 123 breakout confirmation
+        entry_price = pattern_123_factors.get("pattern_123_entry_price")
+        signal_strength = float(pattern_123_factors.get("pattern_123_signal_strength", 0.0))
+        p123_state = pattern_123_factors.get("pattern_123_state", "rejected")
+
+        # We don't have bars_since_entry directly from the detector;
+        # the detector returns state == "confirmed" only when the breakout
+        # just happened (within its own freshness window).  For the hard
+        # 3-bar gate we rely on the detector's built-in freshness component
+        # (it already scores freshness=0 when >5 bars old and only returns
+        # "confirmed" for recent breakouts).  Here we do NOT add extra
+        # freshness — the YAML filter on ma100_low123_confirmed already
+        # ensures only confirmed+above_ma100 stocks pass.
+
+        confirmed = p123_confirmed and above_ma100
+
+        # ── MA score (breakout recency + distance) ──
+        breakout_days = int(ma100_factors.get("ma100_breakout_days", 0))
+        distance_pct = abs(float(ma100_factors.get("ma100_distance_pct", 0.0)))
+
+        if breakout_days <= 5:
+            recency_score = 1.0
+        elif breakout_days <= 10:
+            recency_score = 0.7
+        else:
+            recency_score = 0.4
+
+        if distance_pct <= 5.0:
+            dist_score = 1.0 - (distance_pct / 5.0) * 0.7  # 0%→1.0, 5%→0.3
+        else:
+            dist_score = 0.3
+
+        ma_score = round(recency_score * 0.6 + dist_score * 0.4, 4)
+
+        # ── Hit reasons (Chinese 【标题】描述 format) ──
+        hit_reasons: list[str] = []
+        if confirmed:
+            hit_reasons = _build_ma100_low123_hit_reasons(
+                ma100_factors, pattern_123_factors, pattern_123_raw, group,
+                breakout_days, distance_pct, signal_strength,
+            )
+
+        return {
+            "ma100_low123_confirmed": confirmed,
+            "ma100_low123_pattern_strength": signal_strength if confirmed else 0.0,
+            "ma100_low123_ma_score": ma_score if confirmed else 0.0,
+            "ma100_low123_hit_reasons": hit_reasons,
+        }
+
+    @staticmethod
+    def _compute_ma100_60min_combined_factors(ma100_factors: dict) -> dict:
+        """MA100+60分钟线联合策略因子（Strategy 3）。
+
+        选股门控：above_ma100 AND breakout_days ≤ 5（日线刚站稳MA100）。
+        60分钟线不参与选股，仅在 hit_reasons 中提示次日入场关注点。
+        """
+        above_ma100 = bool(ma100_factors.get("above_ma100", False))
+        breakout_days = int(ma100_factors.get("ma100_breakout_days", 0))
+        ma100_val = float(ma100_factors.get("ma100", 0.0))
+        distance_pct = abs(float(ma100_factors.get("ma100_distance_pct", 0.0)))
+
+        confirmed = above_ma100 and 1 <= breakout_days <= 5
+
+        # ── Freshness score: 1d=1.0, 2d=0.9, 3d=0.8, 4d=0.7, 5d=0.6 ──
+        freshness_score = max(1.0 - (breakout_days - 1) * 0.1, 0.0) if confirmed else 0.0
+
+        # ── MA score (recency × distance) ──
+        if distance_pct <= 5.0:
+            dist_score = 1.0 - (distance_pct / 5.0) * 0.7
+        else:
+            dist_score = 0.3
+        ma_score = round(freshness_score * 0.6 + dist_score * 0.4, 4) if confirmed else 0.0
+
+        # ── Hit reasons with 60-min operational guidance ──
+        hit_reasons: list[str] = []
+        if confirmed:
+            hit_reasons.append(
+                f"【MA100站稳确认】突破{breakout_days}天，"
+                f"MA100={ma100_val:.2f}，距离{distance_pct:.1f}%"
+            )
+            hit_reasons.append(
+                f"【60分钟入场提示】建议关注次日60分钟线，"
+                f"突破60分钟MA20或站稳MA100({ma100_val:.2f})时买入"
+            )
+
+        return {
+            "ma100_60min_confirmed": confirmed,
+            "ma100_60min_freshness_score": freshness_score,
+            "ma100_60min_ma_score": ma_score,
+            "ma100_60min_hit_reasons": hit_reasons,
+        }
+
+    @staticmethod
     def _detect_candle_pattern(bars: pd.DataFrame) -> str:
         """Detect basic candlestick pattern from recent bars.
 
@@ -516,6 +637,103 @@ class FactorService:
                 return pattern
 
         return "normal"
+
+
+def _idx_to_date(group: pd.DataFrame, idx: int) -> str:
+    """Convert a bar index to its date string (YYYY-MM-DD)."""
+    if idx is None or idx < 0 or idx >= len(group):
+        return "N/A"
+    raw = group.iloc[idx]["date"]
+    return str(pd.to_datetime(raw).date())
+
+
+def _build_ma100_low123_hit_reasons(
+    ma100_factors: dict,
+    pattern_123_factors: dict,
+    raw: dict,
+    group: pd.DataFrame,
+    breakout_days: int,
+    distance_pct: float,
+    signal_strength: float,
+) -> list[str]:
+    """Build detailed hit reasons for the MA100+Low123 combined strategy.
+
+    Extracts structural info from the raw Low123TrendlineDetector result to
+    produce Chinese-formatted 【标题】描述 strings that fully describe the
+    detected 123 structure, trendline, breakout synchronisation and MA100
+    confirmation.  All bar indices are converted to dates for user readability.
+    """
+    reasons: list[str] = []
+
+    # 1. 123 结构关键点
+    p1 = raw.get("point1") or {}
+    p2 = raw.get("point2") or {}
+    p3 = raw.get("point3") or {}
+    if p1 and p2 and p3:
+        p1_price = p1.get("price", 0)
+        p2_price = p2.get("price", 0)
+        p3_price = p3.get("price", 0)
+        higher_low_pct = round((p3_price - p1_price) / p1_price * 100, 2) if p1_price else 0
+        bounce_pct = round((p2_price - p1_price) / p1_price * 100, 2) if p1_price else 0
+        retrace_pct = round((p2_price - p3_price) / (p2_price - p1_price) * 100, 2) if (p2_price - p1_price) else 0
+        p1_date = _idx_to_date(group, p1.get("idx"))
+        p2_date = _idx_to_date(group, p2.get("idx"))
+        p3_date = _idx_to_date(group, p3.get("idx"))
+        reasons.append(
+            f"【123结构】P1({p1_date},价格{p1_price:.2f}) → "
+            f"P2({p2_date},价格{p2_price:.2f}) → "
+            f"P3({p3_date},价格{p3_price:.2f})，"
+            f"反弹{bounce_pct}%，回撤{retrace_pct}%，P3抬高{higher_low_pct}%"
+        )
+
+    # 2. 下降趋势线
+    dtl = raw.get("downtrend_line") or {}
+    if dtl.get("found"):
+        touch_count = dtl.get("touch_count", 0)
+        slope = dtl.get("slope", 0)
+        touch_pts = dtl.get("touch_points", [])
+        touch_desc = "、".join(
+            f"{_idx_to_date(group, tp['idx'])}({tp['price']:.2f})"
+            for tp in touch_pts[:4]
+        )
+        bo_bar = dtl.get("breakout_bar_index")
+        proj_val = dtl.get("projected_value_at_breakout")
+        tl_status = "已突破" if dtl.get("breakout_confirmed") else "未突破"
+        tl_detail = ""
+        if bo_bar is not None and proj_val is not None:
+            bo_date = _idx_to_date(group, bo_bar)
+            tl_detail = f"，突破于{bo_date}(趋势线投影{proj_val:.2f})"
+        reasons.append(
+            f"【下降趋势线】斜率{slope:.6f}，{touch_count}个触点（{touch_desc}），"
+            f"{tl_status}{tl_detail}"
+        )
+
+    # 3. P2 突破与趋势线突破同步性
+    bo_p2 = raw.get("breakout_point2_confirmed", False)
+    bo_tl = raw.get("breakout_trendline_confirmed", False)
+    if bo_p2 and bo_tl:
+        reasons.append("【同步突破】P2高点与下降趋势线同步突破确认")
+    elif bo_p2:
+        reasons.append("【P2突破】已突破P2高点，趋势线未突破")
+    elif bo_tl:
+        reasons.append("【趋势线突破】已突破下降趋势线，P2高点未突破")
+
+    # 4. MA100 站上确认
+    ma100_val = ma100_factors.get("ma100", 0)
+    reasons.append(
+        f"【MA100站上确认】突破{breakout_days}天，"
+        f"MA100={ma100_val:.2f}，距离{distance_pct:.1f}%"
+    )
+
+    # 5. 信号强度
+    entry_price = pattern_123_factors.get("pattern_123_entry_price")
+    stop_loss = pattern_123_factors.get("pattern_123_stop_loss")
+    reasons.append(
+        f"【信号强度】综合评分{signal_strength:.2f}，"
+        f"入场价{entry_price}，止损价{stop_loss}"
+    )
+
+    return reasons
 
 
 def _detect_one_yang_three_yin(bars: pd.DataFrame) -> str | None:

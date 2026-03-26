@@ -54,7 +54,7 @@ class TestComputePattern123Factors(unittest.TestCase):
     def test_returns_expected_keys(self):
         from src.services.factor_service import FactorService
         group = _make_group_df()
-        result = FactorService._compute_pattern_123_factors(group)
+        result, _raw = FactorService._compute_pattern_123_factors(group)
         self.assertIn("pattern_123_bottom", result)
         self.assertIn("pattern_123_breakout", result)
         self.assertIn("pattern_123_higher_low_pct", result)
@@ -62,7 +62,7 @@ class TestComputePattern123Factors(unittest.TestCase):
     def test_values_are_correct_types(self):
         from src.services.factor_service import FactorService
         group = _make_group_df()
-        result = FactorService._compute_pattern_123_factors(group)
+        result, _raw = FactorService._compute_pattern_123_factors(group)
         self.assertIsInstance(result["pattern_123_bottom"], bool)
         self.assertIsInstance(result["pattern_123_breakout"], bool)
         self.assertIsInstance(result["pattern_123_higher_low_pct"], float)

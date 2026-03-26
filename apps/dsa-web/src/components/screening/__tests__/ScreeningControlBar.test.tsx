@@ -20,6 +20,8 @@ const mockStore = {
   aiTopK: 2,
   setAiTopK: vi.fn(),
   isRunning: false,
+  blockingDialog: null as null | { title: string; message: string },
+  clearBlockingDialog: vi.fn(),
   startScreening: vi.fn().mockResolvedValue(undefined),
   reset: vi.fn(),
 };
@@ -33,6 +35,7 @@ describe('ScreeningControlBar', () => {
     vi.clearAllMocks();
     mockStore.selectedStrategies = [];
     mockStore.isRunning = false;
+    mockStore.blockingDialog = null;
   });
 
   it('renders strategy tags', () => {
@@ -77,5 +80,17 @@ describe('ScreeningControlBar', () => {
     render(<ScreeningControlBar />);
     expect(document.getElementById('candidate-limit')).toHaveValue(5);
     expect(document.getElementById('ai-top-k')).toHaveValue(2);
+  });
+
+  it('renders blocking dialog when present', () => {
+    mockStore.blockingDialog = {
+      title: '今日数据未就绪',
+      message: '当前时间未到 15:00',
+    };
+
+    render(<ScreeningControlBar />);
+
+    expect(screen.getByText('今日数据未就绪')).toBeInTheDocument();
+    expect(screen.getByText('当前时间未到 15:00')).toBeInTheDocument();
   });
 });

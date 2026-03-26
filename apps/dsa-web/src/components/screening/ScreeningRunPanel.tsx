@@ -36,30 +36,49 @@ function StatusIcon({ status }: { status: string }) {
   return <Clock className="h-3.5 w-3.5 animate-pulse" />;
 }
 
-const RunHistoryItem: React.FC<{ run: ScreeningRun; isActive: boolean; onSelect: () => void }> = ({
+const RunHistoryItem: React.FC<{
+  run: ScreeningRun;
+  isActive: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+}> = ({
   run,
   isActive,
   onSelect,
+  onDelete,
 }) => (
-  <button
-    type="button"
-    onClick={onSelect}
-    data-testid={`run-history-${run.runId}`}
+  <div
     className={cn(
-      'flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-xs transition-all',
+      'flex items-center gap-2 rounded-xl border px-2 py-2 text-xs transition-all',
       isActive
         ? 'border-cyan/30 bg-cyan/5'
         : 'border-border/30 bg-card/50 hover:border-border/60 hover:bg-hover',
     )}
   >
-    <Badge variant={statusVariant(run.status)} size="sm">
-      <StatusIcon status={run.status} />
-      {STAGE_LABELS[run.status] || run.status}
-    </Badge>
-    <span className="flex-1 truncate text-secondary-text">{run.tradeDate || '—'}</span>
-    <span className="text-secondary-text">{run.candidateCount} 只</span>
-    <span className="text-secondary-text/50">{formatDatetime(run.startedAt)}</span>
-  </button>
+    <button
+      type="button"
+      onClick={onSelect}
+      data-testid={`run-history-${run.runId}`}
+      className="flex min-w-0 flex-1 items-center gap-3 px-1 py-0.5 text-left"
+    >
+      <Badge variant={statusVariant(run.status)} size="sm">
+        <StatusIcon status={run.status} />
+        {STAGE_LABELS[run.status] || run.status}
+      </Badge>
+      <span className="flex-1 truncate text-secondary-text">{run.tradeDate || '—'}</span>
+      <span className="text-secondary-text">{run.candidateCount} 只</span>
+      <span className="text-secondary-text/50">{formatDatetime(run.startedAt)}</span>
+    </button>
+    <button
+      type="button"
+      onClick={onDelete}
+      data-testid={`delete-run-${run.runId}`}
+      className="rounded-md p-1.5 text-secondary-text transition-colors hover:bg-danger/10 hover:text-danger"
+      aria-label={`删除任务 ${run.runId}`}
+    >
+      <Trash2 className="h-3.5 w-3.5" />
+    </button>
+  </div>
 );
 
 export const ScreeningRunPanel: React.FC = () => {
@@ -69,6 +88,7 @@ export const ScreeningRunPanel: React.FC = () => {
     runHistory,
     historyLoading,
     selectRun,
+    deleteRun,
     clearRunHistory,
   } = useScreeningStore();
   const [clearing, setClearing] = useState(false);
@@ -162,6 +182,9 @@ export const ScreeningRunPanel: React.FC = () => {
                   if (isTerminalStatus(run.status)) {
                     void selectRun(run);
                   }
+                }}
+                onDelete={() => {
+                  void deleteRun(run.runId);
                 }}
               />
             ))}

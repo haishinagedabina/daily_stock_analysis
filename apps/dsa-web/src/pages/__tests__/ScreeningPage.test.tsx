@@ -20,6 +20,7 @@ vi.mock('../../stores/screeningStore', () => {
     candidatesLoading: false,
     selectedCandidate: null,
     error: null,
+    blockingDialog: null,
     fetchStrategies: vi.fn(),
     fetchRunHistory: vi.fn(),
     setSelectedStrategies: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock('../../stores/screeningStore', () => {
     pollRunStatus: vi.fn(),
     stopPolling: vi.fn(),
     setError: vi.fn(),
+    clearBlockingDialog: vi.fn(),
   };
   return {
     useScreeningStore: (selector?: (state: typeof store) => unknown) =>

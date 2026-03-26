@@ -78,4 +78,9 @@ export const screeningApi = {
     const response = await apiClient.delete<Record<string, unknown>>('/api/v1/screening/runs');
     return toCamelCase<{ success: boolean; message: string }>(response.data);
   },
+
+  deleteRun: async (runId: string): Promise<{ success: boolean; message: string }> => {
+    const response = await apiClient.delete<Record<string, unknown>>(`/api/v1/screening/runs/${runId}`);
+    return toCamelCase<{ success: boolean; message: string }>(response.data);
+  },
 };

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useScreeningStore } from '../screeningStore';
+import type { ScreeningRun } from '../../types/screening';
+import { TARGET_STRATEGIES } from '../../types/screening';
 
 vi.mock('../../api/screening', () => ({
   screeningApi: {
@@ -10,6 +12,7 @@ vi.mock('../../api/screening', () => ({
     getCandidates: vi.fn(),
     getCandidateDetail: vi.fn(),
     notifyRun: vi.fn(),
+    deleteRun: vi.fn(),
   },
 }));
 
@@ -34,24 +37,44 @@ describe('screeningStore', () => {
       candidatesLoading: false,
       selectedCandidate: null,
       error: null,
+      blockingDialog: null,
     });
     vi.clearAllMocks();
   });
 
   describe('fetchStrategies', () => {
-    it('loads strategies without auto-selecting any by default', async () => {
+    it('merges backend rules with TARGET_STRATEGIES and auto-selects none', async () => {
       vi.mocked(screeningApi.getStrategies).mockResolvedValue({
         strategies: [
-          { name: 'volume_breakout', displayName: '放量突破', description: 'desc', category: 'trend', hasScreeningRules: true },
-          { name: 'legacy_strat', displayName: '旧策略', description: 'desc', category: 'trend', hasScreeningRules: false },
+          { name: 'bottom_divergence_double_breakout', displayName: '底背离双突破', description: 'desc', category: 'reversal', hasScreeningRules: true },
+          { name: 'ma100_low123_combined', displayName: 'MA100+低位123结构', description: 'desc', category: 'reversal', hasScreeningRules: true },
         ],
       });
 
       await useScreeningStore.getState().fetchStrategies();
       const state = useScreeningStore.getState();
 
-      expect(state.strategies).toHaveLength(2);
+      expect(state.strategies).toHaveLength(TARGET_STRATEGIES.length);
       expect(state.selectedStrategies).toEqual([]);
+      expect(state.strategiesLoading).toBe(false);
+      // Backend has rules for the first two; the rest remain disabled
+      expect(state.strategies.filter(s => s.hasScreeningRules).map(s => s.name)).toEqual([
+        'bottom_divergence_double_breakout',
+        'ma100_low123_combined',
+      ]);
+      expect(state.strategies.filter(s => !s.hasScreeningRules).map(s => s.name)).toEqual([
+        'ma100_60min_combined',
+        'extreme_momentum_combined',
+      ]);
+    });
+
+    it('falls back to TARGET_STRATEGIES on API failure', async () => {
+      vi.mocked(screeningApi.getStrategies).mockRejectedValue(new Error('network'));
+
+      await useScreeningStore.getState().fetchStrategies();
+      const state = useScreeningStore.getState();
+
+      expect(state.strategies).toEqual(TARGET_STRATEGIES);
       expect(state.strategiesLoading).toBe(false);
     });
   });
@@ -74,6 +97,20 @@ describe('screeningStore', () => {
   });
 
   describe('startScreening', () => {
+    it('blocks local start and opens dialog before 15:00 on today trade date', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-03-18T06:30:00.000Z'));
+      useScreeningStore.setState({ tradeDate: '2026-03-18' });
+
+      await useScreeningStore.getState().startScreening();
+
+      expect(screeningApi.createRun).not.toHaveBeenCalled();
+      expect(useScreeningStore.getState().blockingDialog).toMatchObject({
+        title: expect.stringContaining('今日'),
+      });
+      vi.useRealTimers();
+    });
+
     it('sets isRunning and calls createRun', async () => {
       vi.mocked(screeningApi.createRun).mockResolvedValue({
         runId: 'run-1',
@@ -81,6 +118,7 @@ describe('screeningStore', () => {
         universeSize: 0,
         candidateCount: 0,
         aiTopK: 5,
+        tradeDate: '2026-03-17',
         failedSymbols: [],
         warnings: [],
         syncFailureRatio: 0,
@@ -106,25 +144,15 @@ describe('screeningStore', () => {
 
       expect(screeningApi.createRun).toHaveBeenCalled();
       expect(useScreeningStore.getState().currentRun).not.toBeNull();
+      expect(useScreeningStore.getState().tradeDate).toBe('2026-03-17');
     });
 
     it('shows a pending placeholder immediately before createRun resolves', async () => {
-      let resolveRun: ((value: {
-        runId: string;
-        status: 'pending';
-        universeSize: number;
-        candidateCount: number;
-        aiTopK: number;
-        failedSymbols: string[];
-        warnings: string[];
-        syncFailureRatio: number;
-        configSnapshot: Record<string, unknown>;
-        notificationAttempts: number;
-      }) => void) | null = null;
+      const holder: { resolve: ((value: ScreeningRun) => void) | null } = { resolve: null };
 
       vi.mocked(screeningApi.createRun).mockReturnValue(
         new Promise((resolve) => {
-          resolveRun = resolve;
+          holder.resolve = resolve;
         }),
       );
 
@@ -154,7 +182,7 @@ describe('screeningStore', () => {
       });
       expect(useScreeningStore.getState().candidates).toEqual([]);
 
-      resolveRun?.({
+      holder.resolve?.({
         runId: 'run-new',
         status: 'pending',
         universeSize: 0,
@@ -200,7 +228,7 @@ describe('screeningStore', () => {
     });
 
     it('hydrates currentRun from the latest history item when empty', async () => {
-      const latestRun = {
+      const latestRun: ScreeningRun = {
         runId: 'run-latest',
         status: 'completed',
         universeSize: 5000,
@@ -223,7 +251,7 @@ describe('screeningStore', () => {
     });
 
     it('resumes polling when the latest history item is still running', async () => {
-      const inProgressRun = {
+      const inProgressRun: ScreeningRun = {
         runId: 'run-active',
         status: 'screening',
         universeSize: 5000,
@@ -271,6 +299,65 @@ describe('screeningStore', () => {
       expect(state.isRunning).toBe(false);
       expect(state.currentRun).toBeNull();
       expect(state.candidates).toEqual([]);
+    });
+  });
+
+  describe('deleteRun', () => {
+    it('removes a deleted current run and clears related state', async () => {
+      vi.mocked(screeningApi.deleteRun).mockResolvedValue({
+        success: true,
+        message: 'ok',
+      });
+      useScreeningStore.setState({
+        currentRun: {
+          runId: 'run-1',
+          status: 'failed',
+          universeSize: 0,
+          candidateCount: 0,
+          aiTopK: 0,
+          failedSymbols: [],
+          warnings: [],
+          syncFailureRatio: 0,
+          configSnapshot: {},
+          notificationAttempts: 0,
+        },
+        runHistory: [
+          {
+            runId: 'run-1',
+            status: 'failed',
+            universeSize: 0,
+            candidateCount: 0,
+            aiTopK: 0,
+            failedSymbols: [],
+            warnings: [],
+            syncFailureRatio: 0,
+            configSnapshot: {},
+            notificationAttempts: 0,
+          },
+          {
+            runId: 'run-2',
+            status: 'completed',
+            universeSize: 10,
+            candidateCount: 1,
+            aiTopK: 0,
+            failedSymbols: [],
+            warnings: [],
+            syncFailureRatio: 0,
+            configSnapshot: {},
+            notificationAttempts: 0,
+          },
+        ],
+        candidates: [{ code: '600519' } as never],
+        selectedCandidate: { code: '600519' } as never,
+      });
+
+      await useScreeningStore.getState().deleteRun('run-1');
+
+      expect(screeningApi.deleteRun).toHaveBeenCalledWith('run-1');
+      expect(useScreeningStore.getState().currentRun).toBeNull();
+      expect(useScreeningStore.getState().runHistory.map((run) => run.runId)).toEqual(['run-2']);
+      expect(useScreeningStore.getState().candidates).toEqual([]);
+      expect(useScreeningStore.getState().selectedCandidate).toBeNull();
     });
   });
 });

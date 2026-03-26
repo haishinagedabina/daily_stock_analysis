@@ -214,10 +214,12 @@ class StrategyScreeningEngine:
             field_val = row.get(fc.field)
             if field_val is not None:
                 hits.append(f"{fc.field}:{fc.op}:{fc.value or fc.value_ref}")
-        # 合并因子中以 _hit_reasons 结尾的字段（如 bottom_divergence_hit_reasons）
+        # 只合并与当前策略相关的 hit_reasons（前缀匹配）
         for key, val in row.items():
             if key.endswith("_hit_reasons") and isinstance(val, list):
-                hits.extend(val)
+                prefix = key[: -len("_hit_reasons")]
+                if rule.strategy_name.startswith(prefix):
+                    hits.extend(val)
         return hits
 
     @staticmethod
@@ -227,7 +229,7 @@ class StrategyScreeningEngine:
     ) -> List[CandidateResult]:
         candidates: List[CandidateResult] = []
         for acc in candidate_map.values():
-            final_score = max(acc.strategy_scores.values()) if acc.strategy_scores else 0.0
+            final_score = sum(acc.strategy_scores.values()) if acc.strategy_scores else 0.0
             unique_hits = list(dict.fromkeys(acc.rule_hits))
             candidates.append(CandidateResult(
                 code=acc.code,

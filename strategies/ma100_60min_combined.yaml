@@ -1,0 +1,58 @@
+# MA100 + 60-Minute Entry Signal Combined Strategy / MA100+60分钟线 (Strategy 3)
+# Gate: above MA100 + breakout freshness ≤ 5 bars.  60-min used only as entry guidance.
+
+name: ma100_60min_combined
+display_name: MA100+60分钟线
+description: 日线站上MA100 + 60分钟级别入场信号联合确认。选股仅用日线MA100突破（≤5根K线），60分钟线作为次日入场操作提示。
+category: trend
+core_rules: [1, 3]
+required_tools:
+  - get_daily_history
+  - get_realtime_quote
+
+screening:
+  filters:
+    - field: ma100_60min_confirmed
+      op: "=="
+      value: true
+  scoring:
+    - field: ma100_60min_freshness_score
+      weight: 35
+      cap: 1.0
+    - field: ma100_60min_ma_score
+      weight: 30
+      cap: 1.0
+    - field: volume_ratio
+      weight: 15
+      cap: 5.0
+    - field: trend_score
+      weight: 20
+
+instructions: |
+  **MA100+60分钟线（Strategy 3 — 多周期确认策略）**
+
+  本策略筛选日线刚站稳MA100的个股，60分钟线不参与选股，仅在结果中提示入场操作。
+
+  入选条件（全部满足 → ma100_60min_confirmed = True）：
+
+  1. **MA100站稳确认**：
+     - 收盘价 > MA100 均线（above_ma100 = True）。
+
+  2. **突破时效门控（硬性截断 ≤ 5 根K线）**：
+     - ma100_breakout_days 在 1~5 天内。
+     - 对应周线级别约刚突破周线MA20。
+     - 超过5天直接不入选。
+
+  3. **60分钟入场提示（非选股条件）**：
+     - 入选后在 hit_reasons 中提示：关注次日60分钟线。
+     - 突破60分钟MA20或站稳MA100时为入场信号。
+
+  评分权重：
+  - ma100_60min_freshness_score（35%）：突破新鲜度，1天=1.0，每多1天-0.1。
+  - ma100_60min_ma_score（30%）：MA100距离+新鲜度综合得分。
+  - volume_ratio（15%）：量比，流动性确认。
+  - trend_score（20%）：趋势评分辅助确认。
+
+  与 Strategy 2 叠加：若同时命中MA100+低位123结构，分数叠加排名更高。
+
+  选股理念：选股在于精而不在多，日线确认趋势，60分钟把握买点。

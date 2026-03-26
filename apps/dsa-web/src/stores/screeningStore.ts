@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { screeningApi } from "../api/screening";
 import type { ParsedApiError } from "../api/error";
-import { createParsedApiError } from "../api/error";
+import { createParsedApiError, getParsedApiError } from "../api/error";
 import type {
   ScreeningCandidate,
   ScreeningCandidateDetail,
@@ -9,7 +9,16 @@ import type {
   ScreeningRun,
   ScreeningStrategy,
 } from "../types/screening";
-import { isTerminalStatus } from "../types/screening";
+import { isTerminalStatus, TARGET_STRATEGIES } from "../types/screening";
+import {
+  buildTodayScreeningBlockDialog,
+  getTodayInShanghai,
+} from "../utils/screeningTradeDate";
+
+interface ScreeningBlockingDialog {
+  title: string;
+  message: string;
+}
 
 interface ScreeningState {
   // strategies
@@ -39,6 +48,7 @@ interface ScreeningState {
 
   // errors
   error: ParsedApiError | null;
+  blockingDialog: ScreeningBlockingDialog | null;
 
   // actions
   fetchStrategies: () => Promise<void>;
@@ -52,16 +62,18 @@ interface ScreeningState {
   stopPolling: () => void;
   fetchRunHistory: () => Promise<void>;
   clearRunHistory: () => Promise<void>;
+  deleteRun: (runId: string) => Promise<void>;
   selectRun: (run: ScreeningRun) => Promise<void>;
   fetchCandidates: (runId: string) => Promise<void>;
   selectCandidate: (runId: string, code: string) => Promise<void>;
   clearSelectedCandidate: () => void;
   sendNotification: (runId: string, force?: boolean) => Promise<void>;
   setError: (error: ParsedApiError | null) => void;
+  clearBlockingDialog: () => void;
   reset: () => void;
 }
 
-const today = () => new Date().toISOString().split("T")[0];
+const today = () => getTodayInShanghai();
 
 export const useScreeningStore = create<ScreeningState>((set, get) => ({
   strategies: [],
@@ -80,18 +92,34 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
   candidatesLoading: false,
   selectedCandidate: null,
   error: null,
+  blockingDialog: null,
 
   fetchStrategies: async () => {
     set({ strategiesLoading: true });
     try {
       const data = await screeningApi.getStrategies();
+      const backendNames = new Set(
+        data.strategies
+          .filter((s) => s.hasScreeningRules)
+          .map((s) => s.name),
+      );
+      // Show only the 4 target strategies; mark as enabled only if backend has rules
+      const merged = TARGET_STRATEGIES.map((t) => ({
+        ...t,
+        hasScreeningRules: t.hasScreeningRules && backendNames.has(t.name),
+      }));
       set({
-        strategies: data.strategies,
+        strategies: merged,
         selectedStrategies: [],
         strategiesLoading: false,
       });
     } catch {
-      set({ strategiesLoading: false });
+      // On API failure, still show target strategies with predefined states
+      set({
+        strategies: TARGET_STRATEGIES,
+        selectedStrategies: [],
+        strategiesLoading: false,
+      });
     }
   },
 
@@ -104,6 +132,15 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
   startScreening: async () => {
     const { mode, candidateLimit, aiTopK, selectedStrategies, tradeDate } =
       get();
+    const blockingDialog = buildTodayScreeningBlockDialog(tradeDate);
+    if (blockingDialog) {
+      set({
+        isRunning: false,
+        error: null,
+        blockingDialog,
+      });
+      return;
+    }
     set({
       currentRun: {
         runId: "pending-local-run",
@@ -128,6 +165,7 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
       candidates: [],
       selectedCandidate: null,
       error: null,
+      blockingDialog: null,
     });
     try {
       const run = await screeningApi.createRun({
@@ -138,13 +176,27 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
           selectedStrategies.length > 0 ? selectedStrategies : undefined,
         tradeDate: tradeDate || undefined,
       });
-      set({ currentRun: run });
+      set({
+        currentRun: run,
+        tradeDate: run.tradeDate || tradeDate,
+      });
       get().pollRunStatus(run.runId);
     } catch (err) {
+      const parsedError = getParsedApiError(err);
+      if (parsedError.category === "screening_trade_time_not_ready") {
+        set({
+          isRunning: false,
+          blockingDialog: {
+            title: parsedError.title,
+            message: parsedError.message,
+          },
+          error: null,
+        });
+        return;
+      }
       set({
         isRunning: false,
-        error:
-          (err as { parsedApiError?: ParsedApiError }).parsedApiError || null,
+        error: parsedError,
       });
     }
   },
@@ -256,6 +308,31 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
     }
   },
 
+  deleteRun: async (runId) => {
+    try {
+      await screeningApi.deleteRun(runId);
+      const { currentRun, pollingTimer, runHistory } = get();
+      const deletingCurrentRun = currentRun?.runId === runId;
+
+      if (deletingCurrentRun && pollingTimer) {
+        get().stopPolling();
+      }
+
+      set({
+        runHistory: runHistory.filter((run) => run.runId !== runId),
+        currentRun: deletingCurrentRun ? null : currentRun,
+        candidates: deletingCurrentRun ? [] : get().candidates,
+        selectedCandidate: deletingCurrentRun ? null : get().selectedCandidate,
+        isRunning: deletingCurrentRun ? false : get().isRunning,
+      });
+    } catch (err) {
+      set({
+        error:
+          (err as { parsedApiError?: ParsedApiError }).parsedApiError || null,
+      });
+    }
+  },
+
   fetchCandidates: async (runId) => {
     set({ candidatesLoading: true });
     try {
@@ -290,6 +367,7 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
   },
 
   setError: (error) => set({ error }),
+  clearBlockingDialog: () => set({ blockingDialog: null }),
 
   reset: () => {
     get().stopPolling();
@@ -299,6 +377,7 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
       candidates: [],
       selectedCandidate: null,
       error: null,
+      blockingDialog: null,
     });
   },
 }));

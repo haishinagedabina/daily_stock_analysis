@@ -1,16 +1,17 @@
 import os
 import tempfile
 import logging
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import MagicMock
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
 
 from src.config import Config
 from src.services.candidate_analysis_service import CandidateAnalysisBatchResult
-from src.services.screening_task_service import ScreeningTaskService
+from src.services.screening_task_service import ScreeningTaskService, ScreeningTradeDateNotReadyError
 from src.services.universe_service import LocalUniverseNotReadyError
 from src.storage import DatabaseManager
 
@@ -160,6 +161,179 @@ def test_screening_task_service_executes_full_pipeline_and_limits_ai_top_k():
     assert saved_candidates[1]["selected_for_ai"] is False
     candidate_analysis_service.analyze_top_k.assert_called_once()
     market_data_sync_service.sync_trade_date.assert_called_once()
+
+
+def test_screening_task_service_uses_full_market_sync_for_manual_today_run():
+    today = date.today()
+
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-full-market-sync"
+    db.get_screening_run.return_value = {
+        "run_id": "run-full-market-sync",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [
+            {"code": "600519", "name": "贵州茅台"},
+            {"code": "000001", "name": "平安银行"},
+        ]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = today
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台", "close": 1500.0}]
+    )
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": today.isoformat(),
+        "total": 2,
+        "synced": 2,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_market_guard_enabled = False
+
+    result = service.execute_run(
+        trade_date=today,
+        stock_codes=None,
+        candidate_limit=30,
+        ai_top_k=0,
+    )
+
+    assert result["status"] == "completed"
+    sync_kwargs = market_data_sync_service.sync_trade_date.call_args.kwargs
+    assert sync_kwargs["trade_date"] == today
+    assert sync_kwargs["stock_codes"] is None
+
+
+def test_resolve_screening_trade_date_rolls_non_trading_day_back_to_previous_session():
+    requested_trade_date = date(2026, 3, 15)
+    market_now = datetime(2026, 3, 16, 15, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    with patch("src.services.screening_task_service.is_market_open", side_effect=[False, False, True]):
+        resolved_trade_date, warning = ScreeningTaskService._resolve_screening_trade_date(
+            requested_trade_date=requested_trade_date,
+            market="cn",
+            market_now=market_now,
+        )
+
+    assert resolved_trade_date == date(2026, 3, 13)
+    assert warning is not None
+    assert "2026-03-15" in warning
+    assert "2026-03-13" in warning
+
+
+def test_resolve_screening_trade_date_blocks_today_before_market_close():
+    requested_trade_date = date(2026, 3, 13)
+    market_now = datetime(2026, 3, 13, 14, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    with patch("src.services.screening_task_service.is_market_open", return_value=True):
+        with pytest.raises(ScreeningTradeDateNotReadyError) as exc_info:
+            ScreeningTaskService._resolve_screening_trade_date(
+                requested_trade_date=requested_trade_date,
+                market="cn",
+                market_now=market_now,
+            )
+
+    assert exc_info.value.error_code == "screening_trade_time_not_ready"
+    assert "15:00" in str(exc_info.value)
+
+
+def test_screening_task_service_uses_previous_trading_date_when_requested_date_is_not_open():
+    requested_trade_date = date(2026, 3, 15)
+    resolved_trade_date = date(2026, 3, 13)
+
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-prev-trading-date"
+    db.get_screening_run.return_value = {
+        "run_id": "run-prev-trading-date",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+        "warnings": [f"所选日期 {requested_trade_date.isoformat()} 非交易日，已自动切换到最近交易日 {resolved_trade_date.isoformat()}"],
+        "sync_failure_ratio": 0.0,
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = resolved_trade_date
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台", "close": 1500.0}]
+    )
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": resolved_trade_date.isoformat(),
+        "total": 1,
+        "synced": 1,
+        "skipped": 0,
+        "errors": [],
+        "health_report": {},
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_market_guard_enabled = False
+
+    with patch.object(
+        ScreeningTaskService,
+        "_resolve_screening_trade_date",
+        return_value=(
+            resolved_trade_date,
+            f"所选日期 {requested_trade_date.isoformat()} 非交易日，已自动切换到最近交易日 {resolved_trade_date.isoformat()}",
+        ),
+    ):
+        result = service.execute_run(
+            trade_date=requested_trade_date,
+            stock_codes=None,
+            candidate_limit=30,
+            ai_top_k=0,
+        )
+
+    assert result["status"] == "completed"
+    assert db.create_screening_run.call_args.kwargs["trade_date"] == resolved_trade_date
+    assert market_data_sync_service.sync_trade_date.call_args.kwargs["trade_date"] == resolved_trade_date
+    update_context_calls = db.update_screening_run_context.call_args_list
+    assert any(
+        call.kwargs["config_snapshot_updates"]["warnings"] == [
+            f"所选日期 {requested_trade_date.isoformat()} 非交易日，已自动切换到最近交易日 {resolved_trade_date.isoformat()}"
+        ]
+        for call in update_context_calls
+        if "warnings" in call.kwargs["config_snapshot_updates"]
+    )
 
 
 def test_screening_task_service_completes_with_ai_degraded_when_ai_analysis_fails():
@@ -990,6 +1164,95 @@ def test_screening_task_service_returns_existing_run_when_failed_rerun_already_c
 
     assert result["run_id"] == "run-claimed"
     assert result["status"] == "pending"
+
+
+def test_get_run_recovers_stale_non_terminal_run_before_returning():
+    db = MagicMock()
+    stale_run = {
+        "run_id": "run-stale-get",
+        "mode": "balanced",
+        "status": "screening",
+        "candidate_count": 0,
+        "started_at": datetime(2026, 3, 13, 10, 0),
+        "last_activity_at": datetime(2026, 3, 13, 10, 5),
+        "config_snapshot": {},
+    }
+    recovered_run = {
+        "run_id": "run-stale-get",
+        "mode": "balanced",
+        "status": "failed",
+        "candidate_count": 0,
+        "error_summary": "任务超时",
+        "config_snapshot": {},
+    }
+    db.get_screening_run.side_effect = [stale_run, recovered_run]
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=MagicMock(),
+        factor_service=MagicMock(),
+        screener_service=MagicMock(),
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=MagicMock(),
+    )
+
+    with patch.object(service, "_recover_stale_run", return_value=None) as recover_mock:
+        result = service.get_run("run-stale-get")
+
+    recover_mock.assert_called_once_with(stale_run)
+    assert db.get_screening_run.call_count == 2
+    assert result is not None
+    assert result["run_id"] == "run-stale-get"
+    assert result["status"] == "failed"
+
+
+def test_list_runs_recovers_stale_non_terminal_runs_before_returning():
+    db = MagicMock()
+    stale_run = {
+        "run_id": "run-stale-list",
+        "mode": "balanced",
+        "status": "ingesting",
+        "candidate_count": 0,
+        "started_at": datetime(2026, 3, 13, 10, 0),
+        "last_activity_at": datetime(2026, 3, 13, 10, 5),
+        "config_snapshot": {},
+    }
+    completed_run = {
+        "run_id": "run-completed",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 1,
+        "config_snapshot": {},
+    }
+    refreshed_stale_run = {
+        "run_id": "run-stale-list",
+        "mode": "balanced",
+        "status": "failed",
+        "candidate_count": 0,
+        "error_summary": "任务超时",
+        "config_snapshot": {},
+    }
+    db.list_screening_runs.return_value = [stale_run, completed_run]
+    db.get_screening_run.return_value = refreshed_stale_run
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=MagicMock(),
+        factor_service=MagicMock(),
+        screener_service=MagicMock(),
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=MagicMock(),
+    )
+
+    with patch.object(service, "_recover_stale_run", side_effect=[None, completed_run]) as recover_mock:
+        result = service.list_runs(limit=20)
+
+    assert recover_mock.call_args_list[0].args[0] == stale_run
+    assert recover_mock.call_args_list[1].args[0] == completed_run
+    db.get_screening_run.assert_called_once_with("run-stale-list")
+    assert [item["run_id"] for item in result] == ["run-stale-list", "run-completed"]
+    assert result[0]["status"] == "failed"
+    assert result[1]["status"] == "completed"
 
 
 @patch("src.services.screening_task_service.get_config")

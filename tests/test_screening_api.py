@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import src.auth as auth
 from api.app import create_app
 from src.config import Config
+from src.services.screening_task_service import ScreeningTradeDateNotReadyError
 
 
 class ScreeningApiTestCase(unittest.TestCase):
@@ -575,6 +576,53 @@ class ScreeningApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         payload = response.json()
         self.assertEqual(payload["error"], "validation_error")
+
+    @patch("api.v1.endpoints.screening.ScreeningTaskService")
+    def test_create_run_returns_specific_error_code_when_today_data_is_not_ready(self, service_cls) -> None:
+        service = service_cls.return_value
+        service.config.screening_default_mode = "balanced"
+        service.config.screening_candidate_limit = 30
+        service.config.screening_ai_top_k = 5
+        service.resolve_run_config.return_value.candidate_limit = 30
+        service.resolve_run_config.return_value.ai_top_k = 5
+        service.execute_run.side_effect = ScreeningTradeDateNotReadyError(
+            "当前时间未到 15:00（Asia/Shanghai），今日 A 股日线数据未完全收盘，请选择上一交易日或 15:00 后再试。"
+        )
+
+        response = self.client.post(
+            "/api/v1/screening/runs",
+            json={
+                "trade_date": "2026-03-13",
+                "market": "cn",
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        payload = response.json()
+        self.assertEqual(payload["error"], "screening_trade_time_not_ready")
+
+    @patch("api.v1.endpoints.screening.ScreeningTaskService")
+    def test_delete_run_returns_success_response(self, service_cls) -> None:
+        service = service_cls.return_value
+        service.delete_run.return_value = True
+
+        response = self.client.delete("/api/v1/screening/runs/run-123")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertIn("run-123", payload["message"])
+
+    @patch("api.v1.endpoints.screening.ScreeningTaskService")
+    def test_delete_run_returns_404_when_missing(self, service_cls) -> None:
+        service = service_cls.return_value
+        service.delete_run.return_value = False
+
+        response = self.client.delete("/api/v1/screening/runs/run-missing")
+
+        self.assertEqual(response.status_code, 404)
+        payload = response.json()
+        self.assertEqual(payload["error"], "not_found")
 
 
 if __name__ == "__main__":

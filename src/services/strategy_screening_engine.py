@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 
@@ -26,6 +26,15 @@ class FilterCondition:
 
 
 @dataclass(frozen=True)
+class FilterGroup:
+    mode: str
+    conditions: List["FilterNode"] = field(default_factory=list)
+
+
+FilterNode = Union[FilterCondition, FilterGroup]
+
+
+@dataclass(frozen=True)
 class ScoringWeight:
     field: str
     weight: float
@@ -40,7 +49,7 @@ class StrategyScreeningRule:
     strategy_name: str
     display_name: str
     category: str
-    filters: List[FilterCondition] = field(default_factory=list)
+    filters: List[FilterNode] = field(default_factory=list)
     scoring: List[ScoringWeight] = field(default_factory=list)
 
 
@@ -197,7 +206,7 @@ class StrategyScreeningEngine:
     def _passes_strategy_filters(
         self, rule: StrategyScreeningRule, row: Dict[str, Any]
     ) -> bool:
-        return all(self.evaluate_filter(fc, row) for fc in rule.filters)
+        return all(self._evaluate_filter_node(node, row) for node in rule.filters)
 
     def _compute_strategy_score(
         self, rule: StrategyScreeningRule, row: Dict[str, Any]
@@ -210,7 +219,7 @@ class StrategyScreeningEngine:
         rule: StrategyScreeningRule, row: Dict[str, Any]
     ) -> List[str]:
         hits = [f"strategy:{rule.strategy_name}"]
-        for fc in rule.filters:
+        for fc in _iter_filter_conditions(rule.filters):
             field_val = row.get(fc.field)
             if field_val is not None:
                 hits.append(f"{fc.field}:{fc.op}:{fc.value or fc.value_ref}")
@@ -221,6 +230,17 @@ class StrategyScreeningEngine:
                 if rule.strategy_name.startswith(prefix):
                     hits.extend(val)
         return hits
+
+    def _evaluate_filter_node(self, node: FilterNode, row: Dict[str, Any]) -> bool:
+        if isinstance(node, FilterCondition):
+            return self.evaluate_filter(node, row)
+        if isinstance(node, FilterGroup):
+            if not node.conditions:
+                return True
+            if node.mode == "any":
+                return any(self._evaluate_filter_node(child, row) for child in node.conditions)
+            return all(self._evaluate_filter_node(child, row) for child in node.conditions)
+        return False
 
     @staticmethod
     def _build_sorted_candidates(
@@ -263,16 +283,11 @@ def build_rules_from_skills(
         if not screening or not isinstance(screening, dict):
             continue
 
-        filters = [
-            FilterCondition(
-                field=f["field"],
-                op=f["op"],
-                value=f.get("value"),
-                value_ref=f.get("value_ref"),
-            )
-            for f in screening.get("filters", [])
-            if isinstance(f, dict) and "field" in f and "op" in f
-        ]
+        filters = []
+        for filter_item in screening.get("filters", []):
+            parsed = _parse_filter_node(filter_item)
+            if parsed is not None:
+                filters.append(parsed)
 
         scoring = [
             ScoringWeight(
@@ -296,6 +311,40 @@ def build_rules_from_skills(
         ))
 
     return rules
+
+
+def _parse_filter_node(raw: Any) -> Optional[FilterNode]:
+    if not isinstance(raw, dict):
+        return None
+    if "field" in raw and "op" in raw:
+        return FilterCondition(
+            field=raw["field"],
+            op=raw["op"],
+            value=raw.get("value"),
+            value_ref=raw.get("value_ref"),
+        )
+    for mode in ("all", "any"):
+        items = raw.get(mode)
+        if isinstance(items, list):
+            children = [
+                parsed
+                for item in items
+                for parsed in [_parse_filter_node(item)]
+                if parsed is not None
+            ]
+            return FilterGroup(mode=mode, conditions=children)
+    return None
+
+
+def _iter_filter_conditions(nodes: List[FilterNode]) -> List[FilterCondition]:
+    flattened: List[FilterCondition] = []
+    for node in nodes:
+        if isinstance(node, FilterCondition):
+            flattened.append(node)
+            continue
+        if isinstance(node, FilterGroup):
+            flattened.extend(_iter_filter_conditions(node.conditions))
+    return flattened
 
 
 # ── Internal accumulator ─────────────────────────────────────────────────────

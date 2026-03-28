@@ -120,6 +120,7 @@ class ScreeningTaskService:
             runtime_config=runtime_config,
             ingest_failure_threshold=float(getattr(self.config, "screening_ingest_failure_threshold", 0.20)),
             strategy_names=strategy_names,
+            theme_context=self._theme_context,
         )
         if trade_date is not None and resolved_trade_date != requested_trade_date:
             run_snapshot["resolved_trade_date"] = resolved_trade_date.isoformat()
@@ -788,6 +789,7 @@ class ScreeningTaskService:
         runtime_config: ResolvedScreeningRuntimeConfig,
         ingest_failure_threshold: float,
         strategy_names: Optional[List[str]] = None,
+        theme_context: Optional[Any] = None,
     ) -> Dict[str, Any]:
         snapshot = {
             "requested_trade_date": requested_trade_date.isoformat(),
@@ -797,7 +799,32 @@ class ScreeningTaskService:
         }
         if strategy_names:
             snapshot["strategy_names"] = sorted(strategy_names)
+        if theme_context is not None:
+            snapshot["theme_context"] = ScreeningTaskService._serialize_theme_context(theme_context)
         return snapshot
+
+    @staticmethod
+    def _serialize_theme_context(theme_context: Any) -> Dict[str, Any]:
+        themes = []
+        for theme in getattr(theme_context, "themes", []) or []:
+            themes.append(
+                {
+                    "name": getattr(theme, "name", None),
+                    "heat_score": getattr(theme, "heat_score", 0.0),
+                    "confidence": getattr(theme, "confidence", 0.0),
+                    "catalyst_summary": getattr(theme, "catalyst_summary", None),
+                    "keywords": list(getattr(theme, "keywords", []) or []),
+                    "evidence": list(getattr(theme, "evidence", []) or []),
+                }
+            )
+
+        return {
+            "source": getattr(theme_context, "source", None),
+            "trade_date": getattr(theme_context, "trade_date", None),
+            "market": getattr(theme_context, "market", None),
+            "accepted_at": getattr(theme_context, "accepted_at", None),
+            "themes": themes,
+        }
 
     @staticmethod
     def _validate_resume_stage(existing_run: Dict[str, Any], resume_stage: Optional[str]) -> None:

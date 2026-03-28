@@ -82,7 +82,7 @@ export interface ScreeningCandidate {
   ruleScore: number;
   selectedForAi: boolean;
   ruleHits: string[];
-  factorSnapshot: Record<string, unknown>;
+  factorSnapshot: ScreeningFactorSnapshot;
   aiQueryId?: string;
   aiSummary?: string;
   aiOperationAdvice?: string;
@@ -114,6 +114,56 @@ export interface ScreeningCandidateDetail extends ScreeningCandidate {
     analysisSummary?: string;
     createdAt?: string;
   };
+}
+
+export interface HotThemeNewsItem {
+  title: string;
+  source?: string;
+  summary?: string;
+  url?: string;
+  published_at?: string;
+  heat_score?: number;
+}
+
+export interface ScreeningPhaseResults {
+  phase1_market_and_theme?: boolean;
+  phase2_leader_screen?: boolean;
+  phase3_core_signal?: boolean;
+  phase4_entry_readiness?: boolean;
+  phase5_risk_controls?: boolean;
+}
+
+export interface ScreeningPhaseExplanation {
+  phase_key: keyof ScreeningPhaseResults;
+  label: string;
+  hit: boolean;
+  summary: string;
+}
+
+export interface ScreeningRiskParams {
+  stop_loss?: number;
+  position_size?: string;
+  take_profit_ratio?: number;
+}
+
+export interface ScreeningFactorSnapshot extends Record<string, unknown> {
+  close?: number;
+  volume_ratio?: number;
+  pct_chg?: number;
+  is_hot_theme_stock?: boolean;
+  primary_theme?: string;
+  theme_heat_score?: number;
+  theme_match_score?: number;
+  leader_score?: number;
+  extreme_strength_score?: number;
+  entry_reason?: string;
+  core_signal?: string;
+  theme_catalyst_summary?: string;
+  theme_catalyst_news?: HotThemeNewsItem[];
+  phase_results?: ScreeningPhaseResults;
+  phase_explanations?: ScreeningPhaseExplanation[];
+  risk_params?: ScreeningRiskParams;
+  extreme_strength_reasons?: string[];
 }
 
 // ============ 通知 ============

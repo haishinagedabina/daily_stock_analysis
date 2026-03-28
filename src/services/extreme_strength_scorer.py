@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Extreme strength scorer for hot theme stocks."""
 
+from typing import Optional
+
 
 class ExtremeStrengthScorer:
     """Calculate extreme strength score for hot theme stocks."""
@@ -43,8 +45,8 @@ class ExtremeStrengthScorer:
         theme_heat_score: float,
         leader_score: float,
         volume_ratio: float,
-        turnover_rate: float,
-        circ_mv: float,
+        turnover_rate: Optional[float],
+        circ_mv: Optional[float],
         breakout_ratio: float,
     ) -> float:
         """
@@ -69,12 +71,14 @@ class ExtremeStrengthScorer:
             score += min(8.0, (volume_ratio - 1.0) * 8.0)
 
         # Turnover rate (0-10% -> 0-6)
-        score += min(6.0, turnover_rate * 60.0)
+        normalized_turnover = self._normalize_turnover_rate(turnover_rate)
+        if normalized_turnover is not None:
+            score += min(6.0, normalized_turnover * 60.0)
 
         # Small circulation market value (< 50B -> 6)
-        if circ_mv < 50_000_000_000:
+        if circ_mv is not None and circ_mv < 50_000_000_000:
             score += 6.0
-        elif circ_mv < 100_000_000_000:
+        elif circ_mv is not None and circ_mv < 100_000_000_000:
             score += 3.0
 
         # Breakout ratio (0.5-2.0 -> 0-8)
@@ -93,8 +97,8 @@ class ExtremeStrengthScorer:
         theme_heat_score: float,
         leader_score: float,
         volume_ratio: float,
-        turnover_rate: float,
-        circ_mv: float,
+        turnover_rate: Optional[float],
+        circ_mv: Optional[float],
         breakout_ratio: float,
     ) -> float:
         """
@@ -121,6 +125,14 @@ class ExtremeStrengthScorer:
             breakout_ratio=breakout_ratio,
         )
         return base + signals + auxiliary
+
+    @staticmethod
+    def _normalize_turnover_rate(turnover_rate: Optional[float]) -> Optional[float]:
+        if turnover_rate is None:
+            return None
+        if turnover_rate > 1:
+            return turnover_rate / 100.0
+        return turnover_rate
 
     def is_selected(self, extreme_strength_score: float) -> bool:
         """Check if stock is selected (score >= 80)."""

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Leader score calculator for hot theme stocks."""
 
+from typing import Optional
+
 
 class LeaderScoreCalculator:
     """Calculate leader score for hot theme stocks (100 point scale)."""
@@ -9,11 +11,13 @@ class LeaderScoreCalculator:
         """Calculate theme match component (0-35 points)."""
         return theme_match_score * 35
 
-    def calculate_small_circ_mv_score(self, circ_mv: float) -> float:
+    def calculate_small_circ_mv_score(self, circ_mv: Optional[float]) -> float:
         """
         Calculate small circulation market value component (0-20 points).
         < 50B: 20, 50-100B: 10, > 100B: 0
         """
+        if circ_mv is None:
+            return 0.0
         if circ_mv < 50_000_000_000:
             return 20.0
         elif circ_mv < 100_000_000_000:
@@ -21,11 +25,23 @@ class LeaderScoreCalculator:
         else:
             return 0.0
 
-    def calculate_turnover_score(self, turnover_rate: float) -> float:
+    @staticmethod
+    def normalize_turnover_rate(turnover_rate: Optional[float]) -> Optional[float]:
+        """Normalize turnover to decimal form; accept either 0.05 or 5.0 as 5%."""
+        if turnover_rate is None:
+            return None
+        if turnover_rate > 1:
+            return turnover_rate / 100.0
+        return turnover_rate
+
+    def calculate_turnover_score(self, turnover_rate: Optional[float]) -> float:
         """
         Calculate turnover rate component (0-20 points).
         > 5%: 20, 2-5%: 10, < 2%: 0
         """
+        turnover_rate = self.normalize_turnover_rate(turnover_rate)
+        if turnover_rate is None:
+            return 0.0
         if turnover_rate > 0.05:
             return 20.0
         elif turnover_rate >= 0.02:
@@ -69,8 +85,8 @@ class LeaderScoreCalculator:
     def calculate_leader_score(
         self,
         theme_match_score: float,
-        circ_mv: float,
-        turnover_rate: float,
+        circ_mv: Optional[float],
+        turnover_rate: Optional[float],
         is_limit_up: bool,
         gap_breakaway: bool,
         above_ma100: bool,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -31,6 +31,7 @@ class FactorService:
         breakout_lookback_days: Optional[int] = None,
         min_list_days: Optional[int] = None,
         theme_context: Optional[object] = None,
+        fetcher_manager: Optional[Any] = None,
     ) -> None:
         config = get_config()
         self.db = db_manager or DatabaseManager.get_instance()
@@ -46,6 +47,7 @@ class FactorService:
             else config.screening_breakout_lookback_days
         )
         self.theme_context = theme_context
+        self.fetcher_manager = fetcher_manager
 
     def build_factor_snapshot(
         self,
@@ -180,11 +182,12 @@ class FactorService:
             from src.services.hot_theme_factor_enricher import HotThemeFactorEnricher
             enricher = HotThemeFactorEnricher()
             enriched_records = []
+            board_map = self._resolve_board_names_for_codes(snapshot_df["code"].dropna().tolist())
             for record in snapshot_df.to_dict("records"):
                 enriched = enricher.enrich_snapshot(
                     snapshot=record,
                     theme_context=self.theme_context,
-                    boards=[]
+                    boards=board_map.get(str(record.get("code", "")), []),
                 )
                 enriched_records.append(enriched)
             snapshot_df = pd.DataFrame(enriched_records)
@@ -192,6 +195,46 @@ class FactorService:
         if persist and not snapshot_df.empty:
             self.db.replace_factor_snapshots(trade_date=trade_date, snapshots=snapshot_df.to_dict("records"))
         return snapshot_df
+
+    def _resolve_board_names_for_codes(self, codes: List[str]) -> Dict[str, List[str]]:
+        board_map: Dict[str, List[str]] = {}
+        if not self.theme_context:
+            return board_map
+        for code in [str(item).strip() for item in codes if str(item).strip()]:
+            board_map[code] = self._resolve_board_names(code)
+        return board_map
+
+    def _resolve_board_names(self, code: str) -> List[str]:
+        manager = self._get_fetcher_manager()
+        if manager is None:
+            return []
+        try:
+            boards = manager.get_belong_boards(code)
+        except Exception:
+            return []
+        if not isinstance(boards, list):
+            return []
+
+        normalized: List[str] = []
+        for item in boards:
+            name = ""
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+            elif item is not None:
+                name = str(item).strip()
+            if name and name not in normalized:
+                normalized.append(name)
+        return normalized
+
+    def _get_fetcher_manager(self) -> Optional[Any]:
+        if self.fetcher_manager is not None:
+            return self.fetcher_manager
+        try:
+            from data_provider.base import DataFetcherManager
+        except Exception:
+            return None
+        self.fetcher_manager = DataFetcherManager()
+        return self.fetcher_manager
 
     def get_latest_trade_date(
         self,

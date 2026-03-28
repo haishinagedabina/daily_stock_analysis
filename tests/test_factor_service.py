@@ -8,6 +8,7 @@ import pandas as pd
 
 from src.config import Config
 from src.services.factor_service import FactorService
+from src.services.theme_context_ingest_service import ExternalTheme, OpenClawThemeContext
 from src.storage import DatabaseManager
 
 
@@ -161,6 +162,74 @@ class FactorServiceTestCase(unittest.TestCase):
         )
 
         self.assertIn("new_listing", risk_flags)
+
+    @patch("src.services.hot_theme_factor_enricher.HotThemeFactorEnricher.enrich_snapshot")
+    def test_build_factor_snapshot_passes_resolved_boards_to_theme_enricher(self, enrich_snapshot_mock) -> None:
+        start_date = date(2026, 3, 1)
+        rows = []
+        for idx in range(21):
+            trade_date = start_date + timedelta(days=idx)
+            close = 20.0 + idx * 0.2
+            rows.append(
+                {
+                    "date": trade_date,
+                    "open": close - 0.1,
+                    "high": close + 0.2,
+                    "low": close - 0.2,
+                    "close": close,
+                    "volume": 1000 + idx * 50,
+                    "amount": (1000 + idx * 50) * close,
+                    "pct_chg": 1.0,
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        self.db.save_daily_data(df, "300750", data_source="test")
+        universe_df = pd.DataFrame(
+            [{"code": "300750", "name": "寒武纪", "is_st": False, "list_date": date(2018, 6, 11)}]
+        )
+        theme_context = OpenClawThemeContext(
+            source="openclaw",
+            trade_date="2026-03-21",
+            market="cn",
+            themes=[
+                ExternalTheme(
+                    name="AI芯片",
+                    heat_score=90.0,
+                    confidence=0.9,
+                    catalyst_summary="政策催化",
+                    keywords=["AI", "芯片", "算力"],
+                    evidence=[],
+                )
+            ],
+            accepted_at="2026-03-21T15:00:00",
+        )
+
+        class _FakeFetcherManager:
+            def get_belong_boards(self, stock_code: str):
+                return [{"name": "AI芯片"}, {"name": "算力"}]
+
+        service = FactorService(
+            self.db,
+            lookback_days=40,
+            breakout_lookback_days=20,
+            theme_context=theme_context,
+            fetcher_manager=_FakeFetcherManager(),
+        )
+        enrich_snapshot_mock.side_effect = lambda snapshot, theme_context, boards: {
+            **snapshot,
+            "theme_boards": boards,
+            "is_hot_theme_stock": True,
+        }
+
+        snapshot_df = service.build_factor_snapshot(
+            universe_df=universe_df,
+            trade_date=rows[-1]["date"],
+        )
+
+        self.assertEqual(len(snapshot_df), 1)
+        self.assertEqual(enrich_snapshot_mock.call_args.kwargs["boards"], ["AI芯片", "算力"])
+        self.assertEqual(snapshot_df.iloc[0]["theme_boards"], ["AI芯片", "算力"])
 
 
 if __name__ == "__main__":

@@ -13,6 +13,14 @@ from src.services.core_signal_identifier import CoreSignalIdentifier
 class HotThemeFactorEnricher:
     """Enrich factor snapshots with hot theme context."""
 
+    PHASE_LABELS = {
+        "phase1_market_and_theme": "阶段1: 市场与题材",
+        "phase2_leader_screen": "阶段2: 龙头筛选",
+        "phase3_core_signal": "阶段3: 核心信号",
+        "phase4_entry_readiness": "阶段4: 入场准备",
+        "phase5_risk_controls": "阶段5: 风险控制",
+    }
+
     def __init__(self) -> None:
         """Initialize enricher with scoring services."""
         self.theme_matcher = ThemeMatchingService()
@@ -45,8 +53,25 @@ class HotThemeFactorEnricher:
             snapshot["bonus_signals"] = []
             snapshot["theme_catalyst_summary"] = None
             snapshot["theme_catalyst_news"] = []
-            snapshot["phase_results"] = {"phase1": False, "phase2": False, "phase3": False, "phase4": False, "phase5": False}
+            snapshot["phase_results"] = self._build_phase_results(
+                market_and_theme=False,
+                leader_screen=False,
+                core_signal=False,
+                entry_readiness=False,
+                risk_controls=False,
+            )
             snapshot["risk_params"] = {"stop_loss": 0, "position_size": "无", "take_profit_ratio": 0}
+            snapshot["phase_explanations"] = self._build_phase_explanations(
+                phase_results=snapshot["phase_results"],
+                primary_theme=None,
+                theme_match_score=0.0,
+                theme_heat_score=0.0,
+                leader_score=0,
+                core_signal=None,
+                entry_reason=None,
+                risk_params=snapshot["risk_params"],
+                extreme_strength_score=0.0,
+            )
             return snapshot
 
         stock_name = snapshot.get("name", "")
@@ -75,10 +100,12 @@ class HotThemeFactorEnricher:
         # Calculate leader score
         leader_score = 0
         if is_hot:
+            circ_mv = snapshot.get("circ_mv")
+            turnover_rate = snapshot.get("turnover_rate")
             leader_score = self.leader_calculator.calculate_leader_score(
                 theme_match_score=best_match_score,
-                circ_mv=snapshot.get("circ_mv", 0),
-                turnover_rate=snapshot.get("turnover_rate", 0),
+                circ_mv=circ_mv,
+                turnover_rate=turnover_rate,
                 is_limit_up=snapshot.get("is_limit_up", False),
                 gap_breakaway=snapshot.get("gap_breakaway", False),
                 above_ma100=snapshot.get("above_ma100", False),
@@ -106,30 +133,51 @@ class HotThemeFactorEnricher:
                 has_bottom_divergence=snapshot.get("bottom_divergence_double_breakout", False),
             )
 
-            # Calculate total score
-            extreme_strength_score = self.signal_identifier.calculate_total_score(
-                core_result["core_signal_score"],
-                bonus_result["bonus_score"],
+            # Calculate total score using the main strategy scorer.
+            extreme_strength_score = self.strength_scorer.calculate_extreme_strength_score(
+                above_ma100=snapshot.get("above_ma100", False),
+                gap_breakaway=snapshot.get("gap_breakaway", False),
+                pattern_123_low_trendline=snapshot.get("pattern_123_low_trendline", False),
+                is_limit_up=snapshot.get("is_limit_up", False),
+                bottom_divergence_double_breakout=snapshot.get("bottom_divergence_double_breakout", False),
+                theme_heat_score=best_theme_heat,
+                leader_score=leader_score,
+                volume_ratio=snapshot.get("volume_ratio", 0.0) or 0.0,
+                turnover_rate=snapshot.get("turnover_rate"),
+                circ_mv=snapshot.get("circ_mv"),
+                breakout_ratio=snapshot.get("breakout_ratio", 0.0) or 0.0,
             )
 
             core_signal = core_result["core_signal"]
             bonus_signals = bonus_result["bonus_signals"]
             extreme_strength_reasons = core_result["hit_reasons"] + bonus_result["hit_reasons"]
+            if snapshot.get("above_ma100"):
+                extreme_strength_reasons.append("MA100之上")
+            if snapshot.get("gap_breakaway"):
+                extreme_strength_reasons.append("跳空突破")
+            if snapshot.get("is_limit_up"):
+                extreme_strength_reasons.append("涨停")
+            extreme_strength_reasons = list(dict.fromkeys(extreme_strength_reasons))
 
             # Determine entry reason (龙头选出原因)
-            if snapshot.get("is_limit_up") and snapshot.get("intraday_minutes_since_open", 0) <= 30:
+            intraday_minutes = snapshot.get("intraday_minutes_since_open")
+            if (
+                snapshot.get("is_limit_up")
+                and isinstance(intraday_minutes, (int, float))
+                and intraday_minutes <= 30
+            ):
                 entry_reason = "开盘半小时内涨停"
             elif snapshot.get("above_ma100"):
                 entry_reason = "站上/刚突破MA100"
 
         # Build phase results
-        phase_results = {
-            "phase1": True,  # Market condition (checked at service level)
-            "phase2": is_hot,  # Theme validation
-            "phase3": is_hot and leader_score >= 50,  # Leader characteristics
-            "phase4": is_hot and extreme_strength_score >= 60,  # Core signals
-            "phase5": is_hot,  # Risk control applicable
-        }
+        phase_results = self._build_phase_results(
+            market_and_theme=is_hot,
+            leader_screen=is_hot and leader_score >= 50,
+            core_signal=is_hot and core_signal is not None,
+            entry_readiness=is_hot and extreme_strength_score >= 60 and entry_reason is not None,
+            risk_controls=is_hot,
+        )
 
         # Build risk params
         risk_params = {
@@ -167,6 +215,90 @@ class HotThemeFactorEnricher:
         snapshot["core_signal"] = core_signal
         snapshot["bonus_signals"] = bonus_signals
         snapshot["phase_results"] = phase_results
+        snapshot["phase_explanations"] = self._build_phase_explanations(
+            phase_results=phase_results,
+            primary_theme=best_theme.name if best_theme else None,
+            theme_match_score=best_match_score,
+            theme_heat_score=best_theme_heat,
+            leader_score=leader_score,
+            core_signal=core_signal,
+            entry_reason=entry_reason,
+            risk_params=risk_params,
+            extreme_strength_score=extreme_strength_score,
+        )
         snapshot["risk_params"] = risk_params
 
         return snapshot
+
+    @staticmethod
+    def _build_phase_results(
+        market_and_theme: bool,
+        leader_screen: bool,
+        core_signal: bool,
+        entry_readiness: bool,
+        risk_controls: bool,
+    ) -> Dict[str, bool]:
+        return {
+            "phase1_market_and_theme": market_and_theme,
+            "phase2_leader_screen": leader_screen,
+            "phase3_core_signal": core_signal,
+            "phase4_entry_readiness": entry_readiness,
+            "phase5_risk_controls": risk_controls,
+        }
+
+    def _build_phase_explanations(
+        self,
+        phase_results: Dict[str, bool],
+        primary_theme: Optional[str],
+        theme_match_score: float,
+        theme_heat_score: float,
+        leader_score: int,
+        core_signal: Optional[str],
+        entry_reason: Optional[str],
+        risk_params: Dict[str, Any],
+        extreme_strength_score: float,
+    ) -> List[Dict[str, Any]]:
+        stop_loss = float(risk_params.get("stop_loss", 0) or 0)
+        position_size = risk_params.get("position_size", "-")
+        take_profit_ratio = float(risk_params.get("take_profit_ratio", 0) or 0)
+
+        summaries = {
+            "phase1_market_and_theme": (
+                f"theme={primary_theme or '-'}; "
+                f"theme_match_score={theme_match_score:.2f}; "
+                f"theme_heat_score={theme_heat_score:.1f}"
+                if phase_results["phase1_market_and_theme"]
+                else "未通过热点题材匹配门槛"
+            ),
+            "phase2_leader_screen": (
+                f"leader_score={leader_score}"
+                if phase_results["phase2_leader_screen"]
+                else f"leader_score={leader_score}; 仍未达到龙头筛选阈值"
+            ),
+            "phase3_core_signal": (
+                f"core_signal={core_signal or '-'}"
+                if phase_results["phase3_core_signal"]
+                else "缺少关键缺口/涨停共振信号"
+            ),
+            "phase4_entry_readiness": (
+                f"entry_reason={entry_reason or '-'}; extreme_strength_score={extreme_strength_score:.1f}"
+                if phase_results["phase4_entry_readiness"]
+                else f"等待入场确认; extreme_strength_score={extreme_strength_score:.1f}"
+            ),
+            "phase5_risk_controls": (
+                f"stop_loss={stop_loss:.2f}; position_size={position_size}; "
+                f"take_profit_ratio={take_profit_ratio:.2f}"
+                if phase_results["phase5_risk_controls"]
+                else "尚未形成可执行的风险控制参数"
+            ),
+        }
+
+        return [
+            {
+                "phase_key": phase_key,
+                "label": label,
+                "hit": phase_results.get(phase_key, False),
+                "summary": summaries[phase_key],
+            }
+            for phase_key, label in self.PHASE_LABELS.items()
+        ]

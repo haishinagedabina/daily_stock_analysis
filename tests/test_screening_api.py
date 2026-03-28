@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -171,6 +172,76 @@ class ScreeningApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["status"], "completed_with_ai_degraded")
+
+    @patch("src.agent.skills.base.SkillManager")
+    @patch("api.v1.endpoints.screening.ScreeningTaskService")
+    def test_openclaw_theme_run_uses_skill_manager_and_requested_trade_date(
+        self,
+        service_cls,
+        skill_manager_cls,
+    ) -> None:
+        service = service_cls.return_value
+        service.execute_run.return_value = {
+            "run_id": "run-openclaw-1",
+            "status": "completed",
+        }
+        skill_manager = skill_manager_cls.return_value
+
+        response = self.client.post(
+            "/api/v1/screening/openclaw-theme-run",
+            json={
+                "trade_date": "2026-03-27",
+                "market": "cn",
+                "themes": [
+                    {
+                        "name": "AI芯片",
+                        "heat_score": 90,
+                        "confidence": 0.9,
+                        "catalyst_summary": "政策催化",
+                        "keywords": ["AI", "芯片", "算力"],
+                        "evidence": [],
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        skill_manager.load_builtin_strategies.assert_called_once()
+        service_cls.assert_called_once_with(skill_manager=skill_manager)
+        self.assertEqual(service.execute_run.call_args.kwargs["trade_date"], date(2026, 3, 27))
+        self.assertEqual(service.execute_run.call_args.kwargs["strategy_names"], ["extreme_strength_combo"])
+        self.assertEqual(service._theme_context.trade_date, "2026-03-27")
+        self.assertEqual(service._theme_context.themes[0].name, "AI芯片")
+
+    def test_openclaw_theme_run_rejects_ai_top_k_greater_than_candidate_limit(self) -> None:
+        response = self.client.post(
+            "/api/v1/screening/openclaw-theme-run",
+            json={
+                "trade_date": "2026-03-27",
+                "market": "cn",
+                "themes": [
+                    {
+                        "name": "AI鑺墖",
+                        "heat_score": 90,
+                        "confidence": 0.9,
+                        "catalyst_summary": "鏀跨瓥鍌寲",
+                        "keywords": ["AI", "鑺墖", "绠楀姏"],
+                        "evidence": [],
+                    }
+                ],
+                "options": {
+                    "candidate_limit": 5,
+                    "ai_top_k": 10,
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"], "validation_error")
+        self.assertEqual(
+            response.json()["message"],
+            "ai_top_k cannot be greater than candidate_limit",
+        )
 
     @patch("api.v1.endpoints.screening.ScreeningTaskService")
     def test_create_run_returns_failed_symbols_and_warnings(self, service_cls) -> None:

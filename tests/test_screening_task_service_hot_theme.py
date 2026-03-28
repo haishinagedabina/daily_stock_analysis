@@ -88,6 +88,38 @@ class ScreeningTaskServiceHotThemeIntegrationTestCase(unittest.TestCase):
         self.assertEqual(len(run_snapshot["theme_context"]["themes"]), 1)
         self.assertEqual(run_snapshot["theme_context"]["themes"][0]["name"], "机器人")
 
+    def test_build_run_config_snapshot_includes_theme_context(self) -> None:
+        """Test run config snapshot includes serialized theme context."""
+        themes = [
+            ExternalTheme(
+                name="机器人",
+                heat_score=90.0,
+                confidence=0.85,
+                catalyst_summary="政策催化",
+                keywords=["机器人"],
+                evidence=[{"title": "政策发布", "source": "新华社"}],
+            )
+        ]
+        theme_context = self.theme_ingest_service.ingest_themes(
+            trade_date="2026-03-26",
+            market="cn",
+            themes=themes,
+        )
+
+        snapshot = ScreeningTaskService._build_run_config_snapshot(
+            requested_trade_date=date(2026, 3, 26),
+            normalized_stock_codes=[],
+            runtime_config=self.service.resolve_run_config(mode="balanced", candidate_limit=50, ai_top_k=10),
+            ingest_failure_threshold=0.2,
+            strategy_names=["extreme_strength_combo"],
+            theme_context=theme_context,
+        )
+
+        self.assertIn("theme_context", snapshot)
+        self.assertEqual(snapshot["theme_context"]["trade_date"], "2026-03-26")
+        self.assertEqual(snapshot["theme_context"]["themes"][0]["name"], "机器人")
+        self.assertEqual(snapshot["theme_context"]["themes"][0]["evidence"][0]["title"], "政策发布")
+
     def test_strategy_names_fixed_for_openclaw(self) -> None:
         """Test strategy_names is fixed to extreme_strength_combo for OpenClaw."""
         # When OpenClaw calls the endpoint, strategy_names should be fixed

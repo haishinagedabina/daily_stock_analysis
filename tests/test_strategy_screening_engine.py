@@ -8,6 +8,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from src.agent.skills.base import Skill
 from src.services.strategy_screening_engine import (
     CommonFilterConfig,
     FilterCondition,
@@ -15,6 +16,7 @@ from src.services.strategy_screening_engine import (
     ScoringWeight,
     StrategyScreeningEngine,
     StrategyScreeningRule,
+    build_rules_from_skills,
 )
 
 
@@ -428,3 +430,59 @@ class TestScoreAggregation:
         dual = result.selected[0]
         assert len(dual.matched_strategies) == 2
         assert dual.final_score == sum(dual.strategy_scores.values())
+
+
+class TestNestedFilterGroups:
+    def test_build_rules_from_skills_enforces_any_group(self):
+        skill = Skill(
+            name="extreme_strength_combo",
+            display_name="极端强势组合",
+            description="热点题材硬门槛下的强势信号聚合策略",
+            instructions="",
+            category="momentum",
+            screening={
+                "filters": [
+                    {"field": "is_hot_theme_stock", "op": "==", "value": True},
+                    {
+                        "any": [
+                            {"field": "above_ma100", "op": "==", "value": True},
+                            {"field": "gap_breakaway", "op": "==", "value": True},
+                            {"field": "is_limit_up", "op": "==", "value": True},
+                        ]
+                    },
+                ],
+                "scoring": [
+                    {"field": "extreme_strength_score", "weight": 100},
+                ],
+            },
+        )
+        rules = build_rules_from_skills([skill])
+        engine = StrategyScreeningEngine()
+
+        snapshot = _make_snapshot(
+            _bullish_row(
+                "600001",
+                is_hot_theme_stock=True,
+                above_ma100=False,
+                gap_breakaway=False,
+                is_limit_up=False,
+                extreme_strength_score=85,
+            ),
+            _bullish_row(
+                "600002",
+                is_hot_theme_stock=True,
+                above_ma100=False,
+                gap_breakaway=True,
+                is_limit_up=False,
+                extreme_strength_score=88,
+            ),
+        )
+
+        result = engine.evaluate(
+            snapshot_df=snapshot,
+            rules=rules,
+            common_filters=_default_common_filters(),
+        )
+
+        selected_codes = [item.code for item in result.selected]
+        assert selected_codes == ["600002"]

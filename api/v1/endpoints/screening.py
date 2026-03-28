@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timezone
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -43,8 +43,8 @@ class OpenClawTheme(BaseModel):
 
 
 class OpenClawScreeningOptions(BaseModel):
-    candidate_limit: int = 50
-    ai_top_k: int = 10
+    candidate_limit: int = Field(50, ge=1, le=200)
+    ai_top_k: int = Field(10, ge=0, le=50)
     force_refresh: bool = False
 
 
@@ -289,7 +289,7 @@ def openclaw_theme_run(request: OpenClawThemeRunRequest) -> OpenClawThemeRunResp
     # 验证日期格式
     try:
         from datetime import datetime as dt
-        dt.strptime(request.trade_date, "%Y-%m-%d")
+        parsed_trade_date = dt.strptime(request.trade_date, "%Y-%m-%d").date()
     except ValueError:
         raise HTTPException(
             status_code=400,
@@ -300,8 +300,8 @@ def openclaw_theme_run(request: OpenClawThemeRunRequest) -> OpenClawThemeRunResp
         )
 
     # 创建筛选任务
+    from src.agent.skills.base import SkillManager
     from src.services.theme_context_ingest_service import ExternalTheme, OpenClawThemeContext
-    from datetime import datetime as dt
 
     themes = [
         ExternalTheme(
@@ -320,18 +320,28 @@ def openclaw_theme_run(request: OpenClawThemeRunRequest) -> OpenClawThemeRunResp
         trade_date=request.trade_date,
         market=request.market,
         themes=themes,
-        accepted_at=dt.utcnow().isoformat()
+        accepted_at=datetime.now(timezone.utc).isoformat()
     )
 
     try:
-        service = ScreeningTaskService()
+        skill_manager = SkillManager()
+        skill_manager.load_builtin_strategies()
+        service = ScreeningTaskService(skill_manager=skill_manager)
         options = request.options or OpenClawScreeningOptions()
+        if options.ai_top_k > options.candidate_limit:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "validation_error",
+                    "message": "ai_top_k cannot be greater than candidate_limit",
+                },
+            )
 
         # 注入题材上下文到服务
         service._theme_context = theme_context
 
         result = service.execute_run(
-            trade_date=None,
+            trade_date=parsed_trade_date,
             stock_codes=None,
             mode="balanced",
             candidate_limit=options.candidate_limit,
@@ -346,8 +356,26 @@ def openclaw_theme_run(request: OpenClawThemeRunRequest) -> OpenClawThemeRunResp
             status=result["status"],
             strategy_names=["extreme_strength_combo"],
             accepted_theme_count=len(request.themes),
-            created_at=dt.utcnow().isoformat() + "+08:00"
+            created_at=datetime.now(timezone.utc).isoformat()
         )
+    except ScreeningTradeDateNotReadyError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": exc.error_code,
+                "message": str(exc),
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "validation_error",
+                "message": str(exc),
+            },
+        ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=500,

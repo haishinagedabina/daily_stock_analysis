@@ -209,6 +209,146 @@ class HotThemeFactorEnricherTestCase(unittest.TestCase):
         self.assertEqual(enriched["close"], 10.5)
         self.assertTrue(enriched["above_ma100"])
 
+    def test_enrich_snapshot_missing_circ_mv_does_not_get_small_cap_bonus(self) -> None:
+        """Missing circ_mv should be treated as unknown, not as strongest small-cap signal."""
+        snapshot = {
+            "code": "000001",
+            "name": "机器人",
+            "close": 10.5,
+            "above_ma100": True,
+            "gap_breakaway": True,
+            "is_limit_up": True,
+            "turnover_rate": 5.0,
+            "ma100_breakout_days": 3,
+        }
+        theme_context = OpenClawThemeContext(
+            source="openclaw",
+            trade_date="2026-03-26",
+            market="cn",
+            themes=[
+                ExternalTheme(
+                    name="机器人",
+                    heat_score=90.0,
+                    confidence=0.85,
+                    catalyst_summary="政策催化",
+                    keywords=["机器人"],
+                    evidence=[],
+                )
+            ],
+            accepted_at=datetime.now().isoformat(),
+        )
+
+        enriched = self.enricher.enrich_snapshot(
+            snapshot,
+            theme_context=theme_context,
+            boards=["机器人"],
+        )
+
+        self.assertEqual(enriched["leader_score"], 70)
+
+    def test_enrich_snapshot_without_intraday_minutes_falls_back_to_ma100_reason(self) -> None:
+        """Missing intraday timing should not auto-claim early limit-up."""
+        snapshot = {
+            "code": "000001",
+            "name": "机器人",
+            "close": 10.5,
+            "above_ma100": True,
+            "gap_breakaway": False,
+            "is_limit_up": True,
+            "turnover_rate": 3.0,
+            "circ_mv": 75_000_000_000,
+            "ma100_breakout_days": 3,
+        }
+        theme_context = OpenClawThemeContext(
+            source="openclaw",
+            trade_date="2026-03-26",
+            market="cn",
+            themes=[
+                ExternalTheme(
+                    name="机器人",
+                    heat_score=90.0,
+                    confidence=0.85,
+                    catalyst_summary="政策催化",
+                    keywords=["机器人"],
+                    evidence=[],
+                )
+            ],
+            accepted_at=datetime.now().isoformat(),
+        )
+
+        enriched = self.enricher.enrich_snapshot(
+            snapshot,
+            theme_context=theme_context,
+            boards=["机器人"],
+        )
+
+        self.assertEqual(enriched["entry_reason"], "站上/刚突破MA100")
+
+
+    def test_enrich_snapshot_uses_named_five_phase_structure(self) -> None:
+        """Phase payload should only expose the formal five-stage keys and explanations."""
+        snapshot = {
+            "code": "000001",
+            "name": "robotics",
+            "close": 10.5,
+            "above_ma100": True,
+            "gap_breakaway": True,
+            "pattern_123_low_trendline": False,
+            "is_limit_up": True,
+            "bottom_divergence_double_breakout": False,
+            "volume_ratio": 1.5,
+            "turnover_rate": 5.0,
+            "circ_mv": 75_000_000_000,
+            "breakout_ratio": 1.2,
+            "ma100_breakout_days": 3,
+            "ma100": 10.0,
+        }
+        theme_context = OpenClawThemeContext(
+            source="openclaw",
+            trade_date="2026-03-26",
+            market="cn",
+            themes=[
+                ExternalTheme(
+                    name="robotics",
+                    heat_score=90.0,
+                    confidence=0.85,
+                    catalyst_summary="policy catalyst",
+                    keywords=["robotics"],
+                    evidence=[],
+                )
+            ],
+            accepted_at=datetime.now().isoformat(),
+        )
+
+        enriched = self.enricher.enrich_snapshot(
+            snapshot,
+            theme_context=theme_context,
+            boards=["robotics"],
+        )
+
+        self.assertEqual(
+            set(enriched["phase_results"].keys()),
+            {
+                "phase1_market_and_theme",
+                "phase2_leader_screen",
+                "phase3_core_signal",
+                "phase4_entry_readiness",
+                "phase5_risk_controls",
+            },
+        )
+        self.assertTrue(enriched["phase_results"]["phase1_market_and_theme"])
+        self.assertTrue(enriched["phase_results"]["phase2_leader_screen"])
+        self.assertTrue(enriched["phase_results"]["phase3_core_signal"])
+        self.assertTrue(enriched["phase_results"]["phase4_entry_readiness"])
+        self.assertTrue(enriched["phase_results"]["phase5_risk_controls"])
+
+        self.assertEqual(len(enriched["phase_explanations"]), 5)
+        self.assertEqual(
+            enriched["phase_explanations"][0]["phase_key"],
+            "phase1_market_and_theme",
+        )
+        self.assertIn("leader_score", enriched["phase_explanations"][1]["summary"])
+
 
 if __name__ == "__main__":
     unittest.main()

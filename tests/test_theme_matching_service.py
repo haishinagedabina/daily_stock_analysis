@@ -142,6 +142,38 @@ class ThemeMatchingServiceTestCase(unittest.TestCase):
         # score = 0*0.55 + 1.0*0.20 + 1.0*0.25 = 0.45 < 0.80
         self.assertFalse(result)
 
+    def test_calculate_theme_match_score_prefers_board_and_board_keywords(self) -> None:
+        """Test board membership plus board keywords can confirm hot-theme membership."""
+        boards = ["AI芯片", "算力"]
+        stock_name = "寒武纪"
+        theme_name = "AI芯片"
+        keywords = ["AI", "芯片", "算力"]
+
+        score = self.service.calculate_theme_match_score(
+            boards=boards,
+            stock_name=stock_name,
+            theme_name=theme_name,
+            keywords=keywords,
+        )
+
+        self.assertGreaterEqual(score, self.service.THEME_MATCH_THRESHOLD)
+
+    def test_is_hot_theme_stock_rejects_weak_fuzzy_match_without_boards(self) -> None:
+        """Test weak fuzzy matches without board support remain rejected."""
+        boards = []
+        stock_name = "通用设备"
+        theme_name = "AI芯片"
+        keywords = ["AI", "芯片", "算力"]
+
+        result = self.service.is_hot_theme_stock(
+            boards=boards,
+            stock_name=stock_name,
+            theme_name=theme_name,
+            keywords=keywords,
+        )
+
+        self.assertFalse(result)
+
 
 if __name__ == "__main__":
     unittest.main()

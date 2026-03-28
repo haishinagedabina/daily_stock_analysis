@@ -45,6 +45,11 @@ class LeaderScoreCalculatorTestCase(unittest.TestCase):
         score = self.calculator.calculate_small_circ_mv_score(150_000_000_000)
         self.assertEqual(score, 0)
 
+    def test_small_circ_mv_score_missing_is_neutral(self) -> None:
+        """Missing circulation market value should not receive small-cap bonus."""
+        score = self.calculator.calculate_small_circ_mv_score(None)
+        self.assertEqual(score, 0)
+
     def test_turnover_score_high(self) -> None:
         """Test turnover_score for high turnover."""
         # > 5%
@@ -62,6 +67,13 @@ class LeaderScoreCalculatorTestCase(unittest.TestCase):
         # < 2%
         score = self.calculator.calculate_turnover_score(0.01)
         self.assertEqual(score, 0)
+
+    def test_turnover_score_accepts_percent_values(self) -> None:
+        """Turnover scores should accept 8.0 as 8% instead of 800%."""
+        high = self.calculator.calculate_turnover_score(8.0)
+        medium = self.calculator.calculate_turnover_score(3.0)
+        self.assertEqual(high, 20)
+        self.assertEqual(medium, 10)
 
     def test_breakout_strength_strong(self) -> None:
         """Test breakout_strength for strong breakout."""

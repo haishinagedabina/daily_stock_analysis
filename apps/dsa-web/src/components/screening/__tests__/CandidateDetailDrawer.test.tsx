@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
 import { CandidateDetailDrawer } from '../CandidateDetailDrawer';
 import type { ScreeningCandidateDetail } from '../../../types/screening';
 
@@ -86,5 +87,93 @@ describe('CandidateDetailDrawer', () => {
     render(<CandidateDetailDrawer />);
     expect(screen.getByText('volume_breakout')).toBeInTheDocument();
     expect(screen.getByText('ma_golden_cross')).toBeInTheDocument();
+  });
+
+  it('shows catalyst summary and hot theme news', () => {
+    mockStore.selectedCandidate = {
+      ...mockCandidate,
+      factorSnapshot: {
+        ...mockCandidate.factorSnapshot,
+        is_hot_theme_stock: true,
+        primary_theme: 'AI芯片',
+        theme_catalyst_summary: 'AI 芯片板块受政策催化快速升温',
+        theme_catalyst_news: [
+          {
+            title: '政策发布',
+            source: '新华社',
+            summary: '支持国产 AI 芯片发展',
+            url: 'https://example.com/news',
+          },
+        ],
+      },
+    };
+
+    render(<CandidateDetailDrawer />);
+    expect(screen.getByText('催化摘要')).toBeInTheDocument();
+    expect(screen.getAllByText('AI 芯片板块受政策催化快速升温').length).toBeGreaterThan(0);
+    expect(screen.getByText('热点新闻')).toBeInTheDocument();
+    expect(screen.getByText('政策发布')).toBeInTheDocument();
+    expect(screen.getByText('支持国产 AI 芯片发展')).toBeInTheDocument();
+  });
+
+  it('shows readable stage explanations for named phase keys', () => {
+    mockStore.selectedCandidate = {
+      ...mockCandidate,
+      factorSnapshot: {
+        ...mockCandidate.factorSnapshot,
+        phase_results: {
+          phase1_market_and_theme: true,
+          phase2_leader_screen: true,
+          phase3_core_signal: true,
+          phase4_entry_readiness: false,
+          phase5_risk_controls: true,
+        },
+        leader_score: 68,
+        core_signal: '跳空涨停',
+        risk_params: {
+          stop_loss: 9.8,
+          position_size: '轻仓试错',
+        },
+      },
+    };
+
+    render(<CandidateDetailDrawer />);
+    expect(screen.getByText('阶段1: 市场与题材')).toBeInTheDocument();
+    expect(screen.getByText('阶段2: 龙头筛选')).toBeInTheDocument();
+    expect(screen.getByText('阶段3: 核心信号')).toBeInTheDocument();
+    expect(screen.getByText('阶段4: 入场准备')).toBeInTheDocument();
+    expect(screen.getByText('阶段5: 风险控制')).toBeInTheDocument();
+    expect(screen.getByText(/龙头评分: 68/)).toBeInTheDocument();
+    expect(screen.getByText(/止损: 9.80 \| 仓位: 轻仓试错/)).toBeInTheDocument();
+  });
+
+  it('prefers backend phase explanations when provided', () => {
+    mockStore.selectedCandidate = {
+      ...mockCandidate,
+      factorSnapshot: {
+        ...mockCandidate.factorSnapshot,
+        phase_results: {
+          phase1_market_and_theme: true,
+          phase2_leader_screen: true,
+          phase3_core_signal: false,
+          phase4_entry_readiness: false,
+          phase5_risk_controls: true,
+        },
+        phase_explanations: [
+          { phase_key: 'phase1_market_and_theme', label: '阶段1: 市场与题材', hit: true, summary: '热点题材已锁定' },
+          { phase_key: 'phase2_leader_screen', label: '阶段2: 龙头筛选', hit: true, summary: 'leader_score=68' },
+          { phase_key: 'phase3_core_signal', label: '阶段3: 核心信号', hit: false, summary: '缺少跳空涨停共振' },
+          { phase_key: 'phase4_entry_readiness', label: '阶段4: 入场准备', hit: false, summary: '等待回踩支撑确认' },
+          { phase_key: 'phase5_risk_controls', label: '阶段5: 风险控制', hit: true, summary: '止损位=9.80, 轻仓试错' },
+        ],
+      },
+    };
+
+    render(<CandidateDetailDrawer />);
+    expect(screen.getByText('热点题材已锁定')).toBeInTheDocument();
+    expect(screen.getByText('leader_score=68')).toBeInTheDocument();
+    expect(screen.getByText('缺少跳空涨停共振')).toBeInTheDocument();
+    expect(screen.getByText('等待回踩支撑确认')).toBeInTheDocument();
+    expect(screen.getByText('止损位=9.80, 轻仓试错')).toBeInTheDocument();
   });
 });

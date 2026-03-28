@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### OpenClaw 热点题材选股
+
+- `POST /api/v1/screening/openclaw-theme-run` 现在会真正注入 `SkillManager` 并固定走 `extreme_strength_combo` 策略引擎，不再回落到 legacy 选股逻辑
+- OpenClaw 请求中的 `trade_date` 现在会按请求日期传入筛选任务，而不是被忽略后回退到默认日期
+- `theme_context` 会写入 screening run 的 `config_snapshot`，便于后续结果解释、审计和回放
+- 热点题材匹配会结合个股所属板块信息，不再把 `boards=[]` 传入题材富化流程
+- 策略引擎新增对嵌套 `any` 过滤组的支持，`extreme_strength_combo.yaml` 中“至少命中一个强势信号”的门槛开始生效
+- 热点题材候选的 `phase_results` 已统一为正式五阶段键，并新增 `phase_explanations` 作为可直接消费的阶段解释结构
+- `POST /api/v1/screening/openclaw-theme-run` 对 `options.candidate_limit` / `options.ai_top_k` 补齐了准确参数校验，`ai_top_k > candidate_limit` 现在会返回明确的 `422 validation_error`
+
 ### 智能选股策略引擎
 
 - 📈 **底背离双突破策略 (Strategy E)** — 基于 DIF/DEA 六形态底背离检测 + 下降趋势线/水平阻力线双突破联合确认

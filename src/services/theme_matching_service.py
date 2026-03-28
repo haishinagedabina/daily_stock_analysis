@@ -27,7 +27,7 @@ class ThemeMatchingService:
         matcher = SequenceMatcher(None, text1_lower, text2_lower)
         return matcher.ratio()
 
-    def keyword_match(self, stock_name: str, keywords: List[str]) -> float:
+    def keyword_match(self, stock_name: str, keywords: List[str], boards: List[str] | None = None) -> float:
         """
         Calculate keyword match score.
         Returns the ratio of matched keywords to total keywords.
@@ -35,9 +35,13 @@ class ThemeMatchingService:
         if not keywords:
             return 0.0
 
+        search_space = [stock_name.lower()]
+        search_space.extend(str(board).lower() for board in (boards or []) if str(board).strip())
+
         matched_count = 0
         for keyword in keywords:
-            if keyword.lower() in stock_name.lower():
+            keyword_lower = keyword.lower()
+            if any(keyword_lower in candidate for candidate in search_space):
                 matched_count += 1
 
         return matched_count / len(keywords)
@@ -64,12 +68,17 @@ class ThemeMatchingService:
         name_match = self.fuzzy_match(stock_name, theme_name)
 
         # Keyword match
-        keyword_match = self.keyword_match(stock_name, keywords)
+        keyword_match = self.keyword_match(stock_name, keywords, boards=boards)
 
         # Weighted score
         score = (
             board_match * 0.55 + name_match * 0.20 + keyword_match * 0.25
         )
+
+        # Strong board confirmation should satisfy the hard gate even when the
+        # stock name itself does not resemble the theme name.
+        if board_match >= 0.95 or (board_match >= 0.75 and keyword_match >= 0.5):
+            score = max(score, self.THEME_MATCH_THRESHOLD)
 
         return score
 

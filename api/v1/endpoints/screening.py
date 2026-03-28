@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+from typing import List, Optional
 
 from api.v1.schemas.screening import (
     ScreeningCandidateDetailResponse,
@@ -20,6 +23,44 @@ from src.services.screening_notification_service import (
 from src.services.screening_task_service import ScreeningTaskService, ScreeningTradeDateNotReadyError
 
 router = APIRouter()
+
+
+# OpenClaw 接口模型
+class OpenClawEvidence(BaseModel):
+    title: str
+    source: str
+    url: Optional[str] = None
+    published_at: Optional[str] = None
+
+
+class OpenClawTheme(BaseModel):
+    name: str
+    heat_score: float = Field(..., ge=0, le=100)
+    confidence: float = Field(..., ge=0, le=1)
+    catalyst_summary: str
+    keywords: List[str]
+    evidence: List[OpenClawEvidence] = Field(default_factory=list)
+
+
+class OpenClawScreeningOptions(BaseModel):
+    candidate_limit: int = 50
+    ai_top_k: int = 10
+    force_refresh: bool = False
+
+
+class OpenClawThemeRunRequest(BaseModel):
+    trade_date: str
+    market: str = "cn"
+    themes: List[OpenClawTheme]
+    options: Optional[OpenClawScreeningOptions] = None
+
+
+class OpenClawThemeRunResponse(BaseModel):
+    run_id: str
+    status: str
+    strategy_names: List[str]
+    accepted_theme_count: int
+    created_at: str
 
 
 def get_screening_strategies() -> list[dict]:
@@ -188,11 +229,7 @@ def get_screening_candidate_detail(run_id: str, code: str) -> ScreeningCandidate
     return ScreeningCandidateDetailResponse(**result)
 
 
-@router.post(
-    "/runs/{run_id}/notify",
-    response_model=SuccessResponse,
-    summary="推送筛选推荐名单（幂等，支持 force 补发）",
-)
+@router.post("/runs/{run_id}/notify", response_model=SuccessResponse, summary="推送筛选推荐名单（幂等，支持 force 补发）")
 def notify_screening_run(run_id: str, request: ScreeningNotifyRequest) -> SuccessResponse:
     service = ScreeningNotificationService()
     try:
@@ -214,3 +251,108 @@ def notify_screening_run(run_id: str, request: ScreeningNotifyRequest) -> Succes
     success = bool(result.get("success")) and not result.get("skipped")
     message = result.get("reason") or result.get("notification_status") or "ok"
     return SuccessResponse(success=success, message=message, data=result)
+
+
+@router.post(
+    "/openclaw-theme-run",
+    response_model=OpenClawThemeRunResponse,
+    summary="OpenClaw 热点题材筛选接口"
+)
+def openclaw_theme_run(request: OpenClawThemeRunRequest) -> OpenClawThemeRunResponse:
+    """
+    OpenClaw 专用接口：触发热点题材筛选运行。
+
+    - 验证请求参数
+    - 创建筛选任务
+    - 返回运行 ID 和状态
+    """
+    # 验证市场
+    if request.market != "cn":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unsupported_market",
+                "message": "market must be 'cn' in phase 1"
+            }
+        )
+
+    # 验证题材
+    if not request.themes:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_themes",
+                "message": "themes cannot be empty"
+            }
+        )
+
+    # 验证日期格式
+    try:
+        from datetime import datetime as dt
+        dt.strptime(request.trade_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_date_format",
+                "message": "trade_date must be in YYYY-MM-DD format"
+            }
+        )
+
+    # 创建筛选任务
+    from src.services.theme_context_ingest_service import ExternalTheme, OpenClawThemeContext
+    from datetime import datetime as dt
+
+    themes = [
+        ExternalTheme(
+            name=t.name,
+            heat_score=t.heat_score,
+            confidence=t.confidence,
+            catalyst_summary=t.catalyst_summary,
+            keywords=t.keywords,
+            evidence=[{"title": e.title, "source": e.source, "url": e.url, "published_at": e.published_at} for e in t.evidence]
+        )
+        for t in request.themes
+    ]
+
+    theme_context = OpenClawThemeContext(
+        source="openclaw",
+        trade_date=request.trade_date,
+        market=request.market,
+        themes=themes,
+        accepted_at=dt.utcnow().isoformat()
+    )
+
+    try:
+        service = ScreeningTaskService()
+        options = request.options or OpenClawScreeningOptions()
+
+        # 注入题材上下文到服务
+        service._theme_context = theme_context
+
+        result = service.execute_run(
+            trade_date=None,
+            stock_codes=None,
+            mode="balanced",
+            candidate_limit=options.candidate_limit,
+            ai_top_k=options.ai_top_k,
+            market=request.market,
+            trigger_type="openclaw",
+            strategy_names=["extreme_strength_combo"],
+        )
+
+        return OpenClawThemeRunResponse(
+            run_id=result["run_id"],
+            status=result["status"],
+            strategy_names=["extreme_strength_combo"],
+            accepted_theme_count=len(request.themes),
+            created_at=dt.utcnow().isoformat() + "+08:00"
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Internal server error"
+            }
+        ) from exc

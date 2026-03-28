@@ -61,6 +61,7 @@ class ScreeningTaskService:
         self.factor_service = factor_service
         self._candidate_analysis_service: Optional[CandidateAnalysisService] = candidate_analysis_service
         self._market_data_sync_service: Optional[MarketDataSyncService] = market_data_sync_service
+        self._theme_context: Optional[Any] = None
 
     @property
     def candidate_analysis_service(self) -> CandidateAnalysisService:
@@ -267,6 +268,7 @@ class ScreeningTaskService:
         runtime_screener_service = self._build_runtime_screener_service(
             runtime_config, strategy_names=self._active_strategy_names
         )
+        logger.info(f"screening_run event=screener_built active_strategies={self._active_strategy_names}")
         runtime_factor_service = self._build_runtime_factor_service(runtime_config)
         effective_trade_date: Optional[date] = trade_date
         if resume_stage == "factorizing":
@@ -473,35 +475,41 @@ class ScreeningTaskService:
                 selected_count=len(selected),
                 rejected_count=len(getattr(evaluation, "rejected", []) or []),
             )
-            self._update_run_context(run_id, next_resume_stage="ai_enriching")
-
-            self._check_deadline(deadline, "ai_enriching")
-            current_stage = "ai_enriching"
-            self._last_stage_hint = current_stage
-            stage_started_at = time.perf_counter()
-            self._must_update_status(run_id=run_id, status="ai_enriching")
+            # Skip AI enriching for extreme_strength_combo strategy
             ai_results: Dict[str, Dict[str, Any]] = {}
             completion_status = "completed"
             completion_error_summary: Optional[str] = sync_warning_summary
-            try:
-                ai_batch = self.candidate_analysis_service.analyze_top_k(
-                    selected,
-                    top_k=runtime_config.ai_top_k,
-                    news_top_m=self._resolve_news_top_m(
-                        selected_count=len(selected),
-                        ai_top_k=runtime_config.ai_top_k,
-                    ),
-                )
-                ai_results, failed_codes = self._normalize_ai_batch(ai_batch)
-                if failed_codes:
-                    completion_status = "completed_with_ai_degraded"
-                    completion_error_summary = self._merge_error_summary(
-                        sync_warning_summary,
-                        f"AI degraded for: {', '.join(failed_codes)}",
+
+            if strategy_names and strategy_names == ["extreme_strength_combo"]:
+                # No AI enriching for hot theme screening
+                logger.info("Skipping AI enriching for extreme_strength_combo strategy")
+            else:
+                self._update_run_context(run_id, next_resume_stage="ai_enriching")
+
+                self._check_deadline(deadline, "ai_enriching")
+                current_stage = "ai_enriching"
+                self._last_stage_hint = current_stage
+                stage_started_at = time.perf_counter()
+                self._must_update_status(run_id=run_id, status="ai_enriching")
+                try:
+                    ai_batch = self.candidate_analysis_service.analyze_top_k(
+                        selected,
+                        top_k=runtime_config.ai_top_k,
+                        news_top_m=self._resolve_news_top_m(
+                            selected_count=len(selected),
+                            ai_top_k=runtime_config.ai_top_k,
+                        ),
                     )
-            except Exception as exc:
-                completion_status = "completed_with_ai_degraded"
-                completion_error_summary = self._merge_error_summary(sync_warning_summary, str(exc))
+                    ai_results, failed_codes = self._normalize_ai_batch(ai_batch)
+                    if failed_codes:
+                        completion_status = "completed_with_ai_degraded"
+                        completion_error_summary = self._merge_error_summary(
+                            sync_warning_summary,
+                            f"AI degraded for: {', '.join(failed_codes)}",
+                        )
+                except Exception as exc:
+                    completion_status = "completed_with_ai_degraded"
+                    completion_error_summary = self._merge_error_summary(sync_warning_summary, str(exc))
 
             candidates = self._build_candidate_payloads(
                 selected=selected,
@@ -872,6 +880,7 @@ class ScreeningTaskService:
             lookback_days=runtime_config.factor_lookback_days,
             breakout_lookback_days=runtime_config.breakout_lookback_days,
             min_list_days=runtime_config.min_list_days,
+            theme_context=getattr(self, '_theme_context', None),
         )
 
     def _should_persist_shared_factor_snapshot(

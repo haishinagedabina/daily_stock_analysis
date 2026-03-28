@@ -1,0 +1,79 @@
+# Extreme Strength Combo Strategy / 极端强势组合
+# Hot theme stocks with extreme strength signals aggregation.
+
+name: extreme_strength_combo
+display_name: 极端强势组合
+description: 热点板块硬门槛下的强势信号聚合策略，综合 MA100、低位123、跳空涨停、底背离等信号进行评分排序。
+category: momentum
+core_rules: [1, 2, 4, 7]
+required_tools:
+  - get_daily_history
+  - get_realtime_quote
+
+screening:
+  filters:
+    - field: is_hot_theme_stock
+      op: "=="
+      value: true
+    - any:
+        - field: above_ma100
+          op: "=="
+          value: true
+        - field: pattern_123_low_trendline
+          op: "=="
+          value: true
+        - field: gap_breakaway
+          op: "=="
+          value: true
+        - field: is_limit_up
+          op: "=="
+          value: true
+  scoring:
+    - field: extreme_strength_score
+      weight: 100
+    - field: leader_score
+      weight: 20
+    - field: theme_heat_score
+      weight: 10
+
+instructions: |
+  **极端强势组合（Extreme Strength Combo）**
+
+  本策略用于从 OpenClaw 提供的热点题材中，筛选出具备明显强势特征、且多个技术/情绪信号共振的候选股票。
+
+  **核心原则：**
+
+  1. **热点题材硬门槛**：
+     - 股票必须匹配外部热点题材（theme_match_score >= 0.80）
+     - 只在热点板块相关股票中做后续筛选
+
+  2. **强势信号聚合**：
+     - 基础分：MA100 之上 (+20)
+     - 主信号：低位123、跳空涨停、涨停、底背离 (+12-15 each)
+     - 辅助加分：龙头特征、热度、量能 (+0-15)
+
+  3. **评分模型**：
+     - extreme_strength_score >= 80：正式入选
+     - 60 <= score < 80：观察名单
+     - score < 60：不入选
+
+  4. **龙头特征评分**（leader_score）：
+     - 题材匹配度：35 分
+     - 流通市值偏小：20 分
+     - 换手率较高：20 分
+     - 涨停/突破特征：15 分
+     - 趋势状态：10 分
+
+  **选股逻辑：**
+
+  1. 验证股票属于热点题材（is_hot_theme_stock == true）
+  2. 验证至少满足一个强势信号（MA100/123/缺口/涨停）
+  3. 计算极端强势组合总分
+  4. 按总分降序排列
+  5. 输出 score >= 80 的候选
+
+  **后续操作：**
+
+  - 不做盘中筛选，仅做预测
+  - AI 二筛不注入题材上下文，独立验证
+  - 人为跟进和操作

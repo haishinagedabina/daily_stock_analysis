@@ -1,1135 +1,679 @@
-# “缺口 + 涨停 + 热点题材”代码级集成设计文档
+# OpenClaw 热点题材触发的“极端强势组合”策略设计
 
 ## 1. 文档目标
 
-本文档给出一份**可以直接进入开发实施**的代码级集成方案，用于把《短线操盘实战技法》中的“**缺口 + 涨停 + 热点题材**”策略接入 `daily_stock_analysis` 项目。
+本文档用于替换旧版“缺口 + 涨停 + 热点题材”集成方案。
 
-这份文档重点解决上一个方案里的核心缺口：
+新版方案不再假设 `daily_stock_analysis`（以下简称 DSA）负责热点新闻搜索，也不再以 `SearchService` 为热点题材发现入口。新的边界定义如下：
 
-> **如何复用项目当前已经存在的新闻搜索能力，而不是凭空设计一套脱离现有代码的新新闻系统。**
+- `OpenClaw` 负责收集热点新闻、归纳利好板块/题材，并通过接口把题材上下文传给 DSA
+- `DSA` 不负责热点新闻发现，只负责从题材开始的后续流程
+- 该能力在 DSA 中落地为一条新的选股策略，而不是一条独立平行流水线
+- 除了“触发方式来自 OpenClaw”和“候选池有热点板块硬门槛”以外，其余流程与现有策略保持一致
 
-因此，本方案明确规定：
+本方案目标是让“热点题材 + 极端强势技术形态”的组合成为 DSA 的标准策略能力，并能：
 
-- **DSA 项目内核必须以 `src/search_service.py` 为新闻搜索底座**
-- 新增的热点新闻/题材能力必须建立在现有 `SearchService` 之上
-- OpenClaw 侧的 news skill / web skill 只作为外部增强或离线旁路，不作为 DSA 主运行时依赖
+- 在选股页中作为一条可执行策略展示
+- 在运行结果页中展示命中原因、热点题材上下文和最终评分
+- 在历史记录列表中与其他策略结果一起沉淀
 
 ---
 
-## 2. 结论先行：正确接法
+## 2. 结论先行
 
-### 2.1 DSA 项目正式接入路径
+### 2.1 正确接法
 
 ```text
+OpenClaw
+    ↓  (POST 热点题材上下文)
+OpenClaw 专用筛选接口
+    ↓
+ThemeContextIngestService
+    ↓
 ScreeningTaskService
     ↓
-ThemeContextService                    ← 新增，题材上下文统一入口
+FactorService
     ↓
-HotspotSearchService                   ← 新增，热点搜索桥接层
+StrategyScreeningEngine
     ↓
-SearchService (src/search_service.py)  ← 现有统一搜索底座
+extreme_strength_combo.yaml
     ↓
-Tavily / Brave / Bocha / SearXNG / SerpAPI 等 provider
+候选结果 / AI 二筛 / 历史记录 / Web 展示
 ```
 
-### 2.2 关键原则
+### 2.2 核心原则
 
-1. **不直接在 DSA 代码里调用 OpenClaw skill runtime**
-2. **不绕开 `SearchService` 自己造第二套 provider 层**
-3. **热点新闻能力是 `SearchService` 的上层封装，而不是替代品**
-4. **候选股个股新闻分析继续复用现有 `search_stock_news(...)` 逻辑**
-5. **最终形成“双层新闻结构”**：
-   - 第一层：全局热点新闻 → 提炼题材 → 映射股票池
-   - 第二层：候选个股新闻 → AI 二筛 → 验证题材催化与事件细节
-
----
-
-## 3. 现有新闻能力盘点
-
-## 3.1 项目内已有能力（必须复用）
-
-文件：`src/search_service.py`
-
-已知能力：
-
-- 多 provider 统一抽象
-- API key 轮询与故障切换
-- 网络重试
-- `SearchResponse` / `SearchResult` 统一结构
-- 正文抓取 `fetch_url_content(...)`
-- 已被 `candidate_analysis_service.py` / pipeline / agent tools 使用
-
-现有已可直接复用的方法语义：
-
-- `search_stock_news(stock_code, stock_name, ...)`
-- `search_comprehensive_intel(stock_code, stock_name, ...)`
-
-问题不在于“有没有新闻能力”，而在于：
-
-> **当前新闻能力偏个股维度，尚未封装成“全网热点搜索 / 热点题材搜索”的能力。**
-
-这正是本次集成需要补的一层。
+1. DSA 不在主链路内调用 OpenClaw runtime，也不依赖 OpenClaw 在线可用
+2. OpenClaw 只提供“热点题材上下文”，不提供候选股票池
+3. 新能力以“策略”形式进入现有筛选体系，而不是旁路新任务类型
+4. 热点题材是候选池硬门槛，不是全市场通用加分项
+5. 进入候选池后的排序采用“基础分 + 多信号叠加加分”模型
+6. 运行结果、前端展示、历史记录均复用现有 screening run 体系
 
 ---
 
-## 3.2 OpenClaw / Skill 侧已有能力（只能作为旁路增强）
+## 3. 需求重述
 
-在 OpenClaw 环境中已确认可用的新闻相关 skill / tool：
+这条策略的业务定义是：
 
-- `news-summary`
-- `web-search`
-- `summarize`
-- 原生 `web_search`
-- 原生 `web_fetch`
+- 由 OpenClaw 在盘前或盘中收集热点新闻，归纳出利好板块/题材
+- DSA 接收到这些题材后，只在这些题材相关股票中做后续筛选
+- 该策略不是“全满足才入选”的硬条件组合，而是“满足越多越强”的极端强势组合
 
-这些能力适合用于：
+评分逻辑的核心语义：
 
-1. 开发阶段验证 query 方案
-2. 生成外部日报 / 旁路缓存文件
-3. 失败时人工补录/辅助校验
+- 热点板块命中是准入门槛
+- `MA100` 之上是基础分
+- 在基础分之上，`低位123`、`跳空涨停`、`突破性缺口`、`底背离双突破`、`量能活跃`、`龙头特征` 等继续叠加加分
+- 最终按总分输出候选
 
-**但不应成为 DSA 项目内部的主依赖**，因为：
-
-- DSA 是独立 Python 项目
-- DSA 的定时任务、测试、部署不能依赖 OpenClaw runtime
-- skill 不等价于 DSA 内部可稳定 import 的模块接口
-
-因此本文设计中：
-
-- DSA 主链路 → 只依赖 `src/search_service.py`
-- OpenClaw skill → 作为可选旁路输入
+也就是说，这条策略的本质不是“一个固定形态”，而是“热点题材约束下的强势信号聚合器”。
 
 ---
 
-## 4. 最终目标能力
+## 4. 与旧版方案的差异
 
-本次集成后，系统应支持：
+旧版方案的核心前提是：
 
-1. 使用**现有 SearchService** 搜索：
-   - 百度热搜 / 微博热搜 / 知乎热榜 / 36氪 / 华尔街见闻 / 财联社等热点内容
-2. 聚合为“每日热点新闻上下文”
-3. 用 AI 提炼“可交易题材”
-4. 将题材映射到股票池
-5. 在 `factor_service.py` 中生成题材因子
-6. 在 `strategies/gap_limitup_hot_theme.yaml` 中消费这些因子
-7. 在 `candidate_analysis_service.py` 中继续用现有个股新闻搜索，对 top K 进行题材验证
+- DSA 内部新增热点新闻搜索层
+- 在 DSA 内部提炼题材
+- 再把题材映射到股票池
 
----
+新版方案明确废弃这一前提，原因如下：
 
-## 5. 新旧模块关系
+1. 热点新闻收集能力已经确定由 OpenClaw 承担
+2. DSA 继续建设内部热点新闻搜索层会造成能力重叠
+3. 本次真正需要建设的能力不是“找热点”，而是“消费外部热点并转化成策略筛选结果”
 
-## 5.1 现有模块（保留）
+因此，以下方向不再作为本方案目标：
 
-- `src/search_service.py`
-- `src/services/factor_service.py`
-- `src/services/screener_service.py`
-- `src/services/screening_task_service.py`
-- `src/services/candidate_analysis_service.py`
-- `src/services/analysis_service.py`
-
-## 5.2 新增模块（建议）
-
-- `src/services/hotspot_search_service.py`
-- `src/services/theme_extraction_service.py`
-- `src/services/theme_mapping_service.py`
-- `src/services/theme_context_service.py`
-
-其中：
-
-- `hotspot_search_service.py`：**复用 SearchService 做热点新闻桥接搜索**
-- `theme_extraction_service.py`：用 AI 从热点搜索结果提炼题材
-- `theme_mapping_service.py`：把题材映射到股票池
-- `theme_context_service.py`：统一协调缓存与对外提供题材上下文
+- 在 DSA 内部新增热点新闻搜索桥接层
+- 在 DSA 主链路中直接调用 OpenClaw skill runtime
+- 在 DSA 中建设独立的热点新闻提炼流水线
 
 ---
 
-## 6. SearchService 的代码级扩展设计
+## 5. 新策略定位
 
-本节是本方案的核心。
+### 5.1 策略名称
 
-### 6.1 设计原则
+建议新增策略：
 
-当前 `SearchService` 不应被推翻重写，而应：
+- `extreme_strength_combo`
+- 展示名：`极端强势组合`
 
-- 保留现有 provider 架构
-- 保留现有 `SearchResult` / `SearchResponse`
-- 新增“热点搜索”与“题材搜索”的高层方法
+### 5.2 策略定义
 
-### 6.2 推荐新增方法
+该策略用于从 OpenClaw 提供的热点题材中，筛选出具备明显强势特征、且多个技术/情绪信号共振的候选股票。
 
-文件：`src/search_service.py`
+### 5.3 适用市场
 
----
+- 第一版仅支持 A 股
 
-### 方法 1：`search_topic_news(...)`
+### 5.4 与现有策略的关系
 
-#### 作用
-为“非个股主题搜索”提供统一入口。
+该策略不是替代现有策略，而是复用现有因子结果做组合加权：
 
-#### 方法签名
+- `gap_limitup_breakout`
+- `ma100_low123_combined`
+- `ma100_60min_combined`
+- `bottom_divergence_double_breakout`
+- 以及已有趋势、量能、换手、流动性相关因子
 
-```python
-def search_topic_news(
-    self,
-    query: str,
-    max_results: int = 10,
-    days: int = 3,
-    preferred_sources: Optional[list[str]] = None,
-) -> SearchResponse:
-    ...
-```
-
-#### 用途示例
-
-- `"AI算力 A股 板块 最新"`
-- `"低空经济 概念股 龙头"`
-- `"机器人 产业链 财联社 36氪"`
-- `"site:top.baidu.com 百度热搜 今日"`
-
-#### 实现建议
-内部不需要新建 provider，只需复用现有 provider 选择逻辑与统一 search 流程。
-
-#### 要点
-- `preferred_sources` 作为软偏好，不要求 provider 强制支持 source filter
-- 返回统一 `SearchResponse`
-- 若现有 provider 不支持 source 过滤，则仅用于 query 拼接提示
+它的定位更接近“上层聚合策略”。
 
 ---
 
-### 方法 2：`search_hotspot_feed(...)`
+## 6. 系统边界
 
-#### 作用
-对“热点平台入口”做专门搜索封装。
+### 6.1 OpenClaw 负责什么
 
-#### 方法签名
+- 热点新闻收集
+- 题材/板块归纳
+- 利好原因提炼
+- 证据摘要整理
+- 调用 DSA 专用接口触发这条策略
 
-```python
-def search_hotspot_feed(
-    self,
-    platform: str,
-    max_results: int = 10,
-    days: int = 1,
-) -> SearchResponse:
-    ...
-```
+### 6.2 DSA 负责什么
 
-#### 输入示例
-- `platform="baidu"`
-- `platform="weibo"`
-- `platform="zhihu"`
-- `platform="36kr"`
-- `platform="wallstreetcn"`
-- `platform="cls"`
+- 接收并校验外部题材上下文
+- 将题材写入本次 screening run
+- 从题材出发映射相关股票池
+- 计算个股是否属于热点题材范围
+- 计算“极端强势组合”总分
+- 输出候选结果、命中原因和操作提示
+- 在选股页和历史列表中展示结果
 
-#### 内部 query 模板建议
+### 6.3 OpenClaw 不负责什么
 
-```python
-HOTSPOT_PLATFORM_QUERIES = {
-    "baidu": [
-        "site:top.baidu.com 百度热搜 今日",
-        "百度热搜 今日 热点",
-    ],
-    "weibo": [
-        "site:s.weibo.com 微博热搜 今日",
-        "微博热搜 今日",
-    ],
-    "zhihu": [
-        "site:zhihu.com 知乎热榜 今日",
-        "知乎热榜 今日 热门话题",
-    ],
-    "36kr": [
-        "site:36kr.com 36氪 最新资讯",
-        "36氪 今日 热门",
-    ],
-    "wallstreetcn": [
-        "site:wallstreetcn.com 华尔街见闻 最新",
-        "华尔街见闻 今日 财经热点",
-    ],
-    "cls": [
-        "site:cls.cn 财联社 最新",
-        "财联社 今日 热点",
-    ],
-    "bbc": [
-        "site:bbc.com/news BBC 最新新闻",
-        "BBC world business technology latest",
-    ],
+- 不传候选股票池
+- 不参与后续技术信号判断
+- 不负责 MA100 / 123 / 缺口 / 涨停 / 底背离的计算
+- 不参与 DSA 的排序结果裁决
+
+---
+
+## 7. 对外接口设计
+
+### 7.1 入口定位
+
+新增一个 OpenClaw 专用接口：
+
+- `POST /api/v1/screening/openclaw-theme-run`
+
+该接口本质上是“创建一条使用 `extreme_strength_combo` 策略的 screening run”，而不是单独定义一种新任务体系。
+
+### 7.2 请求体
+
+推荐请求结构：
+
+```json
+{
+  "trade_date": "2026-03-26",
+  "market": "cn",
+  "themes": [
+    {
+      "name": "机器人",
+      "heat_score": 90,
+      "confidence": 0.85,
+      "catalyst_summary": "政策催化 + 产业事件驱动",
+      "keywords": ["人形机器人", "丝杠", "减速器"],
+      "evidence": [
+        {
+          "title": "示例新闻标题",
+          "source": "36kr",
+          "url": "https://example.com/news/1",
+          "published_at": "2026-03-26T08:20:00+08:00"
+        }
+      ]
+    }
+  ],
+  "options": {
+    "candidate_limit": 50,
+    "ai_top_k": 10,
+    "force_refresh": false
+  }
 }
 ```
 
-#### 实现建议
-- 针对一个 platform 可依次尝试多条 query
-- 将多条 query 结果合并去重
-- 返回单个 `SearchResponse` 或内部自定义 `HotspotPlatformSearchResult`
+### 7.3 响应体
 
-#### 去重标准
-建议用：
-- 标题规范化 + URL 域名 + snippet 哈希
+建议复用现有 screening run 响应风格：
+
+```json
+{
+  "run_id": "run_xxx",
+  "status": "queued",
+  "strategy_names": ["extreme_strength_combo"],
+  "accepted_theme_count": 1,
+  "created_at": "2026-03-26T09:01:23+08:00"
+}
+```
+
+### 7.4 关键约束
+
+- `strategy_names` 由后端固定注入为 `["extreme_strength_combo"]`
+- `market` 第一版固定为 `cn`
+- `themes` 不能为空
+- 没有热点题材时直接拒绝创建 run
 
 ---
 
-### 方法 3：`search_theme_market_news(...)`
+## 8. 内部数据结构
 
-#### 作用
-对 AI 已提炼出的题材，做二次市场新闻补强。
-
-#### 方法签名
-
-```python
-def search_theme_market_news(
-    self,
-    theme_name: str,
-    max_results: int = 10,
-    days: int = 3,
-) -> SearchResponse:
-    ...
-```
-
-#### query 组合建议
-
-```python
-queries = [
-    f"{theme_name} A股 板块 最新消息",
-    f"{theme_name} 概念股 龙头",
-    f"{theme_name} 财联社 36氪 华尔街见闻",
-]
-```
-
-#### 用途
-- 为题材提炼结果补充代表性新闻
-- 为题材映射服务提供更多板块/个股关键词
-
----
-
-### 方法 4：`search_multi_queries(...)`
-
-#### 作用
-减少上层热点服务反复调用 search 的样板代码。
-
-#### 方法签名
-
-```python
-def search_multi_queries(
-    self,
-    queries: list[str],
-    max_results: int = 10,
-    days: int = 3,
-) -> list[SearchResponse]:
-    ...
-```
-
-#### 说明
-- 顺序执行即可，第一版无需引入并发
-- 便于热点服务批量调 query
-
----
-
-### 6.3 可选新增方法
-
-### `fetch_search_results_content(...)`
-
-#### 作用
-对热点搜索结果做正文摘要补全。
-
-#### 签名
-
-```python
-def fetch_search_results_content(
-    self,
-    results: list[SearchResult],
-    max_chars: int = 1500,
-) -> list[dict]:
-    ...
-```
-
-#### 说明
-内部复用已有 `fetch_url_content(...)`。
-
-该方法可选，不要求第一版实现，但如果要让 AI 提炼题材更稳，会非常有价值。
-
----
-
-## 7. 新增 HotspotSearchService：桥接现有搜索能力
-
-文件：`src/services/hotspot_search_service.py`
-
-这层的作用非常明确：
-
-> **把现有 SearchService 的“通用搜索能力”转成“每日热点新闻采集能力”。**
-
-### 7.1 不做什么
-
-这个服务不负责：
-- 自己维护 provider
-- 自己直接抓站
-- 自己处理 API key
-- 自己做复杂重试
-
-这些都交给 `SearchService`。
-
-### 7.2 负责什么
-
-它负责：
-- 维护热点平台 query 模板
-- 调用 `SearchService` 搜索
-- 归并结果
-- 去重清洗
-- 标准化平台名称 / 类别 / 热度分数
-- 输出给上层 `ThemeExtractionService`
-
----
-
-### 7.3 数据结构
-
-```python
-from dataclasses import dataclass, field
-from typing import Optional
-
-@dataclass
-class HotspotNewsItem:
-    source_platform: str
-    source_domain: str
-    title: str
-    snippet: str
-    url: Optional[str]
-    published_date: Optional[str] = None
-    category: Optional[str] = None
-    rank: Optional[int] = None
-    search_query: Optional[str] = None
-    content_excerpt: str = ""
-    heat_score: float = 0.0
-```
+### 8.1 ThemePayload
 
 ```python
 @dataclass
-class HotspotNewsBundle:
-    trade_date: str
-    generated_at: str
-    items: list[HotspotNewsItem]
-    warnings: list[str] = field(default_factory=list)
-    stats: dict = field(default_factory=dict)
-```
-
----
-
-### 7.4 类设计
-
-```python
-class HotspotSearchService:
-    def __init__(self, search_service=None, config=None):
-        self.search_service = search_service or get_search_service()
-        self.config = config or get_config()
-
-    def collect_daily_hotspots(
-        self,
-        trade_date: date,
-        max_items_per_platform: int = 10,
-        include_content_excerpt: bool = False,
-    ) -> HotspotNewsBundle:
-        ...
-
-    def search_platform_hotspot(
-        self,
-        platform: str,
-        max_results: int = 10,
-        days: int = 1,
-    ) -> list[SearchResult]:
-        ...
-
-    def normalize_results(
-        self,
-        platform: str,
-        results: list[SearchResult],
-        query: str,
-    ) -> list[HotspotNewsItem]:
-        ...
-
-    def deduplicate_items(
-        self,
-        items: list[HotspotNewsItem],
-    ) -> list[HotspotNewsItem]:
-        ...
-```
-
----
-
-### 7.5 平台配置建议
-
-```python
-CORE_HOTSPOT_PLATFORMS = [
-    "baidu",
-    "weibo",
-    "zhihu",
-    "36kr",
-    "wallstreetcn",
-    "bbc",
-]
-
-OPTIONAL_HOTSPOT_PLATFORMS = [
-    "cls",
-    "thepaper",
-    "jiemian",
-    "yicai",
-    "people",
-    "cctv",
-    "huxiu",
-]
-```
-
-### 7.6 `collect_daily_hotspots(...)` 伪代码
-
-```python
-def collect_daily_hotspots(...):
-    items = []
-    warnings = []
-    stats = {}
-
-    platforms = core + optional
-    for platform in platforms:
-        try:
-            results = self.search_platform_hotspot(platform, ...)
-            normalized = self.normalize_results(platform, results, query_used)
-            items.extend(normalized)
-            stats[platform] = {"count": len(normalized), "ok": True}
-        except Exception as exc:
-            warnings.append(f"{platform} hotspot search failed: {exc}")
-            stats[platform] = {"count": 0, "ok": False, "error": str(exc)}
-            continue
-
-    items = self.deduplicate_items(items)
-
-    if include_content_excerpt:
-        # optional: fetch_url_content for top-N
-        ...
-
-    return HotspotNewsBundle(...)
-```
-
----
-
-## 8. ThemeExtractionService：基于搜索结果提炼题材
-
-文件：`src/services/theme_extraction_service.py`
-
-### 8.1 输入边界
-
-该服务的输入只能来自：
-- `HotspotSearchService.collect_daily_hotspots(...)`
-
-不能直接去抓站。
-
-### 8.2 输出结构
-
-```python
-@dataclass
-class HotTheme:
-    theme_name: str
-    aliases: list[str]
+class ExternalTheme:
+    name: str
     heat_score: float
     confidence: float
-    event_type: str
-    reason: str
+    catalyst_summary: str
     keywords: list[str]
-    related_people: list[str]
-    source_count: int
-    representative_titles: list[str]
+    evidence: list[dict]
 ```
+
+### 8.2 Run 级上下文
 
 ```python
 @dataclass
-class ThemeExtractionResult:
+class OpenClawThemeContext:
+    source: str
     trade_date: str
-    generated_at: str
-    themes: list[HotTheme]
-    warnings: list[str] = field(default_factory=list)
+    market: str
+    themes: list[ExternalTheme]
+    accepted_at: str
 ```
 
-### 8.3 类设计
+### 8.3 候选级补充字段
 
-```python
-class ThemeExtractionService:
-    def __init__(self, llm_adapter=None, config=None):
-        ...
+建议新增以下字段进入 factor snapshot 或候选结果：
 
-    def extract_themes(
-        self,
-        hotspot_bundle: HotspotNewsBundle,
-        top_n: int = 5,
-    ) -> ThemeExtractionResult:
-        ...
-```
-
-### 8.4 Prompt 原则
-
-Prompt 中必须明确：
-- 从热点新闻中提炼“可交易题材”
-- 输出 JSON
-- 禁止输出 crypto 题材
-- 必须输出关键词、驱动原因、热度、source_count
-
-### 8.5 与 SearchService 的关系
-
-这里**不再直接用 SearchService**，而是消费已经聚合好的热点新闻包。
-
-如果题材需要二次补强，可通过调用：
-- `SearchService.search_theme_market_news(...)`
-
----
-
-## 9. ThemeMappingService：把题材映射到股票池
-
-文件：`src/services/theme_mapping_service.py`
-
-### 9.1 目标
-
-给股票池中的股票补充题材因子：
-
-- `primary_theme`
-- `theme_heat_score`
-- `theme_match_score`
-- `is_hot_theme_stock`
-
-### 9.2 输入
-
-- `ThemeExtractionResult`
-- `universe_df`
-- 可选：`fetcher_manager.get_belong_boards(...)`
-- 可选：已有个股新闻 / 搜索结果
-
-### 9.3 数据结构
-
-```python
-@dataclass
-class StockThemeMatch:
-    code: str
-    name: str
-    primary_theme: str | None
-    theme_tags: list[str]
-    theme_heat_score: float
-    theme_match_score: float
-    is_hot_theme_stock: bool
-    match_reasons: list[str]
-    related_hot_people: list[str]
-    theme_event_types: list[str]
-```
-
-### 9.4 类设计
-
-```python
-class ThemeMappingService:
-    def __init__(self, fetcher_manager=None, search_service=None, config=None):
-        self.fetcher_manager = fetcher_manager
-        self.search_service = search_service or get_search_service()
-        self.config = config or get_config()
-
-    def map_themes_to_universe(
-        self,
-        universe_df: pd.DataFrame,
-        theme_result: ThemeExtractionResult,
-    ) -> dict[str, StockThemeMatch]:
-        ...
-```
-
-### 9.5 匹配逻辑分层
-
-#### 第一层：板块匹配
-使用 `belong_boards` 名称与题材关键词匹配。
-
-#### 第二层：股票名称匹配
-使用股票名称与题材别名、关键词匹配。
-
-#### 第三层：可选个股新闻补强
-对 top 候选或高分候选可调用：
-- `search_service.search_stock_news(stock_code, stock_name, max_results=3)`
-
-注意：
-- 这一步不应对全市场全部股票做，否则会过重
-- 只对初筛高匹配股票或 top N 做补强
-
-### 9.6 匹配评分建议
-
-```text
-board_match_score   0.0 ~ 1.0
-name_match_score    0.0 ~ 1.0
-news_match_score    0.0 ~ 1.0
-
-final theme_match_score =
-    board_match_score * 0.6 +
-    name_match_score  * 0.25 +
-    news_match_score  * 0.15
-```
-
-### 9.7 输出阈值建议
-
-```text
-is_hot_theme_stock = (
-    theme_heat_score >= 70
-    and theme_match_score >= 0.6
-)
-```
-
----
-
-## 10. ThemeContextService：统一题材上下文入口
-
-文件：`src/services/theme_context_service.py`
-
-### 10.1 目标
-
-统一管理：
-- 每日热点新闻搜索结果
-- 每日题材提炼结果
-- 股票池题材映射结果
-- 缓存读取/落盘
-
-### 10.2 类设计
-
-```python
-@dataclass
-class ThemeContext:
-    trade_date: str
-    hotspot_bundle: HotspotNewsBundle
-    theme_result: ThemeExtractionResult
-    stock_matches: dict[str, StockThemeMatch]
-    warnings: list[str] = field(default_factory=list)
-```
-
-```python
-class ThemeContextService:
-    def __init__(
-        self,
-        hotspot_search_service=None,
-        theme_extraction_service=None,
-        theme_mapping_service=None,
-        config=None,
-    ):
-        ...
-
-    def get_theme_context(
-        self,
-        trade_date: date,
-        universe_df: pd.DataFrame,
-        force_refresh: bool = False,
-    ) -> ThemeContext:
-        ...
-```
-
-### 10.3 内部流程
-
-```python
-1. 读取缓存
-2. 若无缓存/强制刷新：
-   2.1 collect_daily_hotspots(...)
-   2.2 extract_themes(...)
-   2.3 map_themes_to_universe(...)
-   2.4 保存缓存
-3. 返回 ThemeContext
-```
-
-### 10.4 缓存目录建议
-
-```text
-data/theme_context/
-  hotspot_news_YYYY-MM-DD.json
-  themes_YYYY-MM-DD.json
-  theme_matches_YYYY-MM-DD.json
-```
-
----
-
-## 11. ScreeningTaskService 的调用改造
-
-文件：`src/services/screening_task_service.py`
-
-### 11.1 目标
-
-在现有筛选主流程中插入题材上下文准备步骤。
-
-### 11.2 推荐接入点
-
-当前链路大致为：
-- universe resolved
-- market data synced
-- factorizing
-- screening
-- ai_enriching
-
-建议在 `factorizing` 开始前插入：
-
-```python
-theme_context = None
-if getattr(self.config, "hot_theme_enabled", False):
-    try:
-        theme_context = self.theme_context_service.get_theme_context(
-            trade_date=effective_trade_date,
-            universe_df=universe_df,
-            force_refresh=getattr(self.config, "hot_theme_force_refresh", False),
-        )
-    except Exception as exc:
-        logger.warning("theme_context prepare failed: %s", exc)
-        if not getattr(self.config, "hot_theme_fail_open", True):
-            raise
-```
-
-然后在 `build_factor_snapshot(...)` 时传入：
-
-```python
-snapshot_df = runtime_factor_service.build_factor_snapshot(
-    universe_df=universe_df,
-    trade_date=effective_trade_date,
-    theme_context=theme_context,
-    persist=...,
-)
-```
-
-### 11.3 构造依赖
-
-建议在 `ScreeningTaskService.__init__` 中新增：
-
-```python
-self.theme_context_service = theme_context_service or ThemeContextService(
-    hotspot_search_service=HotspotSearchService(),
-    theme_extraction_service=ThemeExtractionService(),
-    theme_mapping_service=ThemeMappingService(
-        fetcher_manager=self.market_data_sync_service.fetcher_manager,
-    ),
-)
-```
-
-### 11.4 第一版是否新增任务阶段？
-
-第一版建议不新增状态阶段，只记录 warning 与日志。
-
-稳定后可增加：
-- `hotspot_collecting`
-- `theme_extracting`
-
----
-
-## 12. FactorService 的改造
-
-文件：`src/services/factor_service.py`
-
-### 12.1 目标
-
-将题材上下文真正变成因子，注入 snapshot。
-
-### 12.2 方法签名改造
-
-从：
-
-```python
-def build_factor_snapshot(self, universe_df, trade_date, persist=True):
-```
-
-改为：
-
-```python
-def build_factor_snapshot(
-    self,
-    universe_df,
-    trade_date,
-    theme_context=None,
-    persist=True,
-):
-```
-
-### 12.3 新增字段
-
-建议加入 snapshot DataFrame 的字段：
-
-#### 基础字段
 - `primary_theme`
 - `theme_tags`
 - `theme_heat_score`
 - `theme_match_score`
 - `is_hot_theme_stock`
-
-#### 增强字段
-- `theme_match_reasons`
-- `related_hot_people`
-- `theme_event_types`
-- `theme_boost_score`
-- `hot_momentum_triggered`
-
-### 12.4 数据填充伪代码
-
-```python
-match = theme_context.stock_matches.get(code) if theme_context else None
-row["primary_theme"] = match.primary_theme if match else None
-row["theme_tags"] = match.theme_tags if match else []
-row["theme_heat_score"] = match.theme_heat_score if match else 0.0
-row["theme_match_score"] = match.theme_match_score if match else 0.0
-row["is_hot_theme_stock"] = match.is_hot_theme_stock if match else False
-row["theme_match_reasons"] = match.match_reasons if match else []
-row["related_hot_people"] = match.related_hot_people if match else []
-row["theme_event_types"] = match.theme_event_types if match else []
-row["theme_boost_score"] = (
-    (row["theme_heat_score"] / 100.0) * 0.5 + row["theme_match_score"] * 0.5
-)
-row["hot_momentum_triggered"] = bool(
-    row.get("gap_breakaway", False) or row.get("limit_up_breakout", False)
-)
-```
-
-### 12.5 注意事项
-
-- DataFrame 中 list 字段要注意后续存储兼容性
-- 如已有 snapshot 落库逻辑不支持复杂类型，第一版可先序列化为 JSON string
+- `leader_score`
+- `extreme_strength_score`
+- `extreme_strength_reasons`
+- `entry_mode_hint`
+- `theme_catalyst_summary`
 
 ---
 
-## 13. 新增策略 YAML：gap_limitup_hot_theme.yaml
+## 9. DSA 内部执行流程
 
-文件：`strategies/gap_limitup_hot_theme.yaml`
+### 9.1 总流程
 
-### 13.1 策略定位
+```text
+1. OpenClaw 调用专用接口
+2. DSA 校验并落盘 theme_context
+3. 创建 screening run
+4. ScreeningTaskService 正常执行
+5. FactorService 构建基础因子
+6. Theme 过滤层给每只股票打上题材归属和龙头特征
+7. extreme_strength_combo 策略按总分排序
+8. AI 二筛继续沿用现有 candidate_analysis_service
+9. 结果写入候选、详情、历史列表
+```
 
-在现有 `gap_limitup_breakout` 的基础上，叠加热点题材主线条件。
+### 9.2 不新增平行主流程
 
-### 13.2 策略定义建议
+本方案明确不新增独立“theme run engine”，而是在现有 `ScreeningTaskService` 中插入一层主题上下文消费逻辑。
+
+---
+
+## 10. 热点板块硬门槛
+
+### 10.1 门槛定义
+
+只有同时满足以下条件的股票，才进入 `extreme_strength_combo` 的正式评分阶段：
+
+1. 股票至少匹配一个外部热点题材
+2. 匹配结果达到最低题材相关度阈值
+
+### 10.2 题材匹配来源
+
+建议综合以下信息：
+
+- `get_belong_boards(stock_code)` 返回的所属板块
+- 股票名称与题材名/关键词匹配
+- 可选的概念板块别名表
+
+### 10.3 匹配评分建议
+
+```text
+board_match_score   0.0 ~ 1.0
+name_match_score    0.0 ~ 1.0
+keyword_match_score 0.0 ~ 1.0
+
+theme_match_score =
+    board_match_score * 0.55 +
+    name_match_score * 0.20 +
+    keyword_match_score * 0.25
+```
+
+建议阈值：
+
+- `theme_match_score >= 0.60` 才认定为热点板块命中
+
+---
+
+## 11. 龙头股筛选（定性层）
+
+热点命中的股票进入候选池后，需要再计算龙头特征分。
+
+### 11.1 第一版可稳定实现的龙头特征
+
+- 流通市值偏小
+- 换手率较高
+- 趋势状态较好
+- 涨停/突破特征明显
+- 板块匹配度高
+
+### 11.2 高风险但有价值的特征
+
+以下特征在第一版可以先作为可选增强项，不建议做硬门槛：
+
+- 当日最早封板
+- 开盘半小时内涨停
+- 分时封板速度
+
+原因是这些信息依赖分钟级或分时数据，不是当前 screening 主链路里的稳定基础字段。
+
+### 11.3 leader_score 建议
+
+```text
+theme_match_score      35
+small_circ_mv_score    20
+turnover_score         20
+breakout_strength      15
+trend_strength         10
+--------------------------
+leader_score          100
+```
+
+---
+
+## 12. 极端强势组合评分模型
+
+### 12.1 策略形态
+
+这条策略不是“必须全部满足”，而是：
+
+- 热点题材命中为硬门槛
+- 主信号给基础分
+- 其他强势信号累积加分
+- 最终按总分排序
+
+### 12.2 推荐总分结构
+
+```text
+extreme_strength_score =
+    base_score
+  + theme_score
+  + leader_bonus
+  + signal_bonus
+  + execution_bonus
+```
+
+### 12.3 基础分
+
+`MA100` 是基础分中心：
+
+```text
+above_ma100 = True                   -> +20
+ma100_breakout_days in 1~5           -> +10
+pullback_ma100 / pullback_ma20       -> +5
+```
+
+### 12.4 主要叠加信号
+
+```text
+pattern_123_low_trendline            -> +12
+ma100_low123_confirmed               -> +10
+gap_breakaway                        -> +15
+is_limit_up                          -> +10
+limit_up_breakout                    -> +12
+bottom_divergence_double_breakout    -> +12
+ma100_60min_confirmed                -> +6
+trendline_breakout                   -> +6
+```
+
+### 12.5 辅助加分
+
+```text
+theme_heat_score high                -> +0~10
+leader_score                         -> +0~15
+volume_ratio strong                  -> +0~8
+turnover_rate active                 -> +0~6
+low circ_mv                          -> +0~6
+breakout_ratio strong                -> +0~8
+```
+
+### 12.6 入选建议
+
+建议策略最终设置两个层次：
+
+- `selected`: 总分高于正式阈值
+- `watchlist`: 命中热点题材，但总分略低，可观察
+
+例如：
+
+- `extreme_strength_score >= 70` → 正式入选
+- `60 <= score < 70` → 观察名单
+
+---
+
+## 13. 因子复用与新增
+
+### 13.1 可直接复用的现有因子
+
+来自 [factor_service.py](/e:/daily_stock_analysis/src/services/factor_service.py) 的能力：
+
+- `above_ma100`
+- `ma100_breakout_days`
+- `pullback_ma100`
+- `pullback_ma20`
+- `gap_breakaway`
+- `is_limit_up`
+- `limit_up_breakout`
+- `pattern_123_low_trendline`
+- `ma100_low123_confirmed`
+- `ma100_60min_confirmed`
+- `bottom_divergence_double_breakout`
+- `trendline_breakout`
+- `volume_ratio`
+- `turnover_rate`
+- `breakout_ratio`
+- `liquidity_score`
+- `trend_score`
+
+### 13.2 需要新增的字段
+
+新增字段应集中在“题材上下文”和“策略聚合分”两类：
+
+- `primary_theme`
+- `theme_tags`
+- `theme_heat_score`
+- `theme_match_score`
+- `is_hot_theme_stock`
+- `leader_score`
+- `extreme_strength_score`
+- `extreme_strength_reasons`
+- `theme_catalyst_summary`
+- `entry_mode_hint`
+
+---
+
+## 14. 策略 YAML 设计
+
+建议新增：
+
+- `strategies/extreme_strength_combo.yaml`
+
+该策略不是自己定义全部底层信号，而是消费 snapshot 中的聚合字段。
+
+示意：
 
 ```yaml
-name: gap_limitup_hot_theme
-display_name: 跳空涨停+热点题材
-description: 站上MA100，出现跳空突破或涨停突破，同时命中今日热点主线题材的强势股。
+name: extreme_strength_combo
+display_name: 极端强势组合
+description: 热点板块硬门槛下的强势信号聚合策略，综合 MA100、低位123、跳空涨停、底背离等信号进行评分排序。
 category: momentum
-core_rules: [1, 3]
-required_tools:
-  - get_daily_history
-  - get_realtime_quote
-  - search_stock_news
+core_rules: [1, 2, 4, 7]
 
 screening:
   filters:
-    - field: above_ma100
-      op: "=="
-      value: true
     - field: is_hot_theme_stock
       op: "=="
       value: true
-    - field: theme_heat_score
-      op: ">="
-      value: 70
-    - field: hot_momentum_triggered
-      op: "=="
-      value: true
+    - any:
+        - field: above_ma100
+          op: "=="
+          value: true
+        - field: pattern_123_low_trendline
+          op: "=="
+          value: true
+        - field: gap_breakaway
+          op: "=="
+          value: true
+        - field: is_limit_up
+          op: "=="
+          value: true
   scoring:
+    - field: extreme_strength_score
+      weight: 100
+    - field: leader_score
+      weight: 20
     - field: theme_heat_score
-      weight: 30
-      cap: 100
-    - field: theme_match_score
-      weight: 25
-      cap: 1.0
-    - field: volume_ratio
-      weight: 15
-      cap: 5.0
-    - field: breakout_ratio
-      weight: 15
-    - field: trend_score
       weight: 10
-    - field: liquidity_score
-      weight: 5
-
-instructions: |
-  本策略用于筛选“热点题材主线 + 强势技术形态”共振个股。
-
-  入选重点：
-  1. 股价位于 MA100 上方
-  2. 属于今日高热度题材主线
-  3. 量价配合良好
-  4. 具备跳空突破、涨停突破或近似强势突破形态
-
-  AI 二筛时应重点判断：
-  - 是否为题材主线前排
-  - 是龙头、补涨还是跟风
-  - 新闻催化是否真实存在
 ```
 
 ---
 
-## 14. CandidateAnalysisService 的改造
+## 15. ScreeningTaskService 接入方式
 
-文件：`src/services/candidate_analysis_service.py`
+### 15.1 保持现有运行模型
 
-### 14.1 为什么这里必须继续复用现有新闻能力
+这条策略的 run 不应是新任务类型，而应继续是标准 screening run。
 
-因为它已经是项目现有的 AI 二筛新闻入口：
+### 15.2 运行时注入
 
-- 会调用 `search_stock_news(...)`
-- 会保存 `save_news_intel(...)`
-- 与 `analysis_service.py` 联动成熟
+专用接口在创建 run 时：
 
-所以新方案不是取代它，而是加强它。
+- 固定 `strategy_names=["extreme_strength_combo"]`
+- 将 `theme_context` 注入本次 run 的上下文
 
----
+`ScreeningTaskService` 执行时：
 
-### 14.2 建议改造目标
+- 正常解析股票池
+- 正常同步行情
+- 正常构建 factor snapshot
+- 额外在 factorizing 阶段合并题材字段
 
-把“全局题材上下文”带入 top K 候选 AI 二筛。
+### 15.3 AI 二筛
 
-### 14.3 方法签名建议
+`candidate_analysis_service.py` 保持现有能力：
 
-从：
-
-```python
-def analyze_top_k(self, candidates, top_k, news_top_m=None):
-```
-
-改为：
-
-```python
-def analyze_top_k(
-    self,
-    candidates,
-    top_k,
-    news_top_m=None,
-    theme_context=None,
-):
-```
-
-### 14.4 每个 candidate 新增上下文
-
-```python
-candidate_theme_context = {
-    "primary_theme": ...,
-    "theme_heat_score": ...,
-    "theme_match_score": ...,
-    "theme_match_reasons": ...,
-    "theme_event_types": ...,
-}
-```
-
-### 14.5 AI 分析联动方案
-
-有两种实现路径：
-
-#### 路线 A：轻量版（推荐第一版）
-保持 `AnalysisService.analyze_stock(...)` 不动，只在返回结果上附加题材信息。
-
-优点：
-- 改动小
-- 风险低
-
-缺点：
-- AI 不会真正利用题材上下文做推理
-
-#### 路线 B：增强版（推荐第二步）
-扩展 `AnalysisService` / pipeline，让题材上下文进入 prompt。
-
-建议第一版先做 A，第二版再做 B。
-
-### 14.6 候选股新闻层保持不变但要强调其作用
-
-这里继续调用：
-
-```python
-response = self.search_service.search_stock_news(
-    stock_code=code,
-    stock_name=name or code,
-    max_results=5,
-)
-```
-
-它的作用变成：
-- 对全局题材层做个股验证
-- 检查是否存在订单/公告/事件/涨停原因
-- 帮助 AI 判断龙头/补涨/跟风
-
-即：
-
-> **全局热点层负责“题材是什么”，个股新闻层负责“这只股为什么跟这个题材有关”。**
+- 仍然可以对 top K 做个股新闻搜索和 AI 分析
+- 但这里的新闻只是候选个股验证，不承担热点发现职责
 
 ---
 
-## 15. 配置改造
+## 16. 前端展示要求
 
-文件：`src/config.py`
+### 16.1 选股页
 
-建议新增配置项：
+新策略必须在选股页策略列表中可见，和其他策略同级。
 
-```python
-hot_theme_enabled: bool = False
-hot_theme_force_refresh: bool = False
-hot_theme_fail_open: bool = True
-hot_theme_top_n: int = 5
-hot_theme_min_heat_score: float = 70.0
-hot_theme_min_match_score: float = 0.6
-hot_theme_cache_dir: str = "data/theme_context"
-hot_theme_include_content_excerpt: bool = False
-hot_theme_core_platforms: list[str] = ["baidu", "weibo", "zhihu", "36kr", "wallstreetcn", "bbc"]
-hot_theme_optional_platforms: list[str] = ["cls", "thepaper", "jiemian", "yicai", "people", "cctv", "huxiu"]
-```
+展示要求：
 
-并补充环境变量读取：
+- 策略名：`极端强势组合`
+- 可从正常策略列表中选择
+- 由 OpenClaw 触发时，前端也能识别该 run 的策略名并正确展示
 
-- `HOT_THEME_ENABLED`
-- `HOT_THEME_FORCE_REFRESH`
-- `HOT_THEME_FAIL_OPEN`
-- `HOT_THEME_TOP_N`
-- `HOT_THEME_MIN_HEAT_SCORE`
-- `HOT_THEME_MIN_MATCH_SCORE`
-- `HOT_THEME_CACHE_DIR`
+### 16.2 运行结果页
 
----
+每个候选应至少展示：
 
-## 16. OpenClaw Skill 的正确接法（旁路方案）
+- 最终总分 `extreme_strength_score`
+- 主题材 `primary_theme`
+- 题材热度 `theme_heat_score`
+- 龙头特征分 `leader_score`
+- 主要命中原因 `extreme_strength_reasons`
+- 关键信号命中情况（MA100 / 123 / 跳空 / 涨停 / 底背离）
 
-虽然 DSA 主链路不直接依赖 skill，但为了充分利用你当前已有的新闻 skill 能力，建议增加一个**旁路接入方案**。
+### 16.3 历史记录列表
 
-### 16.1 旁路方案的定位
+该策略运行结果必须与其他策略一样出现在历史记录中，不新增独立入口。
 
-作为以下用途：
+历史列表至少应支持：
 
-1. 开发阶段验证热点 query 组合
-2. 旁路生成每日新闻 JSON
-3. 当 DSA 内部 SearchService 结果不足时，人工/定时补充
-
-### 16.2 旁路产物格式建议
-
-OpenClaw 侧每日生成：
-
-```text
-/mnt/e/daily_stock_analysis/data/theme_context/
-  external_hotspot_news_YYYY-MM-DD.json
-```
-
-结构与 `HotspotNewsBundle` 尽量兼容。
-
-### 16.3 DSA 读取方式
-
-`ThemeContextService` 可增加可选读取：
-
-```python
-if external_cache_exists:
-    merge_external_hotspot_news(...)
-```
-
-### 16.4 边界说明
-
-- 这是增强能力，不是主依赖
-- 外部 skill 数据缺失时，DSA 仍可仅依赖内部 `SearchService` 正常运行
+- 展示本次 run 的策略名
+- 识别其为 `extreme_strength_combo`
+- 能进入详情查看候选及命中原因
 
 ---
 
-## 17. 测试设计
+## 17. 存储设计
 
-### 17.1 SearchService 新方法测试
+### 17.1 题材上下文存储
 
-新增测试：
-- `tests/test_search_service_topic_news.py`
-- `tests/test_search_service_hotspot_feed.py`
+建议将外部题材上下文与 screening run 绑定，便于结果页和历史页回放。
 
-覆盖：
-- query 组装
-- provider failover
-- 空结果/错误结果
-- 多 query 聚合去重
+可选方式：
 
-### 17.2 HotspotSearchService 测试
+1. 轻量方案：写入 `config_snapshot`
+2. 清晰方案：新增独立表，如 `screening_theme_context`
 
-新增：
-- `tests/test_hotspot_search_service.py`
+推荐方式：
 
-覆盖：
-- 多平台搜索聚合
--
+- 第一版先写入 `config_snapshot.theme_context`
+- 若后续体积或查询复杂度上升，再拆独立表
+
+### 17.2 候选结果存储
+
+候选表或结果 JSON 中应补充：
+
+- `primary_theme`
+- `theme_tags`
+- `theme_heat_score`
+- `leader_score`
+- `extreme_strength_score`
+- `extreme_strength_reasons`
+
+这样历史记录页和详情页才能无损回放。
+
+---
+
+## 18. 风险与边界
+
+### 18.1 当前高风险点
+
+1. 题材名和板块名不总是一一对应
+2. “最早封板/封板速度”依赖分钟级数据，第一版不宜做硬门槛
+3. OpenClaw 传入题材质量会直接影响策略结果
+
+### 18.2 第一版建议收敛
+
+第一版应聚焦：
+
+- 热点题材硬门槛
+- 题材匹配
+- 龙头特征基础分
+- 极端强势组合总分
+- 标准 run 展示与历史回放
+
+以下内容可以后续增强：
+
+- 分时封板速度
+- 开盘半小时涨停识别
+- 60 分钟线真实分时验证
+- 热点题材别名库自动维护
+
+---
+
+## 19. 分阶段实施建议
+
+### Phase 1
+
+- 新增 OpenClaw 专用接口
+- 新增 `extreme_strength_combo` 策略
+- 支持题材硬门槛
+- 补充聚合分数字段
+- 候选结果页展示总分和命中原因
+
+### Phase 2
+
+- 历史记录页展示题材上下文
+- AI 二筛 prompt 读取题材上下文
+- 优化题材映射和龙头评分
+
+### Phase 3
+
+- 接入分钟级/60 分钟级增强信号
+- 支持更精细的封板速度与回踩入场识别
+
+---
+
+## 20. 最终方案摘要
+
+本方案的最终结论是：
+
+- 这项能力在 DSA 中应被实现为一条新的策略：`extreme_strength_combo`
+- 触发入口由 OpenClaw 调用专用接口完成
+- OpenClaw 只提供“热点题材上下文”，不提供候选股票
+- 热点题材命中是硬门槛
+- 门槛内股票按“基础分 + 多技术信号叠加加分”排序
+- 运行方式、候选结果、前端展示、历史记录都与其他策略保持一致
+
+这意味着我们新增的是：
+
+- 一个新的策略入口
+- 一套题材上下文注入能力
+- 一套聚合评分模型
+
+而不是一条脱离现有筛选体系的独立流程。

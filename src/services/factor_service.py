@@ -30,6 +30,7 @@ class FactorService:
         lookback_days: Optional[int] = None,
         breakout_lookback_days: Optional[int] = None,
         min_list_days: Optional[int] = None,
+        theme_context: Optional[object] = None,
     ) -> None:
         config = get_config()
         self.db = db_manager or DatabaseManager.get_instance()
@@ -44,6 +45,7 @@ class FactorService:
             if breakout_lookback_days is not None
             else config.screening_breakout_lookback_days
         )
+        self.theme_context = theme_context
 
     def build_factor_snapshot(
         self,
@@ -172,6 +174,21 @@ class FactorService:
             )
 
         snapshot_df = pd.DataFrame(snapshots)
+
+        # 应用热点题材因子富化
+        if self.theme_context and not snapshot_df.empty:
+            from src.services.hot_theme_factor_enricher import HotThemeFactorEnricher
+            enricher = HotThemeFactorEnricher()
+            enriched_records = []
+            for record in snapshot_df.to_dict("records"):
+                enriched = enricher.enrich_snapshot(
+                    snapshot=record,
+                    theme_context=self.theme_context,
+                    boards=[]
+                )
+                enriched_records.append(enriched)
+            snapshot_df = pd.DataFrame(enriched_records)
+
         if persist and not snapshot_df.empty:
             self.db.replace_factor_snapshots(trade_date=trade_date, snapshots=snapshot_df.to_dict("records"))
         return snapshot_df

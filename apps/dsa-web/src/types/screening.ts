@@ -65,6 +65,7 @@ export interface ScreeningRun {
   notificationAttempts: number;
   notificationSentAt?: string;
   notificationError?: string;
+  strategyNames?: string[];
 }
 
 export interface ScreeningRunListResponse {

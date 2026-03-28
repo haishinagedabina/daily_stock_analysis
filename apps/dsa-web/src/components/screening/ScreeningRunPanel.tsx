@@ -66,6 +66,11 @@ const RunHistoryItem: React.FC<{
         {STAGE_LABELS[run.status] || run.status}
       </Badge>
       <span className="flex-1 truncate text-secondary-text">{run.tradeDate || '—'}</span>
+      {run.strategyNames?.includes('extreme_strength_combo') && (
+        <Badge variant="default" size="sm" className="bg-orange/10 text-orange">
+          热点
+        </Badge>
+      )}
       <span className="text-secondary-text">{run.candidateCount} 只</span>
       <span className="text-secondary-text/50">{formatDatetime(run.startedAt)}</span>
     </button>

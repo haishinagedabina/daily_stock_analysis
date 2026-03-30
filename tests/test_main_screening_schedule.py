@@ -29,6 +29,9 @@ class MainScreeningScheduleTestCase(unittest.TestCase):
             schedule_enabled=False,
             schedule_time="18:00",
             schedule_run_immediately=True,
+            board_sync_schedule_enabled=False,
+            board_sync_schedule_time="15:05",
+            board_sync_run_immediately=False,
             run_immediately=False,
         )
         for key, value in overrides.items():
@@ -95,29 +98,66 @@ class MainScreeningScheduleTestCase(unittest.TestCase):
         }
 
         with patch("src.services.screening_schedule_service.ScreeningScheduleService", return_value=fake_service):
-            with self.assertRaisesRegex(RuntimeError, "当前状态: screening"):
+            with self.assertRaisesRegex(RuntimeError, "screening"):
                 main_module.run_screening_workflow(config=config, args=args)
 
     def test_main_schedules_screening_workflow_when_schedule_mode_enabled(self) -> None:
         args = self._build_args(screening=True, schedule=True)
         config = self._build_config()
+        scheduler = mock.MagicMock()
 
         with patch.object(main_module, "setup_logging"), patch.object(
             main_module, "parse_arguments", return_value=args
         ), patch.object(
             main_module, "get_config", return_value=config
         ), patch.object(main_module, "run_screening_workflow", return_value={"status": "completed"}) as mock_run, patch(
-            "src.scheduler.run_with_schedule", side_effect=lambda task, schedule_time, run_immediately: task()
-        ) as mock_schedule:
+            "src.scheduler.Scheduler", return_value=scheduler
+        ):
             exit_code = main_module.main()
 
         self.assertEqual(exit_code, 0)
-        mock_schedule.assert_called_once_with(
+        scheduler.add_daily_task.assert_called_once_with(
+            name="screening",
             task=mock.ANY,
             schedule_time="18:00",
             run_immediately=False,
         )
-        self.assertEqual(mock_run.call_count, 2)
+        scheduler.run.assert_called_once()
+        self.assertEqual(mock_run.call_count, 1)
+
+    def test_main_registers_board_sync_job_when_enabled(self) -> None:
+        args = self._build_args(screening=True, schedule=True)
+        config = self._build_config(
+            board_sync_schedule_enabled=True,
+            board_sync_schedule_time="15:05",
+            board_sync_run_immediately=False,
+        )
+        scheduler = mock.MagicMock()
+
+        with patch.object(main_module, "setup_logging"), patch.object(
+            main_module, "parse_arguments", return_value=args
+        ), patch.object(
+            main_module, "get_config", return_value=config
+        ), patch.object(main_module, "run_screening_workflow", return_value={"status": "completed"}), patch.object(
+            main_module, "run_board_sync_workflow", return_value={"status": "completed"}
+        ), patch("src.scheduler.Scheduler", return_value=scheduler):
+            exit_code = main_module.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(scheduler.add_daily_task.call_count, 2)
+        scheduler.add_daily_task.assert_any_call(
+            name="screening",
+            task=mock.ANY,
+            schedule_time="18:00",
+            run_immediately=False,
+        )
+        scheduler.add_daily_task.assert_any_call(
+            name="board_sync",
+            task=mock.ANY,
+            schedule_time="15:05",
+            run_immediately=False,
+        )
+        scheduler.run.assert_called_once()
 
     def test_main_returns_non_zero_when_immediate_scheduled_screening_fails(self) -> None:
         args = self._build_args(screening=True, schedule=True)
@@ -128,12 +168,12 @@ class MainScreeningScheduleTestCase(unittest.TestCase):
         ), patch.object(
             main_module, "get_config", return_value=config
         ), patch.object(main_module, "run_screening_workflow", side_effect=RuntimeError("同步失败")), patch(
-            "src.scheduler.run_with_schedule"
-        ) as mock_schedule:
+            "src.scheduler.Scheduler"
+        ) as mock_scheduler:
             exit_code = main_module.main()
 
         self.assertEqual(exit_code, 1)
-        mock_schedule.assert_not_called()
+        mock_scheduler.assert_not_called()
 
     def test_main_returns_non_zero_when_screening_workflow_fails(self) -> None:
         args = self._build_args(screening=True)

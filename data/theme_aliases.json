@@ -1,0 +1,103 @@
+{
+  "_comment": "Theme alias vocabulary: maps semantic OpenClaw themes to local board names.",
+  "aliases": [
+    {
+      "raw_alias": "AI Agent",
+      "normalized_label": "AI智能体",
+      "matched_boards": ["AI智能体"],
+      "priority": 100,
+      "notes": "OpenClaw常用表述"
+    },
+    {
+      "raw_alias": "大模型",
+      "normalized_label": "AIGC概念",
+      "matched_boards": ["AIGC概念", "多模态AI"],
+      "priority": 100,
+      "notes": "大模型相关板块"
+    },
+    {
+      "raw_alias": "算力",
+      "normalized_label": "算力概念",
+      "matched_boards": ["算力概念", "CPO概念"],
+      "priority": 90,
+      "notes": "算力产业链"
+    },
+    {
+      "raw_alias": "算力芯片",
+      "normalized_label": "AI芯片",
+      "matched_boards": ["AI芯片"],
+      "priority": 100,
+      "notes": ""
+    },
+    {
+      "raw_alias": "创新药出海",
+      "normalized_label": "创新药",
+      "matched_boards": ["创新药"],
+      "priority": 100,
+      "notes": "出海是修饰语,核心板块是创新药"
+    },
+    {
+      "raw_alias": "创新药",
+      "normalized_label": "创新药",
+      "matched_boards": ["创新药"],
+      "priority": 100,
+      "notes": ""
+    },
+    {
+      "raw_alias": "锂价反弹",
+      "normalized_label": "锂电产业链",
+      "matched_boards": ["锂矿概念", "锂电池概念"],
+      "priority": 100,
+      "notes": "锂价主题映射到锂矿+锂电池"
+    },
+    {
+      "raw_alias": "锂电池",
+      "normalized_label": "锂电池",
+      "matched_boards": ["锂电池", "锂电池概念"],
+      "priority": 100,
+      "notes": ""
+    },
+    {
+      "raw_alias": "锂矿",
+      "normalized_label": "锂矿概念",
+      "matched_boards": ["锂矿概念"],
+      "priority": 100,
+      "notes": ""
+    },
+    {
+      "raw_alias": "海南自贸港",
+      "normalized_label": "海南自贸港",
+      "matched_boards": ["海南自贸港"],
+      "priority": 100,
+      "notes": ""
+    },
+    {
+      "raw_alias": "免税",
+      "normalized_label": "免税概念",
+      "matched_boards": ["免税概念"],
+      "priority": 90,
+      "notes": ""
+    },
+    {
+      "raw_alias": "机器人",
+      "normalized_label": "机器人概念",
+      "matched_boards": ["机器人概念"],
+      "priority": 100,
+      "notes": ""
+    },
+    {
+      "raw_alias": "半导体",
+      "normalized_label": "半导体概念",
+      "matched_boards": ["半导体概念", "芯片概念"],
+      "priority": 100,
+      "notes": ""
+    },
+    {
+      "raw_alias": "芯片",
+      "normalized_label": "芯片概念",
+      "matched_boards": ["芯片概念"],
+      "priority": 100,
+      "notes": ""
+    }
+  ]
+}

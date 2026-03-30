@@ -11,6 +11,40 @@ from src.config import Config
 class ConfigEnvCompatibilityTestCase(unittest.TestCase):
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_board_sync_schedule_uses_safe_defaults(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertFalse(config.board_sync_schedule_enabled)
+        self.assertEqual(config.board_sync_schedule_time, "15:05")
+        self.assertFalse(config.board_sync_run_immediately)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_board_sync_schedule_reads_explicit_env_values(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "BOARD_SYNC_SCHEDULE_ENABLED": "true",
+            "BOARD_SYNC_SCHEDULE_TIME": "15:10",
+            "BOARD_SYNC_RUN_IMMEDIATELY": "true",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.board_sync_schedule_enabled)
+        self.assertEqual(config.board_sync_schedule_time, "15:10")
+        self.assertTrue(config.board_sync_run_immediately)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_schedule_run_immediately_falls_back_to_legacy_run_immediately(
         self,
         _mock_parse_yaml,

@@ -60,7 +60,7 @@ class FactorServiceTestCase(unittest.TestCase):
         self.db.save_daily_data(df, "600519", data_source="test")
 
         universe_df = pd.DataFrame(
-            [{"code": "600519", "name": "贵州茅台", "is_st": False, "list_date": date(2020, 1, 1)}]
+            [{"code": "600519", "name": "Kweichow Moutai", "is_st": False, "list_date": date(2020, 1, 1)}]
         )
         snapshot_df = self.service.build_factor_snapshot(universe_df=universe_df, trade_date=rows[-1]["date"])
 
@@ -97,7 +97,7 @@ class FactorServiceTestCase(unittest.TestCase):
         )
         self.db.save_daily_data(df, "000001", data_source="test")
 
-        universe_df = pd.DataFrame([{"code": "000001", "name": "平安银行", "is_st": False, "list_date": None}])
+        universe_df = pd.DataFrame([{"code": "000001", "name": "Ping An Bank", "is_st": False, "list_date": None}])
         latest_date = self.service.get_latest_trade_date(universe_df)
 
         self.assertEqual(latest_date, date(2026, 3, 11))
@@ -124,7 +124,7 @@ class FactorServiceTestCase(unittest.TestCase):
         df = pd.DataFrame(rows)
         self.db.save_daily_data(df, "300750", data_source="test")
         universe_df = pd.DataFrame(
-            [{"code": "300750", "name": "宁德时代", "is_st": False, "list_date": date(2018, 6, 11)}]
+            [{"code": "300750", "name": "CATL", "is_st": False, "list_date": date(2018, 6, 11)}]
         )
 
         snapshot_df = self.service.build_factor_snapshot(
@@ -186,7 +186,7 @@ class FactorServiceTestCase(unittest.TestCase):
         df = pd.DataFrame(rows)
         self.db.save_daily_data(df, "300750", data_source="test")
         universe_df = pd.DataFrame(
-            [{"code": "300750", "name": "寒武纪", "is_st": False, "list_date": date(2018, 6, 11)}]
+            [{"code": "300750", "name": "Test Stock", "is_st": False, "list_date": date(2018, 6, 11)}]
         )
         theme_context = OpenClawThemeContext(
             source="openclaw",
@@ -194,11 +194,11 @@ class FactorServiceTestCase(unittest.TestCase):
             market="cn",
             themes=[
                 ExternalTheme(
-                    name="AI芯片",
+                    name="AI Chip",
                     heat_score=90.0,
                     confidence=0.9,
-                    catalyst_summary="政策催化",
-                    keywords=["AI", "芯片", "算力"],
+                    catalyst_summary="policy catalyst",
+                    keywords=["AI", "chip", "compute"],
                     evidence=[],
                 )
             ],
@@ -207,7 +207,7 @@ class FactorServiceTestCase(unittest.TestCase):
 
         class _FakeFetcherManager:
             def get_belong_boards(self, stock_code: str):
-                return [{"name": "AI芯片"}, {"name": "算力"}]
+                return [{"name": "AI Chip"}, {"name": "Compute"}]
 
         service = FactorService(
             self.db,
@@ -216,7 +216,7 @@ class FactorServiceTestCase(unittest.TestCase):
             theme_context=theme_context,
             fetcher_manager=_FakeFetcherManager(),
         )
-        enrich_snapshot_mock.side_effect = lambda snapshot, theme_context, boards: {
+        enrich_snapshot_mock.side_effect = lambda snapshot, theme_context, boards, normalized_themes=None: {
             **snapshot,
             "theme_boards": boards,
             "is_hot_theme_stock": True,
@@ -228,8 +228,170 @@ class FactorServiceTestCase(unittest.TestCase):
         )
 
         self.assertEqual(len(snapshot_df), 1)
-        self.assertEqual(enrich_snapshot_mock.call_args.kwargs["boards"], ["AI芯片", "算力"])
-        self.assertEqual(snapshot_df.iloc[0]["theme_boards"], ["AI芯片", "算力"])
+        self.assertEqual(enrich_snapshot_mock.call_args.kwargs["boards"], ["AI Chip", "Compute"])
+        self.assertEqual(snapshot_df.iloc[0]["theme_boards"], ["AI Chip", "Compute"])
+
+    @patch("src.services.hot_theme_factor_enricher.HotThemeFactorEnricher.enrich_snapshot")
+    def test_build_factor_snapshot_prefers_local_board_cache(self, enrich_snapshot_mock) -> None:
+        start_date = date(2026, 3, 1)
+        rows = []
+        for idx in range(21):
+            trade_date = start_date + timedelta(days=idx)
+            close = 18.0 + idx * 0.2
+            rows.append(
+                {
+                    "date": trade_date,
+                    "open": close - 0.1,
+                    "high": close + 0.2,
+                    "low": close - 0.2,
+                    "close": close,
+                    "volume": 1000 + idx * 50,
+                    "amount": (1000 + idx * 50) * close,
+                    "pct_chg": 1.0,
+                }
+            )
+
+        self.db.save_daily_data(pd.DataFrame(rows), "300750", data_source="test")
+        self.db.replace_instrument_board_memberships(
+            instrument_code="300750",
+            memberships=[
+                {"board_name": "AI Chip", "board_type": "concept", "market": "cn", "source": "efinance"},
+                {"board_name": "Compute", "board_type": "concept", "market": "cn", "source": "efinance"},
+            ],
+            market="cn",
+            source="efinance",
+        )
+        universe_df = pd.DataFrame(
+            [{"code": "300750", "name": "Test Stock", "is_st": False, "list_date": date(2018, 6, 11)}]
+        )
+        theme_context = OpenClawThemeContext(
+            source="openclaw",
+            trade_date="2026-03-21",
+            market="cn",
+            themes=[
+                ExternalTheme(
+                    name="AI Chip",
+                    heat_score=90.0,
+                    confidence=0.9,
+                    catalyst_summary="policy catalyst",
+                    keywords=["AI", "chip", "compute"],
+                    evidence=[],
+                )
+            ],
+            accepted_at="2026-03-21T15:00:00",
+        )
+
+        class _FakeFetcherManager:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def get_belong_boards(self, stock_code: str):
+                self.calls.append(stock_code)
+                return [{"name": "remote should not be used"}]
+
+        manager = _FakeFetcherManager()
+        service = FactorService(
+            self.db,
+            lookback_days=40,
+            breakout_lookback_days=20,
+            theme_context=theme_context,
+            fetcher_manager=manager,
+        )
+        enrich_snapshot_mock.side_effect = lambda snapshot, theme_context, boards, normalized_themes=None: {
+            **snapshot,
+            "theme_boards": boards,
+            "is_hot_theme_stock": True,
+        }
+
+        snapshot_df = service.build_factor_snapshot(
+            universe_df=universe_df,
+            trade_date=rows[-1]["date"],
+        )
+
+        self.assertEqual(len(snapshot_df), 1)
+        self.assertEqual(enrich_snapshot_mock.call_args.kwargs["boards"], ["AI Chip", "Compute"])
+        self.assertEqual(snapshot_df.iloc[0]["theme_boards"], ["AI Chip", "Compute"])
+        self.assertEqual(manager.calls, [])
+
+    @patch("src.services.hot_theme_factor_enricher.HotThemeFactorEnricher.enrich_snapshot")
+    def test_build_factor_snapshot_backfills_missing_board_cache(self, enrich_snapshot_mock) -> None:
+        start_date = date(2026, 3, 1)
+        rows = []
+        for idx in range(21):
+            trade_date = start_date + timedelta(days=idx)
+            close = 12.0 + idx * 0.15
+            rows.append(
+                {
+                    "date": trade_date,
+                    "open": close - 0.1,
+                    "high": close + 0.2,
+                    "low": close - 0.2,
+                    "close": close,
+                    "volume": 1000 + idx * 50,
+                    "amount": (1000 + idx * 50) * close,
+                    "pct_chg": 1.0,
+                }
+            )
+
+        self.db.save_daily_data(pd.DataFrame(rows), "300750", data_source="test")
+        universe_df = pd.DataFrame(
+            [{"code": "300750", "name": "Test Stock", "is_st": False, "list_date": date(2018, 6, 11)}]
+        )
+        theme_context = OpenClawThemeContext(
+            source="openclaw",
+            trade_date="2026-03-21",
+            market="cn",
+            themes=[
+                ExternalTheme(
+                    name="New Energy",
+                    heat_score=92.0,
+                    confidence=0.95,
+                    catalyst_summary="industry catalyst",
+                    keywords=["new energy", "battery"],
+                    evidence=[],
+                )
+            ],
+            accepted_at="2026-03-21T15:00:00",
+        )
+
+        class _FakeFetcherManager:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def get_belong_boards(self, stock_code: str):
+                self.calls.append(stock_code)
+                return [
+                    {"name": "New Energy", "type": "concept"},
+                    {"name": "Battery", "type": "concept"},
+                ]
+
+        manager = _FakeFetcherManager()
+        service = FactorService(
+            self.db,
+            lookback_days=40,
+            breakout_lookback_days=20,
+            theme_context=theme_context,
+            fetcher_manager=manager,
+        )
+        enrich_snapshot_mock.side_effect = lambda snapshot, theme_context, boards, normalized_themes=None: {
+            **snapshot,
+            "theme_boards": boards,
+            "is_hot_theme_stock": True,
+        }
+
+        snapshot_df = service.build_factor_snapshot(
+            universe_df=universe_df,
+            trade_date=rows[-1]["date"],
+        )
+
+        self.assertEqual(len(snapshot_df), 1)
+        self.assertEqual(enrich_snapshot_mock.call_args.kwargs["boards"], ["New Energy", "Battery"])
+        self.assertEqual(snapshot_df.iloc[0]["theme_boards"], ["New Energy", "Battery"])
+        self.assertEqual(manager.calls, ["300750"])
+        self.assertEqual(
+            self.db.batch_get_instrument_board_names(["300750"]),
+            {"300750": ["Battery", "New Energy"]},
+        )
 
 
 if __name__ == "__main__":

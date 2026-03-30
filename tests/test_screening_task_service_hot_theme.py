@@ -184,5 +184,108 @@ class ScreeningTaskServiceHotThemeIntegrationTestCase(unittest.TestCase):
         self.assertIsNone(us_context)
 
 
+class NormalizedThemeContractTestCase(unittest.TestCase):
+    """Test that the run config snapshot supports normalized theme data."""
+
+    def setUp(self) -> None:
+        self.service = ScreeningTaskService()
+        self.theme_ingest_service = ThemeContextIngestService()
+        self.theme_context = self.theme_ingest_service.ingest_themes(
+            trade_date="2026-03-26",
+            market="cn",
+            themes=[
+                ExternalTheme(
+                    name="AI Agent",
+                    heat_score=92.0,
+                    confidence=0.88,
+                    catalyst_summary="大模型应用爆发",
+                    keywords=["Agent", "AI"],
+                    evidence=[{"title": "AI Agent热度飙升", "source": "财联社"}],
+                ),
+            ],
+        )
+
+    def test_run_config_snapshot_includes_normalized_themes(self) -> None:
+        """Snapshot must carry normalized_themes alongside raw theme_context."""
+        snapshot = ScreeningTaskService._build_run_config_snapshot(
+            requested_trade_date=date(2026, 3, 26),
+            normalized_stock_codes=[],
+            runtime_config=self.service.resolve_run_config(
+                mode="balanced", candidate_limit=50, ai_top_k=10,
+            ),
+            ingest_failure_threshold=0.2,
+            strategy_names=["extreme_strength_combo"],
+            theme_context=self.theme_context,
+        )
+
+        # raw theme_context must still exist
+        self.assertIn("theme_context", snapshot)
+        self.assertEqual(snapshot["theme_context"]["themes"][0]["name"], "AI Agent")
+
+        # normalized_themes must also exist
+        self.assertIn("normalized_themes", snapshot)
+        self.assertIsInstance(snapshot["normalized_themes"], list)
+
+    def test_normalized_theme_shape_has_required_fields(self) -> None:
+        """Each normalized theme entry must contain the contract fields."""
+        snapshot = ScreeningTaskService._build_run_config_snapshot(
+            requested_trade_date=date(2026, 3, 26),
+            normalized_stock_codes=[],
+            runtime_config=self.service.resolve_run_config(
+                mode="balanced", candidate_limit=50, ai_top_k=10,
+            ),
+            ingest_failure_threshold=0.2,
+            strategy_names=["extreme_strength_combo"],
+            theme_context=self.theme_context,
+        )
+
+        normalized = snapshot["normalized_themes"][0]
+        self.assertEqual(normalized["raw_theme"], "AI Agent")
+        self.assertIn("normalized_label", normalized)
+        self.assertIn("matched_boards", normalized)
+        self.assertIsInstance(normalized["matched_boards"], list)
+        self.assertIn("match_confidence", normalized)
+        self.assertIn("match_reasons", normalized)
+        self.assertIsInstance(normalized["match_reasons"], list)
+        self.assertIn("status", normalized)
+        self.assertIn(
+            normalized["status"],
+            {"high_confidence", "weak_match", "unresolved"},
+        )
+
+    def test_raw_theme_context_preserved_alongside_normalized(self) -> None:
+        """Raw theme_context must remain unchanged when normalized_themes is added."""
+        snapshot = ScreeningTaskService._build_run_config_snapshot(
+            requested_trade_date=date(2026, 3, 26),
+            normalized_stock_codes=[],
+            runtime_config=self.service.resolve_run_config(
+                mode="balanced", candidate_limit=50, ai_top_k=10,
+            ),
+            ingest_failure_threshold=0.2,
+            strategy_names=["extreme_strength_combo"],
+            theme_context=self.theme_context,
+        )
+
+        raw = snapshot["theme_context"]
+        self.assertEqual(raw["source"], "openclaw")
+        self.assertEqual(raw["market"], "cn")
+        self.assertEqual(len(raw["themes"]), 1)
+        self.assertEqual(raw["themes"][0]["catalyst_summary"], "大模型应用爆发")
+
+    def test_snapshot_without_theme_context_has_no_normalized_themes(self) -> None:
+        """When there is no theme_context, normalized_themes should not appear."""
+        snapshot = ScreeningTaskService._build_run_config_snapshot(
+            requested_trade_date=date(2026, 3, 26),
+            normalized_stock_codes=[],
+            runtime_config=self.service.resolve_run_config(
+                mode="balanced", candidate_limit=50, ai_top_k=10,
+            ),
+            ingest_failure_threshold=0.2,
+        )
+
+        self.assertNotIn("theme_context", snapshot)
+        self.assertNotIn("normalized_themes", snapshot)
+
+
 if __name__ == "__main__":
     unittest.main()

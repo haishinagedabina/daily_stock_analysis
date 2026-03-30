@@ -801,6 +801,7 @@ class ScreeningTaskService:
             snapshot["strategy_names"] = sorted(strategy_names)
         if theme_context is not None:
             snapshot["theme_context"] = ScreeningTaskService._serialize_theme_context(theme_context)
+            snapshot["normalized_themes"] = ScreeningTaskService._build_initial_normalized_themes(theme_context)
         return snapshot
 
     @staticmethod
@@ -825,6 +826,23 @@ class ScreeningTaskService:
             "accepted_at": getattr(theme_context, "accepted_at", None),
             "themes": themes,
         }
+
+    @staticmethod
+    def _build_initial_normalized_themes(theme_context: Any) -> List[Dict[str, Any]]:
+        """Build initial normalized theme entries using alias-based normalization.
+
+        Board vocabulary is not available at snapshot time, so this provides
+        alias-only normalization. Full recall happens later in FactorService.
+        """
+        from src.services.theme_normalization_service import ThemeNormalizationService
+        normalizer = ThemeNormalizationService()
+        results = []
+        for theme in getattr(theme_context, "themes", []) or []:
+            raw_name = getattr(theme, "name", "") or ""
+            keywords = list(getattr(theme, "keywords", []) or [])
+            result = normalizer.normalize_theme(raw_theme=raw_name, keywords=keywords)
+            results.append(result)
+        return results
 
     @staticmethod
     def _validate_resume_stage(existing_run: Dict[str, Any], resume_stage: Optional[str]) -> None:

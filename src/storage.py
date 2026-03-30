@@ -652,6 +652,69 @@ class InstrumentMaster(Base):
         }
 
 
+class BoardMaster(Base):
+    """股票所属板块主数据。"""
+
+    __tablename__ = "board_master"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    board_code = Column(String(64), nullable=True, index=True)
+    board_name = Column(String(128), nullable=False)
+    board_type = Column(String(32), nullable=False, default="unknown", index=True)
+    market = Column(String(16), nullable=False, default="cn", index=True)
+    source = Column(String(32), nullable=False, default="unknown", index=True)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("market", "source", "board_name", "board_type", name="uix_board_identity"),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "board_code": self.board_code,
+            "board_name": self.board_name,
+            "board_type": self.board_type,
+            "market": self.market,
+            "source": self.source,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class InstrumentBoardMembership(Base):
+    """股票和板块的多对多关系。"""
+
+    __tablename__ = "instrument_board_membership"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    instrument_code = Column(String(16), nullable=False, index=True)
+    board_id = Column(Integer, ForeignKey("board_master.id"), nullable=False, index=True)
+    market = Column(String(16), nullable=False, default="cn", index=True)
+    source = Column(String(32), nullable=False, default="unknown", index=True)
+    is_primary = Column(Boolean, nullable=False, default=False, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("instrument_code", "board_id", "source", name="uix_instrument_board_membership"),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "instrument_code": self.instrument_code,
+            "board_id": self.board_id,
+            "market": self.market,
+            "source": self.source,
+            "is_primary": self.is_primary,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class DailyFactorSnapshot(Base):
     """日度因子快照。"""
 
@@ -2104,6 +2167,176 @@ class DatabaseManager:
                 record.updated_at = datetime.now()
 
         return len(instruments)
+
+    def upsert_boards(self, boards: List[Dict[str, Any]]) -> int:
+        """批量写入或更新板块主数据。"""
+        if not boards:
+            return 0
+
+        normalized_items: List[Dict[str, Any]] = []
+        for item in boards:
+            board_name = str(item.get("board_name") or "").strip()
+            if not board_name:
+                continue
+            normalized_items.append(
+                {
+                    "board_code": str(item.get("board_code")).strip() if item.get("board_code") is not None else None,
+                    "board_name": board_name,
+                    "board_type": str(item.get("board_type") or "unknown").strip() or "unknown",
+                    "market": str(item.get("market") or "cn").strip() or "cn",
+                    "source": str(item.get("source") or "unknown").strip() or "unknown",
+                    "is_active": bool(item.get("is_active", True)),
+                }
+            )
+
+        if not normalized_items:
+            return 0
+
+        with self.session_scope() as session:
+            identities = {
+                (item["market"], item["source"], item["board_name"], item["board_type"])
+                for item in normalized_items
+            }
+            existing_records = session.execute(select(BoardMaster)).scalars().all()
+            record_map = {
+                (record.market, record.source, record.board_name, record.board_type): record
+                for record in existing_records
+                if (record.market, record.source, record.board_name, record.board_type) in identities
+            }
+
+            for item in normalized_items:
+                identity = (item["market"], item["source"], item["board_name"], item["board_type"])
+                record = record_map.get(identity)
+                if record is None:
+                    record = BoardMaster(
+                        board_name=item["board_name"],
+                        board_type=item["board_type"],
+                        market=item["market"],
+                        source=item["source"],
+                    )
+                    session.add(record)
+                    record_map[identity] = record
+
+                record.board_code = item["board_code"]
+                record.is_active = item["is_active"]
+                record.updated_at = datetime.now()
+
+        return len(normalized_items)
+
+    def replace_instrument_board_memberships(
+        self,
+        instrument_code: str,
+        memberships: List[Dict[str, Any]],
+        market: str = "cn",
+        source: Optional[str] = None,
+    ) -> int:
+        """按股票替换板块关系。"""
+        normalized_code = str(instrument_code).strip().upper()
+        normalized_market = str(market or "cn").strip() or "cn"
+        if not normalized_code:
+            return 0
+
+        normalized_memberships: List[Dict[str, Any]] = []
+        for item in memberships:
+            board_name = str(item.get("board_name") or "").strip()
+            if not board_name:
+                continue
+            normalized_memberships.append(
+                {
+                    "board_code": str(item.get("board_code")).strip() if item.get("board_code") is not None else None,
+                    "board_name": board_name,
+                    "board_type": str(item.get("board_type") or "unknown").strip() or "unknown",
+                    "market": str(item.get("market") or normalized_market).strip() or normalized_market,
+                    "source": str(item.get("source") or source or "unknown").strip() or "unknown",
+                    "is_active": bool(item.get("is_active", True)),
+                    "is_primary": bool(item.get("is_primary", False)),
+                }
+            )
+
+        if normalized_memberships:
+            self.upsert_boards(normalized_memberships)
+
+        with self.session_scope() as session:
+            delete_stmt = delete(InstrumentBoardMembership).where(
+                InstrumentBoardMembership.instrument_code == normalized_code,
+                InstrumentBoardMembership.market == normalized_market,
+            )
+            if source:
+                delete_stmt = delete_stmt.where(InstrumentBoardMembership.source == source)
+            session.execute(delete_stmt)
+
+            if not normalized_memberships:
+                return 0
+
+            identities = {
+                (item["market"], item["source"], item["board_name"], item["board_type"])
+                for item in normalized_memberships
+            }
+            board_records = session.execute(select(BoardMaster)).scalars().all()
+            board_map = {
+                (record.market, record.source, record.board_name, record.board_type): record
+                for record in board_records
+                if (record.market, record.source, record.board_name, record.board_type) in identities
+            }
+
+            deduped_memberships = {}
+            for item in normalized_memberships:
+                deduped_memberships[
+                    (item["board_name"], item["board_type"], item["market"], item["source"])
+                ] = item
+
+            for item in deduped_memberships.values():
+                identity = (item["market"], item["source"], item["board_name"], item["board_type"])
+                board_record = board_map.get(identity)
+                if board_record is None:
+                    continue
+                session.add(
+                    InstrumentBoardMembership(
+                        instrument_code=normalized_code,
+                        board_id=board_record.id,
+                        market=item["market"],
+                        source=item["source"],
+                        is_primary=item["is_primary"],
+                        created_at=datetime.now(),
+                        updated_at=datetime.now(),
+                    )
+                )
+
+        return len(
+            {
+                (item["board_name"], item["board_type"], item["market"], item["source"])
+                for item in normalized_memberships
+            }
+        )
+
+    def batch_get_instrument_board_names(
+        self,
+        codes: List[str],
+        market: str = "cn",
+    ) -> Dict[str, List[str]]:
+        """批量读取股票所属板块名称。"""
+        normalized_codes = [str(code).strip().upper() for code in codes if str(code).strip()]
+        result = {code: [] for code in normalized_codes}
+        if not normalized_codes:
+            return result
+
+        with self.get_session() as session:
+            rows = session.execute(
+                select(InstrumentBoardMembership.instrument_code, BoardMaster.board_name)
+                .join(BoardMaster, InstrumentBoardMembership.board_id == BoardMaster.id)
+                .where(
+                    InstrumentBoardMembership.instrument_code.in_(normalized_codes),
+                    InstrumentBoardMembership.market == market,
+                    BoardMaster.is_active.is_(True),
+                )
+                .order_by(InstrumentBoardMembership.instrument_code, BoardMaster.board_name)
+            ).all()
+
+        for instrument_code, board_name in rows:
+            if board_name and board_name not in result[instrument_code]:
+                result[instrument_code].append(board_name)
+
+        return result
 
     def get_instrument(self, code: str) -> Optional[Dict[str, Any]]:
         """根据代码查询单个股票池主数据。"""

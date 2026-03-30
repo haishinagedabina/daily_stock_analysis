@@ -494,6 +494,9 @@ class Config:
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
+    board_sync_schedule_enabled: bool = False # 是否启用板块定时同步
+    board_sync_schedule_time: str = "15:05"   # 板块定时同步时间（HH:MM 格式）
+    board_sync_run_immediately: bool = False  # 启动时是否立即执行一次板块同步
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     # 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户
@@ -892,6 +895,12 @@ class Config:
             if schedule_run_immediately_env is not None
             else legacy_run_immediately
         )
+        board_sync_run_immediately_env = os.getenv('BOARD_SYNC_RUN_IMMEDIATELY')
+        board_sync_run_immediately = (
+            board_sync_run_immediately_env.lower() == 'true'
+            if board_sync_run_immediately_env is not None
+            else False
+        )
         
         return cls(
             stock_list=stock_list,
@@ -1040,6 +1049,9 @@ class Config:
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
             schedule_run_immediately=schedule_run_immediately,
+            board_sync_schedule_enabled=os.getenv('BOARD_SYNC_SCHEDULE_ENABLED', 'false').lower() == 'true',
+            board_sync_schedule_time=os.getenv('BOARD_SYNC_SCHEDULE_TIME', '15:05'),
+            board_sync_run_immediately=board_sync_run_immediately,
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             market_review_region=cls._parse_market_review_region(

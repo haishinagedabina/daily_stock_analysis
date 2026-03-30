@@ -473,6 +473,28 @@ def run_screening_workflow(config: Config, args: argparse.Namespace) -> None:
     )
 
 
+def run_board_sync_workflow(config: Config, args: argparse.Namespace) -> None:
+    """执行一次板块关系同步工作流。"""
+    from src.services.board_sync_schedule_service import BoardSyncScheduleService
+
+    service = BoardSyncScheduleService(config=config)
+    result = service.run_once(force_run=getattr(args, "force_run", False), market="cn")
+    if result.get("status") == "skipped":
+        logger.info("今日目标市场为非交易日或股票池为空，已跳过板块同步。")
+        return
+    if result.get("status") == "failed":
+        raise RuntimeError(result.get("error_summary") or "板块同步失败")
+
+    logger.info(
+        "板块同步完成 status=%s processed=%s synced=%s missing=%s failed=%s",
+        result.get("status"),
+        result.get("processed"),
+        result.get("synced"),
+        result.get("missing"),
+        result.get("failed"),
+    )
+
+
 def start_api_server(host: str, port: int, config: Config) -> None:
     """
     在后台线程启动 FastAPI 服务
@@ -713,8 +735,7 @@ def main() -> int:
 
             logger.info(f"启动时立即执行: {should_run_immediately}")
 
-            from src.scheduler import run_with_schedule
-
+            from src.scheduler import Scheduler
             if args.screening:
                 if should_run_immediately:
                     run_screening_workflow(config=config, args=args)
@@ -726,11 +747,23 @@ def main() -> int:
                 def scheduled_task():
                     run_full_analysis(config, args, stock_codes)
 
-            run_with_schedule(
+            scheduler = Scheduler(schedule_time=config.schedule_time)
+            scheduler.add_daily_task(
+                name="screening" if args.screening else "analysis",
                 task=scheduled_task,
                 schedule_time=config.schedule_time,
                 run_immediately=should_run_immediately
             )
+
+            if getattr(config, "board_sync_schedule_enabled", False):
+                scheduler.add_daily_task(
+                    name="board_sync",
+                    task=lambda: run_board_sync_workflow(config=config, args=args),
+                    schedule_time=getattr(config, "board_sync_schedule_time", "15:05"),
+                    run_immediately=bool(getattr(config, "board_sync_run_immediately", False)),
+                )
+
+            scheduler.run()
             return 0
 
         # 模式4: 正常单次运行

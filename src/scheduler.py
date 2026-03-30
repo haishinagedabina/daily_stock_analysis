@@ -19,7 +19,7 @@ import sys
 import time
 import threading
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +80,27 @@ class Scheduler:
         self.schedule_time = schedule_time
         self.shutdown_handler = GracefulShutdown()
         self._task_callback: Optional[Callable] = None
+        self._task_callbacks: Dict[str, Callable] = {}
         self._running = False
-        
+
+    def add_daily_task(
+        self,
+        name: str,
+        task: Callable,
+        schedule_time: Optional[str] = None,
+        run_immediately: bool = False,
+    ):
+        """Register a named daily task."""
+        task_name = str(name or "task").strip() or "task"
+        daily_time = schedule_time or self.schedule_time
+        self._task_callbacks[task_name] = task
+        self.schedule.every().day.at(daily_time).do(lambda: self._safe_run_named_task(task_name))
+        logger.info(f"已设置每日定时任务[{task_name}]，执行时间: {daily_time}")
+
+        if run_immediately:
+            logger.info(f"立即执行一次任务[{task_name}]...")
+            self._safe_run_named_task(task_name)
+
     def set_daily_task(self, task: Callable, run_immediately: bool = True):
         """
         设置每日定时任务
@@ -91,15 +110,13 @@ class Scheduler:
             run_immediately: 是否在设置后立即执行一次
         """
         self._task_callback = task
-        
-        # 设置每日定时任务
-        self.schedule.every().day.at(self.schedule_time).do(self._safe_run_task)
-        logger.info(f"已设置每日定时任务，执行时间: {self.schedule_time}")
-        
-        if run_immediately:
-            logger.info("立即执行一次任务...")
-            self._safe_run_task()
-    
+        self.add_daily_task(
+            name="default",
+            task=task,
+            schedule_time=self.schedule_time,
+            run_immediately=run_immediately,
+        )
+
     def _safe_run_task(self):
         """安全执行任务（带异常捕获）"""
         if self._task_callback is None:
@@ -116,6 +133,22 @@ class Scheduler:
             
         except Exception as e:
             logger.exception(f"定时任务执行失败: {e}")
+
+    def _safe_run_named_task(self, name: str):
+        callback = self._task_callbacks.get(name)
+        if callback is None:
+            return
+
+        try:
+            logger.info("=" * 50)
+            logger.info(f"定时任务[{name}]开始执行 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("=" * 50)
+
+            callback()
+
+            logger.info(f"定时任务[{name}]执行完成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        except Exception as e:
+            logger.exception(f"定时任务[{name}]执行失败: {e}")
     
     def run(self):
         """

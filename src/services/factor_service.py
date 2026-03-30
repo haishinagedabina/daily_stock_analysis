@@ -180,14 +180,29 @@ class FactorService:
         # 应用热点题材因子富化
         if self.theme_context and not snapshot_df.empty:
             from src.services.hot_theme_factor_enricher import HotThemeFactorEnricher
+            from src.services.theme_normalization_service import ThemeNormalizationService
             enricher = HotThemeFactorEnricher()
             enriched_records = []
             board_map = self._resolve_board_names_for_codes(snapshot_df["code"].dropna().tolist())
+
+            # Normalize themes using all known board names
+            all_board_names = sorted({b for boards in board_map.values() for b in boards})
+            normalizer = ThemeNormalizationService()
+            normalizer.set_board_vocabulary(all_board_names)
+            normalized_themes = [
+                normalizer.normalize_theme(
+                    raw_theme=theme.name,
+                    keywords=theme.keywords,
+                )
+                for theme in (self.theme_context.themes or [])
+            ]
+
             for record in snapshot_df.to_dict("records"):
                 enriched = enricher.enrich_snapshot(
                     snapshot=record,
                     theme_context=self.theme_context,
                     boards=board_map.get(str(record.get("code", "")), []),
+                    normalized_themes=normalized_themes,
                 )
                 enriched_records.append(enriched)
             snapshot_df = pd.DataFrame(enriched_records)
@@ -200,8 +215,32 @@ class FactorService:
         board_map: Dict[str, List[str]] = {}
         if not self.theme_context:
             return board_map
-        for code in [str(item).strip() for item in codes if str(item).strip()]:
-            board_map[code] = self._resolve_board_names(code)
+
+        normalized_codes = [str(item).strip().upper() for item in codes if str(item).strip()]
+        if not normalized_codes:
+            return board_map
+
+        board_map = self.db.batch_get_instrument_board_names(normalized_codes)
+        missing_codes = [code for code in normalized_codes if not board_map.get(code)]
+
+        for code in missing_codes:
+            resolved = self._resolve_board_names(code)
+            board_map[code] = resolved
+            if resolved:
+                self.db.replace_instrument_board_memberships(
+                    instrument_code=code,
+                    memberships=[
+                        {
+                            "board_name": name,
+                            "board_type": "unknown",
+                            "market": "cn",
+                            "source": "efinance",
+                        }
+                        for name in resolved
+                    ],
+                    market="cn",
+                    source="efinance",
+                )
         return board_map
 
     def _resolve_board_names(self, code: str) -> List[str]:
@@ -219,7 +258,14 @@ class FactorService:
         for item in boards:
             name = ""
             if isinstance(item, dict):
-                name = str(item.get("name") or "").strip()
+                name = str(
+                    item.get("name")
+                    or item.get("board_name")
+                    or item.get("所属板块")
+                    or item.get("industry")
+                    or item.get("concept")
+                    or ""
+                ).strip()
             elif item is not None:
                 name = str(item).strip()
             if name and name not in normalized:

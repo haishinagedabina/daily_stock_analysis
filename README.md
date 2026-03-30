@@ -14,6 +14,35 @@
   <a href="https://hellogithub.com/repository/ZhuLinsen/daily_stock_analysis" target="_blank"><img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=6daa16e405ce46ed97b4a57706aeb29f&claim_uid=pfiJMqhR9uvDGlT&theme=neutral" alt="Featured｜HelloGitHub" style="width: 250px; height: 54px;" width="250" height="54" /></a>
 </p>
 
+## Board Cache Warmup
+
+To reduce the latency of OpenClaw hot-theme screening, the project now persists stock-to-board relationships locally:
+
+- screening reads board memberships from the local database first
+- newly discovered instruments sync board memberships during universe sync
+- only missing symbols fall back to remote `get_belong_boards` lookups
+- successful fallback results are written back for reuse in later runs
+
+Optional prewarm commands:
+
+```bash
+python scripts/backfill_instrument_boards.py --dry-run
+python scripts/backfill_instrument_boards.py --dry-run --stale-only
+python scripts/backfill_instrument_boards.py --limit 200
+python scripts/backfill_instrument_boards.py --stale-only
+python scripts/backfill_instrument_boards.py --codes 600519,300750
+```
+
+`--stale-only` only processes symbols that do not yet have local board memberships, which is the recommended mode for continuing an interrupted backfill or patching historical gaps.
+
+Optional scheduled prewarm after the A-share close:
+
+- `BOARD_SYNC_SCHEDULE_ENABLED=true`
+- `BOARD_SYNC_SCHEDULE_TIME=15:05`
+- `BOARD_SYNC_RUN_IMMEDIATELY=false`
+
+The scheduled prewarm is now best treated as an optional fallback. The primary low-cost path is incremental board sync when `instrument_master` gains new stocks.
+
 > 🤖 基于 AI 大模型的 A股/港股/美股自选股智能分析系统，每日自动分析并推送「决策仪表盘」到企业微信/飞书/Telegram/Discord/邮箱
 
 [**功能特性**](#-功能特性) · [**快速开始**](#-快速开始) · [**推送效果**](#-推送效果) · [**完整指南**](docs/full-guide.md) · [**常见问题**](docs/FAQ.md) · [**更新日志**](docs/CHANGELOG.md)

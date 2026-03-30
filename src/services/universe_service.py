@@ -6,6 +6,7 @@ from typing import List, Optional
 import pandas as pd
 
 from data_provider.base import DataFetcherManager
+from src.services.board_sync_service import BoardSyncService
 from src.storage import DatabaseManager
 
 
@@ -20,9 +21,11 @@ class UniverseService:
         self,
         db_manager: Optional[DatabaseManager] = None,
         fetcher_manager: Optional[DataFetcherManager] = None,
+        board_sync_service: Optional[BoardSyncService] = None,
     ) -> None:
         self.db = db_manager or DatabaseManager.get_instance()
         self.fetcher_manager = fetcher_manager
+        self.board_sync_service = board_sync_service or BoardSyncService(db_manager=self.db)
 
     def resolve_universe(self, stock_codes: Optional[List[str]] = None) -> pd.DataFrame:
         requested_codes = [str(item).strip().upper() for item in (stock_codes or []) if str(item).strip()]
@@ -58,11 +61,32 @@ class UniverseService:
             raise RuntimeError(f"未能从任何数据源获取股票池主数据{error_suffix}")
 
         instruments = self._build_instrument_rows(stock_list_df, market=market)
+        incoming_codes = sorted(
+            {
+                str(item.get("code", "")).strip().upper()
+                for item in instruments
+                if str(item.get("code", "")).strip()
+            }
+        )
+        existing_rows = self.db.list_instruments(codes=incoming_codes) if incoming_codes else []
+        existing_codes = {
+            str(item.get("code", "")).strip().upper()
+            for item in existing_rows
+            if str(item.get("code", "")).strip()
+        }
+        new_codes = [code for code in incoming_codes if code not in existing_codes]
+
         saved_count = self.db.upsert_instruments(instruments)
+        board_sync_result = None
+        if new_codes:
+            board_sync_result = self.board_sync_service.sync_codes(new_codes, market=market, source="efinance")
         return {
             "saved_count": saved_count,
             "source": self._last_source_name,
             "market": market,
+            "new_count": len(new_codes),
+            "new_codes": new_codes,
+            "board_sync_result": board_sync_result,
         }
 
     def _fetch_stock_list(self) -> Optional[pd.DataFrame]:

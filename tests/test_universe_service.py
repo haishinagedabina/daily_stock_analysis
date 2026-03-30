@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from datetime import date
+from unittest.mock import MagicMock
 
 import pandas as pd
 
@@ -98,6 +99,51 @@ class UniverseServiceTestCase(unittest.TestCase):
         self.assertEqual(second["saved_count"], 2)
         active_again = service.resolve_universe()
         self.assertEqual(len(active_again), 1)
+
+    def test_sync_universe_only_syncs_boards_for_new_codes(self) -> None:
+        fallback_df = pd.DataFrame(
+            [
+                {
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "market": "主板",
+                    "industry": "白酒",
+                    "list_date": "2001-08-27",
+                },
+                {
+                    "code": "300750",
+                    "name": "宁德时代",
+                    "market": "创业板",
+                    "industry": "电池",
+                    "list_date": "2018-06-11",
+                },
+            ]
+        )
+        board_sync_service = MagicMock()
+        board_sync_service.sync_codes.return_value = {
+            "processed": 2,
+            "synced": 2,
+            "missing": 0,
+            "failed": 0,
+        }
+        service = UniverseService(
+            db_manager=self.db,
+            fetcher_manager=_FakeFetcherManager([_FakeFetcher(df=fallback_df)]),
+            board_sync_service=board_sync_service,
+        )
+
+        first = service.sync_universe()
+        second = service.sync_universe()
+
+        self.assertEqual(first["saved_count"], 2)
+        self.assertEqual(first["new_count"], 2)
+        self.assertEqual(first["new_codes"], ["300750", "600519"])
+        self.assertEqual(first["board_sync_result"]["synced"], 2)
+        self.assertEqual(second["saved_count"], 2)
+        self.assertEqual(second["new_count"], 0)
+        self.assertEqual(second["new_codes"], [])
+        self.assertIsNone(second["board_sync_result"])
+        board_sync_service.sync_codes.assert_called_once_with(["300750", "600519"], market="cn", source="efinance")
 
     def test_resolve_requested_codes_uses_local_instrument_master_then_fallback_names(self) -> None:
         self.db.upsert_instruments(

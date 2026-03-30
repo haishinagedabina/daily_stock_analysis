@@ -175,5 +175,36 @@ class ThemeMatchingServiceTestCase(unittest.TestCase):
         self.assertFalse(result)
 
 
+class NormalizedBoardMatchingTestCase(unittest.TestCase):
+    """Test matching when normalized boards are used instead of raw theme names."""
+
+    def setUp(self) -> None:
+        self.service = ThemeMatchingService()
+
+    def test_normalized_boards_exact_match_passes_gate(self) -> None:
+        """Stock with board '锂电池' matches normalized board '锂电池'."""
+        # Previously: theme_name="锂电池/锂矿" would fuzzy-match poorly.
+        # Now: normalized boards are used as match targets.
+        for normalized_board in ["锂电池", "锂矿概念"]:
+            score = self.service.calculate_theme_match_score(
+                boards=["锂电池", "有色金属"],
+                stock_name="某锂电股",
+                theme_name=normalized_board,
+                keywords=["锂"],
+            )
+            if normalized_board == "锂电池":
+                self.assertGreaterEqual(score, self.service.THEME_MATCH_THRESHOLD)
+
+    def test_ai_agent_normalized_to_ai_zhiti_matches(self) -> None:
+        """Stock with board 'AI智能体' matches normalized board 'AI智能体'."""
+        score = self.service.calculate_theme_match_score(
+            boards=["AI智能体", "AIGC概念"],
+            stock_name="某AI股",
+            theme_name="AI智能体",
+            keywords=["AI", "Agent"],
+        )
+        self.assertGreaterEqual(score, self.service.THEME_MATCH_THRESHOLD)
+
+
 if __name__ == "__main__":
     unittest.main()

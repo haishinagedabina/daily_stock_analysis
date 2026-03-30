@@ -9,8 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Board membership persistence
+
+- Added normalized `board_master` and `instrument_board_membership` tables to persist stock-to-board relationships locally
+- Added `BoardRepository` and `BoardSyncService` so board memberships can be bulk-written, bulk-read, and reused by screening
+- `FactorService` now resolves board memberships from the local database first and only falls back to remote lookups for missing symbols; successful fallbacks are written back to the database
+- Added `python scripts/backfill_instrument_boards.py` for offline board-cache prewarm with `--codes`, `--limit`, and `--dry-run` support
+- `python scripts/backfill_instrument_boards.py --stale-only` now performs a real gap-only backfill, so interrupted runs can resume by syncing only symbols that still lack local board memberships
+- Added opt-in schedule-mode board-cache prewarm with `BOARD_SYNC_SCHEDULE_ENABLED`, `BOARD_SYNC_SCHEDULE_TIME`, and `BOARD_SYNC_RUN_IMMEDIATELY`; the board sync job can now run after the A-share close alongside the existing scheduled tasks
+- `UniverseService.sync_universe()` now treats board sync as an incremental hook: only newly discovered instruments trigger board membership sync, avoiding wasteful full-pool refreshes
+
 ### OpenClaw 热点题材选股
 
+- 新增热点主题归一化层 (`ThemeNormalizationService`)，将 OpenClaw 语义化主题（如 `锂电池/锂矿`、`AI Agent`）自动映射为本地标准板块名
+- 归一化流水线：复合主题拆分 → 别名字典匹配 → 候选板块召回 → 置信度分类（`high_confidence` / `weak_match` / `unresolved`）
+- 新增 `data/theme_aliases.json` 别名词汇资产，支持确定性主题到板块映射
+- 新增 `BoardCandidateRecallService`，当别名未命中时从 `board_master` 词汇中通过精确命中、子串匹配、关键词重叠召回候选板块
+- `FactorService` 在热点因子富化前自动执行主题归一化，将归一化板块传入 `HotThemeFactorEnricher`
+- `HotThemeFactorEnricher` 支持 `normalized_themes` 参数，用归一化板块替代原始主题名做匹配，解决语义正确但措辞不同导致零匹配的问题
+- `_build_run_config_snapshot` 现在生成 `normalized_themes` 字段，与原始 `theme_context` 共存于 run snapshot 中用于审计
 - `POST /api/v1/screening/openclaw-theme-run` 现在会真正注入 `SkillManager` 并固定走 `extreme_strength_combo` 策略引擎，不再回落到 legacy 选股逻辑
 - OpenClaw 请求中的 `trade_date` 现在会按请求日期传入筛选任务，而不是被忽略后回退到默认日期
 - `theme_context` 会写入 screening run 的 `config_snapshot`，便于后续结果解释、审计和回放

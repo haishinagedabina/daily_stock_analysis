@@ -33,6 +33,7 @@ class HotThemeFactorEnricher:
         snapshot: Dict[str, Any],
         theme_context: Optional[OpenClawThemeContext],
         boards: Optional[List[str]] = None,
+        normalized_themes: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Enrich factor snapshot with hot theme fields.
@@ -77,20 +78,45 @@ class HotThemeFactorEnricher:
         stock_name = snapshot.get("name", "")
         boards = boards or []
 
+        # Build normalized board lookup for each theme
+        norm_board_map: Dict[str, List[str]] = {}
+        if normalized_themes:
+            for nt in normalized_themes:
+                raw = nt.get("raw_theme", "")
+                if raw and nt.get("matched_boards"):
+                    norm_board_map[raw] = nt["matched_boards"]
+
         # Find best matching theme
         best_theme = None
         best_match_score = 0.0
         best_theme_heat = 0.0
 
         for theme in theme_context.themes:
-            match_score = self.theme_matcher.calculate_theme_match_score(
-                boards=boards,
-                stock_name=stock_name,
-                theme_name=theme.name,
-                keywords=theme.keywords,
-            )
-            if match_score > best_match_score:
-                best_match_score = match_score
+            normalized_boards = norm_board_map.get(theme.name)
+
+            if normalized_boards:
+                # Use normalized boards: match stock boards against each
+                # normalized board as the theme target.
+                theme_score = 0.0
+                for norm_board in normalized_boards:
+                    score = self.theme_matcher.calculate_theme_match_score(
+                        boards=boards,
+                        stock_name=stock_name,
+                        theme_name=norm_board,
+                        keywords=theme.keywords,
+                    )
+                    theme_score = max(theme_score, score)
+            else:
+                # Fallback: use raw theme name (original behavior)
+                theme_score = self.theme_matcher.calculate_theme_match_score(
+                    boards=boards,
+                    stock_name=stock_name,
+                    theme_name=theme.name,
+                    keywords=theme.keywords,
+                )
+
+            if theme_score > best_match_score:
+                best_match_score = theme_score
                 best_theme = theme
                 best_theme_heat = theme.heat_score
 

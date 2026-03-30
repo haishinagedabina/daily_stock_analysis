@@ -109,8 +109,28 @@ class MarketDataSyncService:
                     errors.extend({"code": c, "reason": "empty_data"} for c in codes_needing_sync)
                     codes_needing_sync = []
 
-        # ── 第三层防御：逐只同步数量上限 ──
-        if len(codes_needing_sync) > _MAX_INDIVIDUAL_SYNC:
+        # ── 第三层防御：缺失数量超过100只时，改用批量同步 ──
+        if len(codes_needing_sync) > 100:
+            logger.info(
+                f"[SyncTradeDate] 缺失 {len(codes_needing_sync)} 只 > 100，"
+                f"改用批量同步而非逐只同步"
+            )
+            bulk_synced_retry = self._try_bulk_sync(trade_date, set(codes_needing_sync))
+            if bulk_synced_retry is not None:
+                synced += bulk_synced_retry
+                still_existing = self.db.batch_has_today_data(codes_needing_sync, target_date=trade_date)
+                codes_needing_sync = [c for c in codes_needing_sync if c not in still_existing]
+
+            # 批量同步后仍有缺失，标记为无数据
+            if codes_needing_sync:
+                logger.warning(
+                    f"[SyncTradeDate] 批量同步后仍缺失 {len(codes_needing_sync)} 只，标记为无数据"
+                )
+                errors.extend({"code": c, "reason": "empty_data"} for c in codes_needing_sync)
+                codes_needing_sync = []
+
+        # ── 第四层防御：逐只同步数量上限 ──
+        elif len(codes_needing_sync) > _MAX_INDIVIDUAL_SYNC:
             overflow = codes_needing_sync[_MAX_INDIVIDUAL_SYNC:]
             logger.warning(
                 f"[SyncTradeDate] 需逐只同步 {len(codes_needing_sync)} 只，"
@@ -194,73 +214,86 @@ class MarketDataSyncService:
         一次 API 调用覆盖全市场，比逐只调用快 1000x。
         若 Tushare 不可用则返回 None，由调用方降级到逐只模式。
         """
-        try:
-            from src.config import get_config
-            config = get_config()
-            if not config.tushare_token:
-                return None
-
-            import tushare as ts
-            ts.set_token(config.tushare_token)
-            api = ts.pro_api()
-
-            td_str = trade_date.strftime("%Y%m%d")
-
-            # Tushare API 超时保护：防止 api.daily() 无限阻塞
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(api.daily, trade_date=td_str)
-                try:
-                    df = future.result(timeout=_BULK_FETCH_TIMEOUT)
-                except FuturesTimeoutError:
-                    future.cancel()
-                    logger.warning(f"[BulkSync] Tushare daily({td_str}) 超时（{_BULK_FETCH_TIMEOUT}s）")
-                    return None
-
-            if df is None or df.empty:
-                logger.info(f"[BulkSync] Tushare daily({td_str}) 返回空，可能非交易日")
-                return 0
-
-            # 统一使用 SQLAlchemy 写入，继承 busy_timeout + 连接池
-            synced = 0
-            now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-            from sqlalchemy import text
-            with self.db._engine.begin() as conn:
-                for _, row in df.iterrows():
-                    ts_code = str(row.get("ts_code", ""))
-                    code = ts_code.split(".")[0] if ts_code else ""
-                    if not code or code not in needed_codes:
-                        continue
-
-                    td = str(row.get("trade_date", ""))
-                    date_str = f"{td[:4]}-{td[4:6]}-{td[6:8]}" if len(td) == 8 else td
-
-                    conn.execute(
-                        text(
-                            "INSERT OR REPLACE INTO stock_daily "
-                            "(code, date, open, high, low, close, volume, amount, pct_chg, "
-                            "data_source, created_at) "
-                            "VALUES (:code, :date, :open, :high, :low, :close, :volume, :amount, :pct_chg, "
-                            ":data_source, :created_at)"
-                        ),
-                        {
-                            "code": code, "date": date_str,
-                            "open": row.get("open"), "high": row.get("high"),
-                            "low": row.get("low"), "close": row.get("close"),
-                            "volume": row.get("vol"), "amount": row.get("amount"),
-                            "pct_chg": row.get("pct_chg"),
-                            "data_source": "TushareFetcher(bulk)",
-                            "created_at": now_str,
-                        },
-                    )
-                    synced += 1
-                # commit 由 begin() 上下文管理器自动处理
-
-            logger.info(f"[BulkSync] Tushare 批量同步 {trade_date}: {synced}/{len(needed_codes)} 只")
-            return synced
-
-        except Exception as e:
-            logger.warning(f"[BulkSync] Tushare 批量同步失败，降级到逐只模式: {e}")
+        from src.config import get_config
+        config = get_config()
+        if not config.tushare_token:
             return None
+
+        import tushare as ts
+
+        td_str = trade_date.strftime("%Y%m%d")
+
+        # 重试机制：最多 3 次，失败后指数退避
+        for attempt in range(3):
+            try:
+                ts.set_token(config.tushare_token)
+                api = ts.pro_api()
+
+                # Tushare API 超时保护：防止 api.daily() 无限阻塞
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(api.daily, trade_date=td_str)
+                    try:
+                        df = future.result(timeout=_BULK_FETCH_TIMEOUT)
+                    except FuturesTimeoutError:
+                        future.cancel()
+                        if attempt < 2:
+                            wait = 2 ** (attempt + 1)
+                            logger.warning(f"[BulkSync] Tushare daily({td_str}) 超时，{wait}s 后重试...")
+                            time.sleep(wait)
+                            continue
+                        logger.warning(f"[BulkSync] Tushare daily({td_str}) 超时（{_BULK_FETCH_TIMEOUT}s）")
+                        return None
+
+                if df is None or df.empty:
+                    logger.info(f"[BulkSync] Tushare daily({td_str}) 返回空，可能非交易日")
+                    return 0
+
+                # 统一使用 SQLAlchemy 写入，继承 busy_timeout + 连接池
+                synced = 0
+                now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+                from sqlalchemy import text
+                with self.db._engine.begin() as conn:
+                    for _, row in df.iterrows():
+                        ts_code = str(row.get("ts_code", ""))
+                        code = ts_code.split(".")[0] if ts_code else ""
+                        if not code or code not in needed_codes:
+                            continue
+
+                        td = str(row.get("trade_date", ""))
+                        date_str = f"{td[:4]}-{td[4:6]}-{td[6:8]}" if len(td) == 8 else td
+
+                        conn.execute(
+                            text(
+                                "INSERT OR REPLACE INTO stock_daily "
+                                "(code, date, open, high, low, close, volume, amount, pct_chg, "
+                                "data_source, created_at) "
+                                "VALUES (:code, :date, :open, :high, :low, :close, :volume, :amount, :pct_chg, "
+                                ":data_source, :created_at)"
+                            ),
+                            {
+                                "code": code, "date": date_str,
+                                "open": row.get("open"), "high": row.get("high"),
+                                "low": row.get("low"), "close": row.get("close"),
+                                "volume": row.get("vol"), "amount": row.get("amount"),
+                                "pct_chg": row.get("pct_chg"),
+                                "data_source": "TushareFetcher(bulk)",
+                                "created_at": now_str,
+                            },
+                        )
+                        synced += 1
+                    # commit 由 begin() 上下文管理器自动处理
+
+                logger.info(f"[BulkSync] Tushare 批量同步 {trade_date}: {synced}/{len(needed_codes)} 只")
+                return synced
+
+            except Exception as e:
+                if attempt < 2:
+                    wait = 2 ** (attempt + 1)
+                    logger.warning(f"[BulkSync] attempt {attempt+1} 失败: {e}, {wait}s 后重试...")
+                    time.sleep(wait)
+                else:
+                    logger.warning(f"[BulkSync] Tushare 批量同步失败，降级到逐只模式: {e}")
+                    return None
 
     # ------------------------------------------------------------------
     # 历史回填

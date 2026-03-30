@@ -176,4 +176,97 @@ describe('CandidateDetailDrawer', () => {
     expect(screen.getByText('等待回踩支撑确认')).toBeInTheDocument();
     expect(screen.getByText('止损位=9.80, 轻仓试错')).toBeInTheDocument();
   });
+
+  it('shows readable values for object and array fields in factor snapshot', () => {
+    mockStore.selectedCandidate = {
+      ...mockCandidate,
+      factorSnapshot: {
+        ...mockCandidate.factorSnapshot,
+        phase_results: {
+          phase1_market_and_theme: true,
+        },
+        phase_explanations: [
+          {
+            phase_key: 'phase1_market_and_theme',
+            label: '阶段1: 市场与题材',
+            hit: true,
+            summary: '热点题材已确认',
+          },
+        ],
+        risk_params: {
+          stop_loss: 9.8,
+          position_size: '轻仓试错',
+        },
+      },
+    };
+
+    render(<CandidateDetailDrawer />);
+    expect(screen.queryByText('[object Object]')).not.toBeInTheDocument();
+    expect(screen.getByText(/phase1_market_and_theme: true/)).toBeInTheDocument();
+    expect(screen.getAllByText(/热点题材已确认/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/stop_loss: 9.8/)).toBeInTheDocument();
+  });
+
+  it('shows technical pattern cards for bottom divergence', () => {
+    mockStore.selectedCandidate = {
+      ...mockCandidate,
+      ruleHits: ['bottom_divergence_double_breakout:==:True'],
+      factorSnapshot: {
+        ...mockCandidate.factorSnapshot,
+        bottom_divergence_double_breakout: true,
+        bottom_divergence_pattern_label: '价格持平-MACD抬升',
+        bottom_divergence_signal_strength: 0.59,
+        bottom_divergence_entry_price: 8.11,
+        bottom_divergence_stop_loss: 7.66,
+        bottom_divergence_hit_reasons: [
+          '【底背离形态】价格持平-MACD抬升',
+          '【前置跌幅】从高点跌幅 26.6%',
+          '【双突破同步】水平阻力线与下降趋势线同步突破',
+        ],
+      },
+    };
+
+    render(<CandidateDetailDrawer />);
+
+    expect(screen.getByText('技术形态命中')).toBeInTheDocument();
+    expect(screen.getByText('底背离双突破')).toBeInTheDocument();
+    expect(screen.queryAllByText(/价格持平-MACD抬升/).length).toBeGreaterThan(0);
+  });
+
+  it('shows merged technical hit reasons for extreme strength combo', () => {
+    mockStore.selectedCandidate = {
+      ...mockCandidate,
+      ruleHits: [
+        'strategy:extreme_strength_combo',
+        'is_hot_theme_stock:==:True',
+        'above_ma100:==:True',
+        'pattern_123_low_trendline:==:True',
+        'gap_breakaway:==:True',
+        'is_limit_up:==:True',
+      ],
+      matchedStrategies: ['extreme_strength_combo'],
+      factorSnapshot: {
+        ...mockCandidate.factorSnapshot,
+        bottom_divergence_double_breakout: true,
+        bottom_divergence_pattern_label: '价格持平-MACD抬升',
+        bottom_divergence_hit_reasons: [
+          '【底背离形态】价格持平-MACD抬升',
+          '【前置跌幅】从高点跌幅 26.6%',
+          '【双突破同步】水平阻力线与下降趋势线同步突破',
+        ],
+        gap_breakaway: true,
+        is_limit_up: true,
+        above_ma100: true,
+        pattern_123_low_trendline: true,
+      },
+    };
+
+    render(<CandidateDetailDrawer />);
+
+    expect(screen.getByText('技术形态命中')).toBeInTheDocument();
+    expect(screen.getByText('底背离双突破')).toBeInTheDocument();
+    expect(screen.getByText('跳空突破')).toBeInTheDocument();
+    expect(screen.getByText('涨停')).toBeInTheDocument();
+    expect(screen.queryAllByText(/【底背离形态】价格持平-MACD抬升/).length).toBeGreaterThan(0);
+  });
 });

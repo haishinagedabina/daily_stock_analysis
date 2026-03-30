@@ -1,8 +1,9 @@
 import type React from 'react';
-import { Brain, BarChart3, FileText, Flame } from 'lucide-react';
+import { BarChart3, Brain, FileText, Flame } from 'lucide-react';
 
 import { Badge, Card, Drawer } from '../common';
 import { useScreeningStore } from '../../stores/screeningStore';
+import { extractTechnicalPatterns, TechnicalPatternCards } from './TechnicalPatternCards';
 import type {
   HotThemeNewsItem,
   ScreeningFactorSnapshot,
@@ -10,16 +11,7 @@ import type {
   ScreeningPhaseResults,
 } from '../../types/screening';
 
-function FactorRow({ label, value }: { label: string; value: unknown }) {
-  const display = value == null ? '—' : typeof value === 'number' ? value.toFixed(2) : String(value);
-
-  return (
-    <div className="flex items-center justify-between border-b border-border/20 py-1.5 text-xs">
-      <span className="text-secondary-text">{label}</span>
-      <span className="font-mono text-foreground">{display}</span>
-    </div>
-  );
-}
+const EMPTY_VALUE = '—';
 
 const PHASE_DEFINITIONS = [
   { key: 'phase1_market_and_theme', label: '阶段1: 市场与题材' },
@@ -31,6 +23,96 @@ const PHASE_DEFINITIONS = [
   key: keyof ScreeningPhaseResults;
   label: string;
 }>;
+
+const RULE_HIT_LABELS: Record<string, string> = {
+  is_hot_theme_stock: '热点题材股',
+  above_ma100: '站上 MA100',
+  pattern_123_low_trendline: '低位 123 趋势线突破',
+  gap_breakaway: '跳空突破',
+  is_limit_up: '涨停',
+  bottom_divergence_double_breakout: '底背离双突破',
+  strategy: '极端强势组合',
+};
+
+const TECHNICAL_RULE_KEYS = new Set([
+  'above_ma100',
+  'pattern_123_low_trendline',
+  'gap_breakaway',
+  'is_limit_up',
+  'bottom_divergence_double_breakout',
+]);
+
+function formatPrimitiveValue(value: unknown): string {
+  if (value == null) return EMPTY_VALUE;
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return String(value);
+}
+
+function formatStructuredValue(value: unknown): string {
+  if (value == null || typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') {
+    return formatPrimitiveValue(value);
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]';
+    return value.map((item) => formatStructuredValue(item)).join('\n');
+  }
+
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return '{}';
+
+    return entries
+      .map(([key, entryValue]) => {
+        const formattedEntry =
+          entryValue != null && typeof entryValue === 'object'
+            ? formatStructuredValue(entryValue)
+            : formatPrimitiveValue(entryValue);
+        return `${key}: ${formattedEntry}`;
+      })
+      .join('\n');
+  }
+
+  return String(value);
+}
+
+function parseRuleHit(ruleHit: string): { key: string; value?: string } {
+  if (ruleHit.includes(':==:')) {
+    const [key, value] = ruleHit.split(':==:');
+    return { key, value };
+  }
+
+  if (ruleHit.includes(':')) {
+    const [key, ...rest] = ruleHit.split(':');
+    return { key, value: rest.join(':') };
+  }
+
+  return { key: ruleHit };
+}
+
+function translateRuleHit(ruleHit: string): string {
+  const { key, value } = parseRuleHit(ruleHit);
+  const translatedKey = RULE_HIT_LABELS[key];
+
+  if (!translatedKey) {
+    return ruleHit;
+  }
+
+  if (key === 'strategy' && value === 'extreme_strength_combo') {
+    return translatedKey;
+  }
+
+  if (value == null || value === '' || value === 'True') {
+    return translatedKey;
+  }
+
+  if (value === 'False') {
+    return `未命中${translatedKey}`;
+  }
+
+  return `${translatedKey}: ${value}`;
+}
 
 function getPhaseState(phaseResults: ScreeningPhaseResults | undefined, phaseKey: keyof ScreeningPhaseResults) {
   return Boolean(phaseResults?.[phaseKey]);
@@ -51,7 +133,7 @@ function getPhaseDescription(label: string, isHit: boolean, snapshot: ScreeningF
     return '已确认热点题材匹配';
   }
   if (label === '阶段2: 龙头筛选') {
-    return `龙头评分: ${snapshot.leader_score ?? '—'}`;
+    return `龙头评分: ${snapshot.leader_score ?? EMPTY_VALUE}`;
   }
   if (label === '阶段3: 核心信号') {
     return snapshot.core_signal ?? '已命中强势信号';
@@ -59,7 +141,18 @@ function getPhaseDescription(label: string, isHit: boolean, snapshot: ScreeningF
   if (label === '阶段4: 入场准备') {
     return snapshot.entry_reason ?? '已形成入场方案';
   }
-  return `止损: ${snapshot.risk_params?.stop_loss?.toFixed(2) ?? '—'} | 仓位: ${snapshot.risk_params?.position_size ?? '—'}`;
+  return `止损: ${snapshot.risk_params?.stop_loss?.toFixed(2) ?? EMPTY_VALUE} | 仓位: ${snapshot.risk_params?.position_size ?? EMPTY_VALUE}`;
+}
+
+function FactorRow({ label, value }: { label: string; value: unknown }) {
+  const display = formatStructuredValue(value);
+
+  return (
+    <div className="flex items-start justify-between gap-4 border-b border-border/20 py-1.5 text-xs">
+      <span className="shrink-0 text-secondary-text">{label}</span>
+      <span className="whitespace-pre-wrap text-right font-mono text-foreground">{display}</span>
+    </div>
+  );
 }
 
 export const CandidateDetailDrawer: React.FC = () => {
@@ -73,6 +166,23 @@ export const CandidateDetailDrawer: React.FC = () => {
   const catalystNews = Array.isArray(factorSnapshot.theme_catalyst_news)
     ? (factorSnapshot.theme_catalyst_news as HotThemeNewsItem[])
     : [];
+  const rawRuleHits = Array.isArray(factorSnapshot.rule_hits_display) && factorSnapshot.rule_hits_display.length > 0
+    ? factorSnapshot.rule_hits_display
+    : selectedCandidate?.ruleHits ?? [];
+  const translatedRuleHits = rawRuleHits.map((ruleHit) => {
+    const parsed = parseRuleHit(ruleHit);
+    return {
+      key: parsed.key,
+      translated: translateRuleHit(ruleHit),
+    };
+  });
+  const generalRuleHits = translatedRuleHits
+    .filter((item) => !TECHNICAL_RULE_KEYS.has(item.key))
+    .map((item) => item.translated);
+  const technicalHitsFromRules = translatedRuleHits
+    .filter((item) => TECHNICAL_RULE_KEYS.has(item.key))
+    .map((item) => item.translated);
+  const technicalPatterns = extractTechnicalPatterns(factorSnapshot, technicalHitsFromRules);
 
   return (
     <Drawer
@@ -107,7 +217,7 @@ export const CandidateDetailDrawer: React.FC = () => {
               <div className="space-y-1.5 text-xs">
                 {factorSnapshot.primary_theme && (
                   <div className="flex items-center justify-between">
-                    <span className="text-secondary-text">主题材</span>
+                    <span className="text-secondary-text">主题</span>
                     <span className="font-mono text-foreground">{factorSnapshot.primary_theme}</span>
                   </div>
                 )}
@@ -137,7 +247,7 @@ export const CandidateDetailDrawer: React.FC = () => {
                 )}
                 {factorSnapshot.entry_reason && (
                   <div className="flex items-center justify-between">
-                    <span className="text-secondary-text">龙头选出原因</span>
+                    <span className="text-secondary-text">入选原因</span>
                     <span className="font-mono text-foreground">{factorSnapshot.entry_reason}</span>
                   </div>
                 )}
@@ -193,9 +303,9 @@ export const CandidateDetailDrawer: React.FC = () => {
                   const backendExplanation = getPhaseExplanation(phaseExplanations, phase.key);
                   const isHit = backendExplanation?.hit ?? getPhaseState(phaseResults, phase.key);
                   return (
-                    <div key={phase.label} className="flex items-center justify-between">
+                    <div key={phase.label} className="flex items-center justify-between gap-4">
                       <span className="text-secondary-text">{backendExplanation?.label ?? phase.label}</span>
-                      <span className="font-mono text-foreground">
+                      <span className="text-right font-mono text-foreground">
                         {backendExplanation?.summary ?? getPhaseDescription(phase.label, isHit, factorSnapshot)}
                       </span>
                     </div>
@@ -211,7 +321,7 @@ export const CandidateDetailDrawer: React.FC = () => {
               <div className="text-xs text-secondary-text">
                 <div className="mb-1.5">{factorSnapshot.entry_reason}</div>
                 {factorSnapshot.entry_reason.includes('涨停') && (
-                  <div className="rounded border border-green/20 bg-green/3 px-2 py-1">当日追涨买入，错过不追高</div>
+                  <div className="rounded border border-green/20 bg-green/3 px-2 py-1">当日追涨买入，错过则不追高</div>
                 )}
                 {factorSnapshot.entry_reason.includes('MA100') && (
                   <div className="rounded border border-green/20 bg-green/3 px-2 py-1">切换 60 分钟 K 线，确认支撑后再入场</div>
@@ -220,42 +330,40 @@ export const CandidateDetailDrawer: React.FC = () => {
             </Card>
           )}
 
-          {selectedCandidate.ruleHits.length > 0 && (
+          {generalRuleHits.length > 0 && (
             <Card variant="default" padding="sm">
               <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
                 <FileText className="h-3.5 w-3.5 text-cyan" /> 命中规则
               </h4>
               <div className="flex flex-wrap gap-1.5">
-                {selectedCandidate.ruleHits.map((ruleHit) => (
+                {generalRuleHits.map((ruleHit) => (
                   <Badge key={ruleHit} variant="default" size="sm">{ruleHit}</Badge>
                 ))}
               </div>
             </Card>
           )}
 
-          {Array.isArray(factorSnapshot.extreme_strength_reasons) && factorSnapshot.extreme_strength_reasons.length > 0 && (
+          {technicalPatterns.length > 0 && (
+            <Card variant="default" padding="sm" className="border-orange/30 bg-orange/5">
+              <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-orange">
+                <Flame className="h-3.5 w-3.5" /> 技术形态命中
+              </h4>
+              <TechnicalPatternCards patterns={technicalPatterns} />
+            </Card>
+          )}
+
+          {Object.keys(factorSnapshot).length > 0 && (
             <Card variant="default" padding="sm">
               <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
-                <Flame className="h-3.5 w-3.5 text-orange" /> 命中原因
+                <BarChart3 className="h-3.5 w-3.5 text-cyan" /> 因子快照
               </h4>
-              <div className="flex flex-wrap gap-1.5">
-                {factorSnapshot.extreme_strength_reasons.map((reason) => (
-                  <Badge key={reason} variant="default" size="sm">{reason}</Badge>
+              <div className="max-h-60 overflow-y-auto">
+                {Object.entries(factorSnapshot).map(([key, value]) => (
+                  <FactorRow key={key} label={key} value={value} />
                 ))}
               </div>
             </Card>
           )}
-
-          <Card variant="default" padding="sm">
-            <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
-              <BarChart3 className="h-3.5 w-3.5 text-cyan" /> 因子快照
-            </h4>
-            <div className="max-h-60 overflow-y-auto">
-              {Object.entries(factorSnapshot).map(([key, value]) => (
-                <FactorRow key={key} label={key} value={value} />
-              ))}
-            </div>
-          </Card>
 
           {selectedCandidate.aiSummary && (
             <Card variant="default" padding="sm">

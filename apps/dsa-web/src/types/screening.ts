@@ -146,6 +146,19 @@ export interface ScreeningRiskParams {
   take_profit_ratio?: number;
 }
 
+export interface TechnicalPatternMetric {
+  readonly label: string;
+  readonly value: string;
+}
+
+export interface TechnicalPattern {
+  readonly id: string;
+  readonly name: string;
+  readonly signalStrength?: number;
+  readonly metrics: readonly TechnicalPatternMetric[];
+  readonly hitReasons: readonly string[];
+}
+
 export interface ScreeningFactorSnapshot extends Record<string, unknown> {
   close?: number;
   volume_ratio?: number;
@@ -164,6 +177,46 @@ export interface ScreeningFactorSnapshot extends Record<string, unknown> {
   phase_explanations?: ScreeningPhaseExplanation[];
   risk_params?: ScreeningRiskParams;
   extreme_strength_reasons?: string[];
+  bottomDivergenceHitReasons?: string[];
+  bottom_divergence_hit_reasons?: string[];
+  rule_hits_display?: string[];
+  bonus_signals?: string[];
+
+  // Bottom divergence pattern fields
+  bottom_divergence_double_breakout?: boolean;
+  bottom_divergence_state?: string;
+  bottom_divergence_pattern_code?: string;
+  bottom_divergence_pattern_label?: string;
+  bottom_divergence_signal_strength?: number;
+  bottom_divergence_entry_price?: number;
+  bottom_divergence_stop_loss?: number;
+  bottom_divergence_horizontal_breakout?: boolean;
+  bottom_divergence_trendline_breakout?: boolean;
+  bottom_divergence_sync_breakout?: boolean;
+
+  // Pattern 123 fields
+  pattern_123_low_trendline?: boolean;
+  pattern_123_state?: string;
+  pattern_123_entry_price?: number;
+  pattern_123_stop_loss?: number;
+  pattern_123_signal_strength?: number;
+
+  // MA100+Low123 combined fields
+  ma100_low123_confirmed?: boolean;
+  ma100_low123_pattern_strength?: number;
+  ma100_low123_ma_score?: number;
+  ma100_low123_hit_reasons?: string[];
+
+  // MA100+60min combined fields
+  ma100_60min_confirmed?: boolean;
+  ma100_60min_freshness_score?: number;
+  ma100_60min_ma_score?: number;
+  ma100_60min_hit_reasons?: string[];
+
+  // Simple boolean signal flags
+  above_ma100?: boolean;
+  gap_breakaway?: boolean;
+  is_limit_up?: boolean;
 }
 
 // ============ 通知 ============

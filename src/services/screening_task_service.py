@@ -192,8 +192,6 @@ class ScreeningTaskService:
                     raise RuntimeError("筛选任务补跑初始化失败")
                 run_id = existing_run["run_id"]
             elif existing_run.get("status") == "failed":
-                # BUG FIX: 旧任务已失败 + rerun_failed=False → 自动重置并重新执行
-                # 之前的逻辑会直接 return existing_run，导致用户永远看到旧的错误信息
                 logger.info(
                     f"screening_run event=auto_retry_failed_run "
                     f"run_id={existing_run['run_id']} "

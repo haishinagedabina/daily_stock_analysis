@@ -14,6 +14,23 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# ── Chinese display mappings for rule hits ──────────────────────────────────
+
+_RULE_HIT_CN_MAP: Dict[str, str] = {
+    "is_hot_theme_stock": "属于热点题材",
+    "above_ma100": "站上MA100均线",
+    "pattern_123_low_trendline": "底部123形态",
+    "gap_breakaway": "跳空突破",
+    "is_limit_up": "涨停",
+    "bottom_divergence_double_breakout": "底背离双突破",
+}
+
+_STRATEGY_CN_MAP: Dict[str, str] = {
+    "extreme_strength_combo": "极端强势组合策略",
+}
+
+_PER_THEME_DEDUP_STRATEGIES = frozenset({"extreme_strength_combo"})
+
 
 # ── Data structures ──────────────────────────────────────────────────────────
 
@@ -231,6 +248,31 @@ class StrategyScreeningEngine:
                     hits.extend(val)
         return hits
 
+    @staticmethod
+    def _build_rule_hits_display(
+        rule_hits: List[str], factor_snapshot: Dict[str, Any]
+    ) -> List[str]:
+        """Build human-readable Chinese labels for all hit rules."""
+        display: List[str] = []
+        # 1. Map filter field names from rule_hits to Chinese
+        for hit in rule_hits:
+            parts = hit.split(":")
+            if len(parts) >= 3:
+                field_name = parts[0]
+                cn = _RULE_HIT_CN_MAP.get(field_name)
+                if cn:
+                    display.append(cn)
+            elif hit.startswith("strategy:"):
+                strategy = hit.split(":", 1)[1]
+                cn = _STRATEGY_CN_MAP.get(strategy)
+                if cn:
+                    display.append(cn)
+        # 2. Merge extreme_strength_reasons (already Chinese)
+        reasons = factor_snapshot.get("extreme_strength_reasons")
+        if isinstance(reasons, list):
+            display.extend(reasons)
+        return list(dict.fromkeys(display))
+
     def _evaluate_filter_node(self, node: FilterNode, row: Dict[str, Any]) -> bool:
         if isinstance(node, FilterCondition):
             return self.evaluate_filter(node, row)
@@ -251,6 +293,11 @@ class StrategyScreeningEngine:
         for acc in candidate_map.values():
             final_score = sum(acc.strategy_scores.values()) if acc.strategy_scores else 0.0
             unique_hits = list(dict.fromkeys(acc.rule_hits))
+            rule_hits_display = StrategyScreeningEngine._build_rule_hits_display(
+                unique_hits, acc.factor_snapshot,
+            )
+            snapshot = dict(acc.factor_snapshot)
+            snapshot["rule_hits_display"] = rule_hits_display
             candidates.append(CandidateResult(
                 code=acc.code,
                 name=acc.name,
@@ -259,10 +306,31 @@ class StrategyScreeningEngine:
                 matched_strategies=list(dict.fromkeys(acc.matched_strategies)),
                 strategy_scores=dict(acc.strategy_scores),
                 rule_hits=unique_hits,
-                factor_snapshot=acc.factor_snapshot,
+                factor_snapshot=snapshot,
             ))
 
         candidates.sort(key=lambda c: c.final_score, reverse=True)
+
+        # Per-theme dedup: keep only the highest-scoring stock per primary_theme
+        # for strategies that require 1 leader per theme.
+        needs_dedup = any(
+            s in _PER_THEME_DEDUP_STRATEGIES
+            for c in candidates
+            for s in c.matched_strategies
+        )
+        if needs_dedup:
+            seen_themes: set = set()
+            deduped: List[CandidateResult] = []
+            for c in candidates:
+                theme = c.factor_snapshot.get("primary_theme")
+                is_dedup_strategy = any(s in _PER_THEME_DEDUP_STRATEGIES for s in c.matched_strategies)
+                if is_dedup_strategy and theme:
+                    if theme in seen_themes:
+                        continue
+                    seen_themes.add(theme)
+                deduped.append(c)
+            candidates = deduped
+
         if candidate_limit is not None:
             candidates = candidates[:candidate_limit]
         for idx, c in enumerate(candidates, start=1):

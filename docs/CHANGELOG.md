@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Screening detail view
+
+- OpenClaw `extreme_strength_combo` detail view now translates raw rule expressions into readable Chinese labels
+- Added a dedicated technical-hit section for key signals such as `bottomDivergenceHitReasons`
+- Factor snapshot object and array fields are now expanded into readable text instead of rendering as `[object Object]`
+
 ### Board membership persistence
 
 - Added normalized `board_master` and `instrument_board_membership` tables to persist stock-to-board relationships locally

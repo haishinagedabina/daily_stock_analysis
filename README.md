@@ -84,6 +84,7 @@ The scheduled prewarm is now best treated as an optional fallback. The primary l
 - 运行状态面板会自动回填最近一次任务；候选结果会展示命中的策略中文名
 - OpenClaw 热点题材触发的 `extreme_strength_combo` 现在会固定走策略引擎，按请求 `trade_date` 执行，并结合个股所属板块做热点题材硬门槛匹配
 - 候选详情中的 `phase_results` 已统一为正式五阶段键，并新增 `phase_explanations` 供前端直接展示阶段解释；OpenClaw `options.candidate_limit/ai_top_k` 也会在接口层做准确校验
+- OpenClaw `extreme_strength_combo` 候选详情现会把原始规则表达式转成中文展示，并将命中的技术形态单独收敛到独立板块；因子快照中的对象/数组值也会展开为可读文本，避免出现 `[object Object]`
 - 如果选择的日期不是交易日，系统会自动回退到最近一个交易日继续选股，并在结果中保留提示
 - 如果选择的是当日交易日，需等待北京时间 15:00 后才允许开始选股，避免使用未收盘的日线数据
 - 如果上一次选股任务因进程中断而长期停留在非终态，系统会在后续查询和重试时自动回收该幽灵任务并恢复为可重跑状态

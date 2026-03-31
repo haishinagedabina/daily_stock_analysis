@@ -873,6 +873,63 @@ class ScreeningCandidate(Base):
         }
 
 
+class DailySectorHeat(Base):
+    """板块每日热度快照——SectorHeatEngine 的持久化输出。"""
+
+    __tablename__ = "daily_sector_heat"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    board_name = Column(String(128), nullable=False, index=True)
+    board_type = Column(String(32), nullable=False, default="concept")
+    # 四维分数
+    breadth_score = Column(Float, default=0.0)
+    strength_score = Column(Float, default=0.0)
+    persistence_score = Column(Float, default=0.0)
+    leadership_score = Column(Float, default=0.0)
+    sector_hot_score = Column(Float, default=0.0, index=True)
+    # 状态判定
+    sector_status = Column(String(16))   # hot/warm/neutral/cold
+    sector_stage = Column(String(16))    # launch/ferment/expand/climax/fade
+    # 统计元数据
+    stock_count = Column(Integer, default=0)
+    up_count = Column(Integer, default=0)
+    limit_up_count = Column(Integer, default=0)
+    avg_pct_chg = Column(Float, default=0.0)
+    leader_codes_json = Column(Text)     # JSON: ["600519", ...]
+    front_codes_json = Column(Text)      # JSON: ["600519", "000858", ...]
+    # 审计
+    reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("trade_date", "board_name", name="uq_sector_heat_date_board"),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "trade_date": self.trade_date,
+            "board_name": self.board_name,
+            "board_type": self.board_type,
+            "breadth_score": self.breadth_score,
+            "strength_score": self.strength_score,
+            "persistence_score": self.persistence_score,
+            "leadership_score": self.leadership_score,
+            "sector_hot_score": self.sector_hot_score,
+            "sector_status": self.sector_status,
+            "sector_stage": self.sector_stage,
+            "stock_count": self.stock_count,
+            "up_count": self.up_count,
+            "limit_up_count": self.limit_up_count,
+            "avg_pct_chg": self.avg_pct_chg,
+            "leader_codes_json": self.leader_codes_json,
+            "front_codes_json": self.front_codes_json,
+            "reason": self.reason,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -2017,6 +2074,15 @@ class DatabaseManager:
                         ai_query_id=item.get("ai_query_id"),
                         ai_summary=item.get("ai_summary"),
                         ai_operation_advice=item.get("ai_operation_advice"),
+                        # ── 五层决策字段 (Phase 2A) ──
+                        setup_type=item.get("setup_type"),
+                        trade_stage=item.get("trade_stage"),
+                        entry_maturity=item.get("entry_maturity"),
+                        risk_level=item.get("risk_level"),
+                        market_regime=item.get("market_regime"),
+                        theme_position=item.get("theme_position"),
+                        candidate_pool_level=item.get("candidate_pool_level"),
+                        trade_plan_json=item.get("trade_plan_json"),
                         created_at=datetime.now(),
                     )
                 )
@@ -2354,6 +2420,167 @@ class DatabaseManager:
                 result[instrument_code].append(board_name)
 
         return result
+
+    # ── SectorHeat 相关方法 ─────────────────────────────────────────────────
+
+    def list_active_boards_with_member_count(
+        self,
+        market: str = "cn",
+        board_type: Optional[str] = None,
+        min_member_count: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """列出所有活跃板块及其成员股票数量。
+
+        Returns:
+            [{"board_id": 1, "board_name": "白酒", "board_type": "industry",
+              "member_count": 45}, ...]
+        """
+        with self.get_session() as session:
+            query = (
+                select(
+                    BoardMaster.id.label("board_id"),
+                    BoardMaster.board_name,
+                    BoardMaster.board_type,
+                    func.count(InstrumentBoardMembership.id).label("member_count"),
+                )
+                .select_from(BoardMaster)
+                .outerjoin(
+                    InstrumentBoardMembership,
+                    InstrumentBoardMembership.board_id == BoardMaster.id,
+                )
+                .where(
+                    BoardMaster.is_active.is_(True),
+                    BoardMaster.market == market,
+                )
+                .group_by(BoardMaster.id, BoardMaster.board_name, BoardMaster.board_type)
+            )
+            if board_type:
+                query = query.where(BoardMaster.board_type == board_type)
+            if min_member_count > 0:
+                query = query.having(func.count(InstrumentBoardMembership.id) >= min_member_count)
+            query = query.order_by(desc(func.count(InstrumentBoardMembership.id)))
+
+            rows = session.execute(query).all()
+
+        return [
+            {
+                "board_id": row.board_id,
+                "board_name": row.board_name,
+                "board_type": row.board_type,
+                "member_count": row.member_count,
+            }
+            for row in rows
+        ]
+
+    def batch_get_board_member_codes(
+        self,
+        board_names: List[str],
+        market: str = "cn",
+    ) -> Dict[str, List[str]]:
+        """批量获取板块成员股票代码（板块→股票反向查询）。
+
+        Returns:
+            {"白酒": ["600519", "000858", ...], "锂电池": ["300750", ...]}
+        """
+        result = {name: [] for name in board_names}
+        if not board_names:
+            return result
+
+        with self.get_session() as session:
+            rows = session.execute(
+                select(BoardMaster.board_name, InstrumentBoardMembership.instrument_code)
+                .join(BoardMaster, InstrumentBoardMembership.board_id == BoardMaster.id)
+                .where(
+                    BoardMaster.board_name.in_(board_names),
+                    BoardMaster.is_active.is_(True),
+                    InstrumentBoardMembership.market == market,
+                )
+                .order_by(BoardMaster.board_name, InstrumentBoardMembership.instrument_code)
+            ).all()
+
+        for board_name, instrument_code in rows:
+            if instrument_code and instrument_code not in result.get(board_name, []):
+                result.setdefault(board_name, []).append(instrument_code)
+
+        return result
+
+    def save_sector_heat_batch(
+        self,
+        trade_date: date,
+        heat_records: List[Dict[str, Any]],
+    ) -> int:
+        """批量写入板块热度数据。同一 (trade_date, board_name) 先删后插实现覆盖。"""
+        if not heat_records:
+            return 0
+
+        board_names = [r["board_name"] for r in heat_records if r.get("board_name")]
+
+        with self.session_scope() as session:
+            if board_names:
+                session.execute(
+                    delete(DailySectorHeat).where(
+                        DailySectorHeat.trade_date == trade_date,
+                        DailySectorHeat.board_name.in_(board_names),
+                    )
+                )
+
+            for item in heat_records:
+                session.add(
+                    DailySectorHeat(
+                        trade_date=item.get("trade_date", trade_date),
+                        board_name=item["board_name"],
+                        board_type=item.get("board_type", "concept"),
+                        breadth_score=float(item.get("breadth_score", 0.0)),
+                        strength_score=float(item.get("strength_score", 0.0)),
+                        persistence_score=float(item.get("persistence_score", 0.0)),
+                        leadership_score=float(item.get("leadership_score", 0.0)),
+                        sector_hot_score=float(item.get("sector_hot_score", 0.0)),
+                        sector_status=item.get("sector_status"),
+                        sector_stage=item.get("sector_stage"),
+                        stock_count=int(item.get("stock_count", 0)),
+                        up_count=int(item.get("up_count", 0)),
+                        limit_up_count=int(item.get("limit_up_count", 0)),
+                        avg_pct_chg=float(item.get("avg_pct_chg", 0.0)),
+                        leader_codes_json=item.get("leader_codes_json"),
+                        front_codes_json=item.get("front_codes_json"),
+                        reason=item.get("reason"),
+                        created_at=datetime.now(),
+                    )
+                )
+
+        return len(heat_records)
+
+    def list_sector_heat_history(
+        self,
+        board_name: str,
+        end_date: date,
+        lookback_days: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """查询板块热度历史，按日期升序返回最近 lookback_days 条。
+
+        用于 persistence_score 计算和冷启动判断。
+        """
+        start_date = end_date - timedelta(days=lookback_days + 10)
+
+        with self.get_session() as session:
+            # 子查询：按日期降序取最近 N 条，外层反转为升序
+            subq = (
+                select(DailySectorHeat)
+                .where(
+                    DailySectorHeat.board_name == board_name,
+                    DailySectorHeat.trade_date >= start_date,
+                    DailySectorHeat.trade_date <= end_date,
+                )
+                .order_by(desc(DailySectorHeat.trade_date))
+                .limit(lookback_days)
+            ).subquery()
+            rows = session.execute(
+                select(DailySectorHeat)
+                .join(subq, DailySectorHeat.id == subq.c.id)
+                .order_by(DailySectorHeat.trade_date)
+            ).scalars().all()
+
+        return [row.to_dict() for row in rows]
 
     def get_instrument(self, code: str) -> Optional[Dict[str, Any]]:
         """根据代码查询单个股票池主数据。"""

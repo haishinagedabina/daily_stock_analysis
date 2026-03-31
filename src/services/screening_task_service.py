@@ -289,6 +289,7 @@ class ScreeningTaskService:
             deadline = time.perf_counter() + _EXECUTE_RUN_DEADLINE_SECONDS
 
             # 大盘 MA100 安全门控：生成市场情绪提示（不阻断流水线）
+            guard_result = None
             if self.config.screening_market_guard_enabled:
                 guard = MarketGuard(
                     fetcher_manager=self.market_data_sync_service.fetcher_manager,
@@ -474,6 +475,14 @@ class ScreeningTaskService:
                 selected_count=len(selected),
                 rejected_count=len(getattr(evaluation, "rejected", []) or []),
             )
+            # ═══ L1→L5 五层决策链路 (Phase 2A) ═══
+            self._apply_five_layer_decision(
+                selected=selected,
+                snapshot_df=snapshot_df,
+                effective_trade_date=effective_trade_date,
+                guard_result=guard_result if self.config.screening_market_guard_enabled else None,
+            )
+
             # Skip AI enriching for extreme_strength_combo strategy
             ai_results: Dict[str, Dict[str, Any]] = {}
             completion_status = "completed"
@@ -669,9 +678,146 @@ class ScreeningTaskService:
                     "ai_query_id": ai_payload.get("ai_query_id"),
                     "ai_summary": ai_payload.get("ai_summary"),
                     "ai_operation_advice": ai_payload.get("ai_operation_advice"),
+                    # ── 五层决策字段 (Phase 2A) ──
+                    "setup_type": getattr(candidate, "setup_type", None),
+                    "strategy_family": getattr(candidate, "strategy_family", None),
+                    "trade_stage": getattr(candidate, "trade_stage", None),
+                    "entry_maturity": getattr(candidate, "entry_maturity", None),
+                    "risk_level": getattr(candidate, "risk_level", None),
+                    "market_regime": getattr(candidate, "market_regime", None),
+                    "theme_position": getattr(candidate, "theme_position", None),
+                    "candidate_pool_level": getattr(candidate, "candidate_pool_level", None),
+                    "trade_plan_json": getattr(candidate, "trade_plan_json", None),
                 }
             )
         return payloads
+
+    def _apply_five_layer_decision(
+        self,
+        selected: List[ScreeningCandidateRecord],
+        snapshot_df: Any,
+        effective_trade_date: date,
+        guard_result: Any = None,
+    ) -> None:
+        """L1→L5 五层决策链路：就地修改 selected 中每个 candidate 的五层字段。"""
+        from src.core.market_guard import MarketGuardResult
+        from src.schemas.trading_types import (
+            MarketRegime,
+            SetupType,
+            ThemePosition,
+        )
+        from src.services.market_environment_engine import MarketEnvironmentEngine
+        from src.services.sector_heat_engine import SectorHeatEngine
+        from src.services.theme_aggregation_service import ThemeAggregationService
+        from src.services.theme_position_resolver import ThemePositionResolver
+        from src.services.entry_maturity_assessor import EntryMaturityAssessor
+        from src.services.candidate_pool_classifier import CandidatePoolClassifier
+        from src.services.trade_stage_judge import TradeStageJudge
+
+        if not selected:
+            return
+
+        # ── L1: 市场环境 ───────────────────────────────────────────────────
+        env_engine = MarketEnvironmentEngine()
+        if guard_result is None:
+            guard_result = MarketGuardResult(is_safe=True, message="guard disabled")
+
+        # 尝试获取指数日线和市场统计（容错：数据不可用时仍可降级运行）
+        index_bars = None
+        market_stats = None
+        try:
+            guard = MarketGuard(
+                fetcher_manager=self.market_data_sync_service.fetcher_manager,
+                index_code=self.config.screening_market_guard_index,
+            )
+            index_bars, _ = guard._fetch_index_data()
+        except Exception as exc:
+            logger.warning("five_layer: failed to fetch index bars: %s", exc)
+        try:
+            market_stats = self.market_data_sync_service.fetcher_manager.get_market_stats()
+        except Exception as exc:
+            logger.warning("five_layer: failed to fetch market stats: %s", exc)
+
+        market_env = env_engine.assess(guard_result, index_bars, market_stats)
+        logger.info("five_layer L1: regime=%s risk=%s", market_env.regime.value, market_env.risk_level.value)
+
+        # ── L2: 板块热度 + 题材聚合 ────────────────────────────────────────
+        sector_results = []
+        theme_results = []
+        try:
+            sector_engine = SectorHeatEngine(db_manager=self.db)
+            sector_results = sector_engine.compute_all_sectors(snapshot_df, effective_trade_date)
+            hot_count = sum(1 for s in sector_results if s.sector_status == "hot")
+            logger.info("five_layer L2: %d sectors computed, %d hot", len(sector_results), hot_count)
+        except Exception as exc:
+            logger.warning("five_layer L2 SectorHeatEngine failed (degraded): %s", exc)
+
+        try:
+            agg_service = ThemeAggregationService()
+            theme_results = agg_service.aggregate(sector_results)
+        except Exception as exc:
+            logger.warning("five_layer L2 ThemeAggregation failed (degraded): %s", exc)
+
+        # ── 准备 per-stock 数据 ────────────────────────────────────────────
+        all_codes = [c.code for c in selected]
+        board_map = self.db.batch_get_instrument_board_names(all_codes)
+
+        theme_resolver = ThemePositionResolver(sector_results, theme_results, self._theme_context)
+        maturity_assessor = EntryMaturityAssessor()
+        pool_classifier = CandidatePoolClassifier()
+        stage_judge = TradeStageJudge()
+
+        # ── 逐票裁决 L2→L5 ────────────────────────────────────────────────
+        for candidate in selected:
+            fs = candidate.factor_snapshot or {}
+            stock_boards = board_map.get(candidate.code, [])
+
+            # L2: 题材地位
+            theme_decision = theme_resolver.resolve(stock_boards)
+            tp = theme_decision.theme_position
+
+            # L4: 买点成熟度
+            try:
+                st = SetupType(candidate.setup_type) if candidate.setup_type else SetupType.NONE
+            except ValueError:
+                st = SetupType.NONE
+            entry_mat = maturity_assessor.assess(st, fs)
+
+            # L3: 候选池分级
+            leader_score = float(fs.get("leader_score", 0.0))
+            extreme_strength = float(fs.get("extreme_strength_score", 0.0))
+            has_entry_core = st != SetupType.NONE
+            pool_level = pool_classifier.classify(
+                leader_score=leader_score,
+                extreme_strength_score=extreme_strength,
+                theme_position=tp,
+                entry_maturity=entry_mat,
+                has_entry_core_hit=has_entry_core,
+            )
+
+            # L5: 交易阶段裁决
+            has_stop = bool(fs.get("has_stop_loss", False))
+            trade_stage = stage_judge.judge(
+                env=market_env,
+                setup_type=st,
+                entry_maturity=entry_mat,
+                pool_level=pool_level,
+                theme_position=tp,
+                has_stop_loss=has_stop,
+            )
+
+            # 写回 candidate
+            candidate.trade_stage = trade_stage.value
+            candidate.market_regime = market_env.regime.value
+            candidate.entry_maturity = entry_mat.value
+            candidate.candidate_pool_level = pool_level.value
+            candidate.theme_position = tp.value
+            candidate.risk_level = market_env.risk_level.value
+
+        logger.info(
+            "five_layer: %d candidates processed, regime=%s",
+            len(selected), market_env.regime.value,
+        )
 
     @staticmethod
     def _check_deadline(deadline: float, stage: str) -> None:

@@ -21,6 +21,16 @@ class ScreeningCandidateRecord:
     factor_snapshot: Dict[str, Any]
     matched_strategies: List[str] = field(default_factory=list)
     strategy_scores: Dict[str, float] = field(default_factory=dict)
+    # ── 五层决策字段 (Phase 2A) ──
+    setup_type: Optional[str] = None
+    strategy_family: Optional[str] = None
+    trade_stage: Optional[str] = None
+    entry_maturity: Optional[str] = None
+    risk_level: Optional[str] = None
+    market_regime: Optional[str] = None
+    theme_position: Optional[str] = None
+    candidate_pool_level: Optional[str] = None
+    trade_plan_json: Optional[str] = None
 
 
 @dataclass
@@ -115,6 +125,8 @@ class ScreenerService:
                 factor_snapshot=c.factor_snapshot,
                 matched_strategies=c.matched_strategies,
                 strategy_scores=c.strategy_scores,
+                setup_type=c.setup_type,
+                strategy_family=c.strategy_family,
             )
             for c in result.selected
         ]

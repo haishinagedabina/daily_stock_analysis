@@ -51,6 +51,12 @@ class Skill:
     screening: Optional[Dict] = None
     enabled: bool = False
     source: str = "builtin"
+    # -- 五层系统 metadata (Phase 1) --
+    system_role: Optional[str] = None
+    strategy_family: Optional[str] = None
+    applicable_market: Optional[List[str]] = None
+    applicable_theme: Optional[List[str]] = None
+    setup_type: Optional[str] = None
 
 
 def load_skill_from_yaml(filepath: Union[str, Path]) -> Skill:
@@ -103,6 +109,11 @@ def load_skill_from_yaml(filepath: Union[str, Path]) -> Skill:
         screening=screening,
         enabled=False,
         source=str(filepath),
+        system_role=data.get("system_role"),
+        strategy_family=data.get("strategy_family"),
+        applicable_market=data.get("applicable_market"),
+        applicable_theme=data.get("applicable_theme"),
+        setup_type=data.get("setup_type"),
     )
 
 

@@ -72,6 +72,15 @@ class ScreeningCandidateItem(BaseModel):
     recommendation_reason: Optional[str] = None
     final_score: Optional[float] = None
     final_rank: Optional[int] = None
+    # -- 五层系统新增字段 (Phase 1) --
+    trade_stage: Optional[str] = None
+    setup_type: Optional[str] = None
+    entry_maturity: Optional[str] = None
+    risk_level: Optional[str] = None
+    market_regime: Optional[str] = None
+    theme_position: Optional[str] = None
+    candidate_pool_level: Optional[str] = None
+    trade_plan: Optional[Dict[str, Any]] = None
 
 
 class ScreeningAnalysisHistoryRef(BaseModel):

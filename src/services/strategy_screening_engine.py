@@ -68,6 +68,12 @@ class StrategyScreeningRule:
     category: str
     filters: List[FilterNode] = field(default_factory=list)
     scoring: List[ScoringWeight] = field(default_factory=list)
+    # -- 五层系统 metadata (Phase 1) --
+    system_role: Optional[str] = None
+    strategy_family: Optional[str] = None
+    applicable_market: Optional[List[str]] = None
+    applicable_theme: Optional[List[str]] = None
+    setup_type: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +93,9 @@ class CandidateResult:
     strategy_scores: Dict[str, float]
     rule_hits: List[str]
     factor_snapshot: Dict[str, Any]
+    # -- 五层系统 metadata (Phase 1) --
+    setup_type: Optional[str] = None
+    strategy_family: Optional[str] = None
 
 
 @dataclass
@@ -203,6 +212,11 @@ class StrategyScreeningEngine:
                 acc.strategy_scores[rule.strategy_name] = score
                 acc.matched_strategies.append(rule.strategy_name)
                 acc.rule_hits.extend(self._build_rule_hits(rule, row_dict))
+                # Track best entry_core setup metadata
+                if rule.system_role == "entry_core" and score > acc._best_entry_core_score:
+                    acc._best_entry_core_score = score
+                    acc.best_setup_type = rule.setup_type
+                    acc.best_strategy_family = rule.strategy_family
 
             if not matched_any:
                 rejected.append({
@@ -307,6 +321,8 @@ class StrategyScreeningEngine:
                 strategy_scores=dict(acc.strategy_scores),
                 rule_hits=unique_hits,
                 factor_snapshot=snapshot,
+                setup_type=acc.best_setup_type,
+                strategy_family=acc.best_strategy_family,
             ))
 
         candidates.sort(key=lambda c: c.final_score, reverse=True)
@@ -376,6 +392,11 @@ def build_rules_from_skills(
             category=getattr(skill, "category", "trend"),
             filters=filters,
             scoring=scoring,
+            system_role=getattr(skill, "system_role", None),
+            strategy_family=getattr(skill, "strategy_family", None),
+            applicable_market=getattr(skill, "applicable_market", None),
+            applicable_theme=getattr(skill, "applicable_theme", None),
+            setup_type=getattr(skill, "setup_type", None),
         ))
 
     return rules
@@ -425,6 +446,10 @@ class _CandidateAccumulator:
     strategy_scores: Dict[str, float] = field(default_factory=dict)
     matched_strategies: List[str] = field(default_factory=list)
     rule_hits: List[str] = field(default_factory=list)
+    # Track best entry_core setup metadata (highest-scoring entry_core rule wins)
+    best_setup_type: Optional[str] = None
+    best_strategy_family: Optional[str] = None
+    _best_entry_core_score: float = 0.0
 
 
 # ── Comparison helper ────────────────────────────────────────────────────────

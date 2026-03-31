@@ -11,6 +11,12 @@ required_tools:
   - analyze_trend
   - get_realtime_quote
 
+# -- 五层系统 metadata --
+system_role: confirm
+strategy_family: auxiliary
+applicable_market: [balanced, aggressive, defensive]
+applicable_theme: [main_theme, secondary_theme, non_theme]
+
 screening:
   filters:
     - field: breakout_ratio

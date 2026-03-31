@@ -830,6 +830,15 @@ class ScreeningCandidate(Base):
     ai_query_id = Column(String(64), index=True)
     ai_summary = Column(Text)
     ai_operation_advice = Column(String(20))
+    # -- 五层系统新增字段 (Phase 1) --
+    trade_stage = Column(String(32), nullable=True)
+    setup_type = Column(String(64), nullable=True)
+    entry_maturity = Column(String(16), nullable=True)
+    risk_level = Column(String(16), nullable=True)
+    market_regime = Column(String(32), nullable=True)
+    theme_position = Column(String(32), nullable=True)
+    candidate_pool_level = Column(String(32), nullable=True)
+    trade_plan_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.now, index=True)
 
     __table_args__ = (
@@ -852,6 +861,14 @@ class ScreeningCandidate(Base):
             "ai_query_id": self.ai_query_id,
             "ai_summary": self.ai_summary,
             "ai_operation_advice": self.ai_operation_advice,
+            "trade_stage": self.trade_stage,
+            "setup_type": self.setup_type,
+            "entry_maturity": self.entry_maturity,
+            "risk_level": self.risk_level,
+            "market_regime": self.market_regime,
+            "theme_position": self.theme_position,
+            "candidate_pool_level": self.candidate_pool_level,
+            "trade_plan": json.loads(self.trade_plan_json) if self.trade_plan_json else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

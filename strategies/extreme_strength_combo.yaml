@@ -10,6 +10,12 @@ required_tools:
   - get_daily_history
   - get_realtime_quote
 
+# -- 五层系统 metadata --
+system_role: stock_pool
+strategy_family: momentum
+applicable_market: [balanced, aggressive]
+applicable_theme: [main_theme, secondary_theme]
+
 screening:
   filters:
     - field: is_hot_theme_stock

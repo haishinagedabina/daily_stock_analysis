@@ -11,6 +11,13 @@ required_tools:
   - analyze_trend
   - get_realtime_quote
 
+# -- 五层系统 metadata --
+system_role: entry_core
+strategy_family: trend
+applicable_market: [balanced, aggressive]
+applicable_theme: [main_theme, secondary_theme, non_theme]
+setup_type: trend_pullback
+
 screening:
   filters:
     - field: ma5

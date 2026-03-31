@@ -10,6 +10,13 @@ required_tools:
   - get_daily_history
   - get_realtime_quote
 
+# -- 五层系统 metadata --
+system_role: entry_core
+strategy_family: trend
+applicable_market: [balanced, aggressive]
+applicable_theme: [main_theme, secondary_theme, non_theme]
+setup_type: trend_breakout
+
 screening:
   filters:
     - field: ma100_60min_confirmed

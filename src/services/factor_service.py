@@ -175,9 +175,12 @@ class FactorService:
                 }
             )
 
+        # 无条件计算 leader_score / extreme_strength_score（纯市场数据）
+        self._enrich_base_scores(snapshots)
+
         snapshot_df = pd.DataFrame(snapshots)
 
-        # 应用热点题材因子富化
+        # 应用热点题材因子富化（有 theme_context 时覆盖基础分数）
         if self.theme_context and not snapshot_df.empty:
             from src.services.hot_theme_factor_enricher import HotThemeFactorEnricher
             from src.services.theme_normalization_service import ThemeNormalizationService
@@ -211,36 +214,78 @@ class FactorService:
             self.db.replace_factor_snapshots(trade_date=trade_date, snapshots=snapshot_df.to_dict("records"))
         return snapshot_df
 
+    @staticmethod
+    def _enrich_base_scores(snapshots: List[Dict[str, Any]]) -> None:
+        """无条件计算 leader_score / extreme_strength_score（纯市场数据）。
+
+        使用 theme_match_score=0 / theme_heat_score=0 计算基础分数。
+        若后续 HotThemeFactorEnricher 运行，会覆盖为题材增强值。
+        """
+        from src.services.leader_score_calculator import LeaderScoreCalculator
+        from src.services.extreme_strength_scorer import ExtremeStrengthScorer
+
+        calc = LeaderScoreCalculator()
+        scorer = ExtremeStrengthScorer()
+
+        for s in snapshots:
+            leader = calc.calculate_leader_score(
+                theme_match_score=0.0,
+                circ_mv=s.get("circ_mv"),
+                turnover_rate=s.get("turnover_rate"),
+                is_limit_up=s.get("is_limit_up", False),
+                gap_breakaway=s.get("gap_breakaway", False),
+                above_ma100=s.get("above_ma100", False),
+                ma100_breakout_days=s.get("ma100_breakout_days", 0),
+            )
+            extreme = scorer.calculate_extreme_strength_score(
+                above_ma100=s.get("above_ma100", False),
+                gap_breakaway=s.get("gap_breakaway", False),
+                pattern_123_low_trendline=s.get("pattern_123_low_trendline", False),
+                is_limit_up=s.get("is_limit_up", False),
+                bottom_divergence_double_breakout=s.get(
+                    "bottom_divergence_double_breakout", False,
+                ),
+                theme_heat_score=0.0,
+                leader_score=leader,
+                volume_ratio=s.get("volume_ratio", 0.0) or 0.0,
+                turnover_rate=s.get("turnover_rate"),
+                circ_mv=s.get("circ_mv"),
+                breakout_ratio=s.get("breakout_ratio", 0.0) or 0.0,
+            )
+            s["leader_score"] = leader
+            s["extreme_strength_score"] = extreme
+
     def _resolve_board_names_for_codes(self, codes: List[str]) -> Dict[str, List[str]]:
         board_map: Dict[str, List[str]] = {}
-        if not self.theme_context:
-            return board_map
 
         normalized_codes = [str(item).strip().upper() for item in codes if str(item).strip()]
         if not normalized_codes:
             return board_map
 
+        # 始终从 DB 读取板块数据（不依赖 theme_context）
         board_map = self.db.batch_get_instrument_board_names(normalized_codes)
-        missing_codes = [code for code in normalized_codes if not board_map.get(code)]
 
-        for code in missing_codes:
-            resolved = self._resolve_board_names(code)
-            board_map[code] = resolved
-            if resolved:
-                self.db.replace_instrument_board_memberships(
-                    instrument_code=code,
-                    memberships=[
-                        {
-                            "board_name": name,
-                            "board_type": "unknown",
-                            "market": "cn",
-                            "source": "efinance",
-                        }
-                        for name in resolved
-                    ],
-                    market="cn",
-                    source="efinance",
-                )
+        # 仅在有 theme_context 时调用外部 API 补全缺失板块
+        if self.theme_context:
+            missing_codes = [code for code in normalized_codes if not board_map.get(code)]
+            for code in missing_codes:
+                resolved = self._resolve_board_names(code)
+                board_map[code] = resolved
+                if resolved:
+                    self.db.replace_instrument_board_memberships(
+                        instrument_code=code,
+                        memberships=[
+                            {
+                                "board_name": name,
+                                "board_type": "unknown",
+                                "market": "cn",
+                                "source": "efinance",
+                            }
+                            for name in resolved
+                        ],
+                        market="cn",
+                        source="efinance",
+                    )
         return board_map
 
     def _resolve_board_names(self, code: str) -> List[str]:

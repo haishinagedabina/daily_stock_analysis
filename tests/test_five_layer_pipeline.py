@@ -136,7 +136,7 @@ class FiveLayerDecisionTestCase(unittest.TestCase):
         })
         try:
             guard_inst = MagicMock()
-            guard_inst._fetch_index_data.return_value = (bars, "mock")
+            guard_inst.get_index_bars.return_value = bars
             with patch("src.services.screening_task_service.MarketGuard", return_value=guard_inst):
                 svc._apply_five_layer_decision(
                     selected=[candidate],

@@ -50,6 +50,15 @@ class MarketGuard:
 
         return self._fetcher.get_daily_data(self._index_code, days=200)
 
+    def get_index_bars(self) -> pd.DataFrame | None:
+        """获取指数日线数据（公开接口，供 MarketEnvironmentEngine 等外部使用）。"""
+        try:
+            df, _ = self._fetch_index_data()
+            return df
+        except Exception as e:
+            logger.warning("MarketGuard.get_index_bars failed: %s", e)
+            return None
+
     def check(self) -> MarketGuardResult:
         try:
             df, _source = self._fetch_index_data()

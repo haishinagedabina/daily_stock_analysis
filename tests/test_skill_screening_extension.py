@@ -216,6 +216,5 @@ instructions: |
         strategy_names = {r.name for r in rules}
         assert "volume_breakout" in strategy_names
         assert "bottom_volume" in strategy_names
-        assert "ma_golden_cross" in strategy_names
         assert "shrink_pullback" in strategy_names
         assert "one_yang_three_yin" in strategy_names

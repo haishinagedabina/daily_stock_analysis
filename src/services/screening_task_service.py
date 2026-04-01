@@ -476,12 +476,15 @@ class ScreeningTaskService:
                 rejected_count=len(getattr(evaluation, "rejected", []) or []),
             )
             # ═══ L1→L5 五层决策链路 (Phase 2A) ═══
-            self._apply_five_layer_decision(
-                selected=selected,
-                snapshot_df=snapshot_df,
-                effective_trade_date=effective_trade_date,
-                guard_result=guard_result if self.config.screening_market_guard_enabled else None,
-            )
+            try:
+                self._apply_five_layer_decision(
+                    selected=selected,
+                    snapshot_df=snapshot_df,
+                    effective_trade_date=effective_trade_date,
+                    guard_result=guard_result if self.config.screening_market_guard_enabled else None,
+                )
+            except Exception as exc:
+                logger.warning("five_layer decision failed (degraded): %s", exc)
 
             # Skip AI enriching for extreme_strength_combo strategy
             ai_results: Dict[str, Dict[str, Any]] = {}
@@ -680,7 +683,6 @@ class ScreeningTaskService:
                     "ai_operation_advice": ai_payload.get("ai_operation_advice"),
                     # ── 五层决策字段 (Phase 2A) ──
                     "setup_type": getattr(candidate, "setup_type", None),
-                    "strategy_family": getattr(candidate, "strategy_family", None),
                     "trade_stage": getattr(candidate, "trade_stage", None),
                     "entry_maturity": getattr(candidate, "entry_maturity", None),
                     "risk_level": getattr(candidate, "risk_level", None),
@@ -730,7 +732,7 @@ class ScreeningTaskService:
                 fetcher_manager=self.market_data_sync_service.fetcher_manager,
                 index_code=self.config.screening_market_guard_index,
             )
-            index_bars, _ = guard._fetch_index_data()
+            index_bars = guard.get_index_bars()
         except Exception as exc:
             logger.warning("five_layer: failed to fetch index bars: %s", exc)
         try:

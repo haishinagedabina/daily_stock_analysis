@@ -71,6 +71,12 @@ class SectorHeatEngine:
             market="cn", min_member_count=MIN_SECTOR_STOCK_COUNT,
         )
         if not boards:
+            logger.warning(
+                "SectorHeatEngine: 未找到满足条件的活跃板块数据（min_member_count=%d）。"
+                "请确认 InstrumentBoardMembership 表已通过 backfill_instrument_boards.py "
+                "或 BoardSyncScheduleService 填充。",
+                MIN_SECTOR_STOCK_COUNT,
+            )
             return []
 
         board_names = [b["board_name"] for b in boards]
@@ -122,14 +128,14 @@ class SectorHeatEngine:
         breadth = self._calc_breadth(sector_df, pct_chg, n)
         strength = self._calc_strength(sector_df, pct_chg, n)
         leadership, leader_codes, front_codes = self._calc_leadership(sector_df, pct_chg)
-        persistence = self._calc_persistence(board_name, trade_date)
+        persistence, heat_history = self._calc_persistence(board_name, trade_date)
 
         # 综合分数（冷启动时调整权重）
         hot_score = self._weighted_score(breadth, strength, persistence, leadership)
 
         # 状态和阶段
         status = self._classify_status(hot_score)
-        stage = self._classify_stage(persistence, hot_score, trade_date, board_name)
+        stage = self._classify_stage(persistence, hot_score, heat_history)
 
         reason = (
             f"breadth={breadth:.2f} strength={strength:.2f} "
@@ -238,7 +244,8 @@ class SectorHeatEngine:
         )
         return score, leader_codes, front_codes
 
-    def _calc_persistence(self, board_name: str, trade_date: date) -> float:
+    def _calc_persistence(self, board_name: str, trade_date: date) -> tuple[float, list]:
+        """返回 (persistence_score, history_rows) 以避免重复查询。"""
         history = self._db.list_sector_heat_history(
             board_name=board_name,
             end_date=trade_date - timedelta(days=1),
@@ -247,17 +254,17 @@ class SectorHeatEngine:
         history_count = len(history)
 
         if history_count == 0:
-            return 0.0
+            return 0.0, history
 
         scores = [h["sector_hot_score"] for h in history]
 
         if history_count < 3:
             avg_hot = float(np.mean(scores))
-            return float(_normalize(avg_hot, 20.0, 80.0) * 0.5)
+            return float(_normalize(avg_hot, 20.0, 80.0) * 0.5), history
 
         if history_count < 5:
             avg_hot = float(np.mean(scores))
-            return float(_normalize(avg_hot, 20.0, 80.0))
+            return float(_normalize(avg_hot, 20.0, 80.0)), history
 
         hot_3d = float(np.mean(scores[-3:]))
         hot_5d = float(np.mean(scores[-5:]))
@@ -267,7 +274,7 @@ class SectorHeatEngine:
             0.40 * _normalize(hot_3d, 20.0, 80.0)
             + 0.30 * _normalize(hot_5d, 20.0, 80.0)
             + 0.30 * _sigmoid(slope)
-        )
+        ), history
 
     # ── 综合分数 ─────────────────────────────────────────────────────────────
 
@@ -298,16 +305,11 @@ class SectorHeatEngine:
 
     def _classify_stage(
         self, persistence: float, hot_score: float,
-        trade_date: date, board_name: str,
+        history: list,
     ) -> str:
         if persistence < 0.01:
             return "launch" if hot_score >= WARM_THRESHOLD else "ferment"
 
-        history = self._db.list_sector_heat_history(
-            board_name=board_name,
-            end_date=trade_date - timedelta(days=1),
-            lookback_days=5,
-        )
         if not history:
             return "launch"
 

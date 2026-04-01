@@ -141,6 +141,7 @@ class UniverseService:
             return pd.DataFrame(columns=["code", "name", "is_st", "list_date", "industry", "listing_status"])
 
         normalized = df.copy()
+        normalized = normalized.dropna(subset=["code"])
         normalized["code"] = normalized["code"].astype(str).str.strip().str.upper()
         normalized = normalized[~normalized["code"].isin({"", "NONE", "NAN", "NULL"})]
         if normalized.empty:

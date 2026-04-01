@@ -96,6 +96,8 @@ class ThemePositionResolver:
         if status == "hot" and stage == "launch":
             return ThemePosition.SECONDARY_THEME
         if status == "warm":
+            if stage in ("climax", "fade"):
+                return ThemePosition.FADING_THEME
             return ThemePosition.SECONDARY_THEME
         if status == "hot" and stage in ("climax", "fade"):
             return ThemePosition.FADING_THEME

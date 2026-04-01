@@ -149,6 +149,21 @@ class ThemePositionResolverBasicTestCase(unittest.TestCase):
 
         self.assertEqual(decision.theme_position, ThemePosition.FADING_THEME)
 
+    def test_warm_fade_sector_gives_fading_theme(self) -> None:
+        """warm + fade 板块 → FADING_THEME（而非 SECONDARY_THEME）。"""
+        sectors = [SectorHeatResult(
+            board_name="锂电池", board_type="concept",
+            sector_hot_score=55.0, sector_status="warm", sector_stage="fade",
+            breadth_score=0.3, strength_score=0.3,
+            stock_count=20, up_count=8, avg_pct_chg=0.5,
+        )]
+        themes = ThemeAggregationService().aggregate(sectors)
+
+        resolver = ThemePositionResolver(sector_results=sectors, theme_results=themes)
+        decision = resolver.resolve(stock_boards=["锂电池"])
+
+        self.assertEqual(decision.theme_position, ThemePosition.FADING_THEME)
+
     def test_no_board_gives_non_theme(self) -> None:
         """stock 无板块归属 → NON_THEME。"""
         sectors = [_hot_sector("白酒")]

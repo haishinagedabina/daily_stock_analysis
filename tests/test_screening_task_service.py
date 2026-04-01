@@ -114,6 +114,10 @@ def test_screening_task_service_executes_full_pipeline_and_limits_ai_top_k():
         }
     }
     market_data_sync_service = MagicMock()
+    market_data_sync_service.fetcher_manager.get_market_stats.return_value = {
+        "limit_up_count": 30, "limit_down_count": 10,
+        "up_count": 2500, "down_count": 1500,
+    }
     market_data_sync_service.sync_trade_date.return_value = {
         "trade_date": "2026-03-13",
         "total": 2,
@@ -373,6 +377,10 @@ def test_screening_task_service_completes_with_ai_degraded_when_ai_analysis_fail
     candidate_analysis_service.analyze_top_k.side_effect = RuntimeError("ai timeout")
 
     market_data_sync_service = MagicMock()
+    market_data_sync_service.fetcher_manager.get_market_stats.return_value = {
+        "limit_up_count": 30, "limit_down_count": 10,
+        "up_count": 2500, "down_count": 1500,
+    }
     market_data_sync_service.sync_trade_date.return_value = {
         "trade_date": "2026-03-13",
         "total": 1,
@@ -446,6 +454,10 @@ def test_screening_task_service_completes_with_ai_degraded_when_partial_ai_failu
     )
 
     market_data_sync_service = MagicMock()
+    market_data_sync_service.fetcher_manager.get_market_stats.return_value = {
+        "limit_up_count": 30, "limit_down_count": 10,
+        "up_count": 2500, "down_count": 1500,
+    }
     market_data_sync_service.sync_trade_date.return_value = {
         "trade_date": "2026-03-13",
         "total": 2,
@@ -495,6 +507,10 @@ def test_screening_task_service_logs_stage_durations_and_health_report(caplog):
     screener_service.evaluate.return_value.rejected = [{"code": "000001"}]
 
     market_data_sync_service = MagicMock()
+    market_data_sync_service.fetcher_manager.get_market_stats.return_value = {
+        "limit_up_count": 30, "limit_down_count": 10,
+        "up_count": 2500, "down_count": 1500,
+    }
     market_data_sync_service.sync_trade_date.return_value = {
         "trade_date": "2026-03-13",
         "total": 1,
@@ -798,6 +814,10 @@ def test_screening_task_service_uses_config_defaults_when_limits_omitted(get_con
     candidate_analysis_service.analyze_top_k.return_value = {}
 
     market_data_sync_service = MagicMock()
+    market_data_sync_service.fetcher_manager.get_market_stats.return_value = {
+        "limit_up_count": 30, "limit_down_count": 10,
+        "up_count": 2500, "down_count": 1500,
+    }
     market_data_sync_service.sync_trade_date.return_value = {
         "trade_date": "2026-03-13",
         "total": 2,
@@ -874,6 +894,10 @@ def test_screening_task_service_reruns_failed_run_from_factorizing_stage():
     candidate_analysis_service.analyze_top_k.return_value = {}
 
     market_data_sync_service = MagicMock()
+    market_data_sync_service.fetcher_manager.get_market_stats.return_value = {
+        "limit_up_count": 30, "limit_down_count": 10,
+        "up_count": 2500, "down_count": 1500,
+    }
 
     service = ScreeningTaskService(
         db_manager=db,
@@ -1302,6 +1326,10 @@ def test_screening_task_service_builds_mode_specific_services(
         "skipped": 0,
         "errors": [],
     }
+    market_data_sync_service.fetcher_manager.get_market_stats.return_value = {
+        "limit_up_count": 30, "limit_down_count": 10,
+        "up_count": 2500, "down_count": 1500,
+    }
 
     service = ScreeningTaskService(
         db_manager=db,
@@ -1333,6 +1361,7 @@ def test_screening_task_service_builds_mode_specific_services(
         lookback_days=60,
         breakout_lookback_days=15,
         min_list_days=60,
+        theme_context=None,
     )
     assert factor_instance.build_factor_snapshot.call_args.kwargs["persist"] is False
 

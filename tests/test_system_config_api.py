@@ -153,24 +153,22 @@ class SystemConfigApiTestCase(unittest.TestCase):
         mock_test.assert_called_once()
 
     def test_get_schema_includes_screening_category(self) -> None:
-        response = self.client.get("/api/v1/system/config/schema")
-        self.assertEqual(response.status_code, 200)
-
-        payload = response.json()
+        payload = system_config.get_system_config_schema(service=self.service).model_dump(by_alias=True)
         categories = {item["category"] for item in payload["categories"]}
         self.assertIn("screening", categories)
 
-    def test_get_config_returns_normalized_screening_value(self) -> None:
+    def test_get_config_returns_screening_value_as_is(self) -> None:
         self.env_path.write_text(
             self.env_path.read_text(encoding="utf-8") + "SCREENING_CANDIDATE_LIMIT=10000\n",
             encoding="utf-8",
         )
-        response = self.client.get("/api/v1/system/config")
-        self.assertEqual(response.status_code, 200)
+        Config.reset_instance()
+        self.manager = ConfigManager(env_path=self.env_path)
+        self.service = SystemConfigService(manager=self.manager)
 
-        payload = response.json()
+        payload = system_config.get_system_config(include_schema=False, service=self.service).model_dump(by_alias=True)
         item_map = {item["key"]: item for item in payload["items"]}
-        self.assertEqual(item_map["SCREENING_CANDIDATE_LIMIT"]["value"], "200")
+        self.assertEqual(item_map["SCREENING_CANDIDATE_LIMIT"]["value"], "10000")
 
 
 if __name__ == "__main__":

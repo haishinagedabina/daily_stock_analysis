@@ -301,5 +301,138 @@ class DBSaveTestCase(unittest.TestCase):
         self.assertEqual(row["setup_type"], "trend_breakout")
 
 
+class Phase2BDispatchTestCase(unittest.TestCase):
+    """Phase 2B: 策略调度 + 买点收敛 集成测试。"""
+
+    def _make_service(self):
+        from src.services.screening_task_service import ScreeningTaskService
+        from src.agent.skills.base import SkillManager
+
+        db_mock = MagicMock()
+        db_mock.batch_get_instrument_board_names.return_value = {
+            "600519": ["白酒"],
+        }
+        db_mock.list_sector_heat_history.return_value = []
+
+        svc = ScreeningTaskService.__new__(ScreeningTaskService)
+        svc.db = db_mock
+        svc.config = MagicMock()
+        svc.config.screening_market_guard_enabled = False
+        svc.config.screening_market_guard_index = "sh000001"
+        svc._theme_context = None
+
+        sync_mock = MagicMock()
+        sync_mock.fetcher_manager.get_market_stats.return_value = {
+            "limit_up_count": 30, "limit_down_count": 10,
+            "up_count": 2500, "down_count": 1500,
+        }
+        svc._market_data_sync_service = sync_mock
+
+        # Load real strategy YAMLs for dispatch/resolve
+        skill_mgr = SkillManager()
+        skill_mgr.load_builtin_strategies()
+        svc._skill_manager = skill_mgr
+
+        return svc
+
+    def _make_snapshot_df(self):
+        import pandas as pd
+        return pd.DataFrame([
+            {"code": "600519", "name": "贵州茅台", "pct_chg": 5.0, "volume_ratio": 1.5,
+             "turnover_rate": 2.0, "close": 100.0, "ma5": 98.0, "ma10": 96.0,
+             "ma20": 94.0, "ma60": 90.0, "is_limit_up": False,
+             "above_ma100": True, "gap_breakaway": False},
+        ])
+
+    def test_stand_aside_filters_out_momentum(self):
+        """stand_aside 环境下 momentum 策略被从 matched_strategies 中移除。"""
+        svc = self._make_service()
+        candidate = ScreeningCandidateRecord(
+            code="600519", name="贵州茅台", rank=1, rule_score=80.0,
+            rule_hits=["hit"],
+            factor_snapshot={"pct_chg": 5.0, "leader_score": 75.0,
+                             "extreme_strength_score": 85.0, "has_stop_loss": True},
+            matched_strategies=["gap_limitup_breakout", "bottom_volume"],
+            strategy_scores={"gap_limitup_breakout": 60.0, "bottom_volume": 40.0},
+            setup_type="gap_breakout",
+            strategy_family="momentum",
+        )
+
+        # Force stand_aside: is_safe=False, low index
+        guard = MarketGuardResult(is_safe=False, index_price=2800.0, index_ma100=3100.0)
+        svc._market_data_sync_service.fetcher_manager.get_market_stats.return_value = {
+            "limit_up_count": 5, "limit_down_count": 30,
+            "up_count": 500, "down_count": 3500,
+        }
+
+        svc._apply_five_layer_decision(
+            selected=[candidate],
+            snapshot_df=self._make_snapshot_df(),
+            effective_trade_date=date(2026, 3, 31),
+            guard_result=guard,
+        )
+
+        # gap_limitup_breakout (momentum, aggressive-only) should be blocked
+        self.assertNotIn("gap_limitup_breakout", candidate.matched_strategies)
+        # bottom_volume (observation) should survive
+        self.assertIn("bottom_volume", candidate.matched_strategies)
+
+    def test_dispatch_updates_setup_type(self):
+        """调度后 setup_type 反映收敛结果而非原始最高分。"""
+        svc = self._make_service()
+        candidate = ScreeningCandidateRecord(
+            code="600519", name="贵州茅台", rank=1, rule_score=80.0,
+            rule_hits=["hit"],
+            factor_snapshot={"pct_chg": 5.0, "leader_score": 75.0,
+                             "extreme_strength_score": 85.0, "has_stop_loss": True,
+                             "ma100_breakout_days": 3},
+            matched_strategies=[
+                "ma100_60min_combined",
+                "bottom_divergence_double_breakout",
+                "volume_breakout",
+            ],
+            strategy_scores={
+                "ma100_60min_combined": 50.0,
+                "bottom_divergence_double_breakout": 70.0,
+                "volume_breakout": 30.0,
+            },
+            setup_type="bottom_divergence_breakout",
+            strategy_family="reversal",
+        )
+
+        # balanced + non_theme → reversal > trend priority
+        guard = MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0)
+
+        svc._apply_five_layer_decision(
+            selected=[candidate],
+            snapshot_df=self._make_snapshot_df(),
+            effective_trade_date=date(2026, 3, 31),
+            guard_result=guard,
+        )
+
+        # With non_theme: reversal preferred → bottom_divergence_breakout wins
+        self.assertEqual(candidate.setup_type, "bottom_divergence_breakout")
+        self.assertEqual(candidate.strategy_family, "reversal")
+
+    def test_no_skill_manager_degrades_gracefully(self):
+        """skill_manager=None 时退回到原始 setup_type 逻辑。"""
+        svc = self._make_service()
+        svc._skill_manager = None
+
+        candidate = _make_candidate(setup_type="trend_breakout")
+        guard = MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0)
+
+        svc._apply_five_layer_decision(
+            selected=[candidate],
+            snapshot_df=self._make_snapshot_df(),
+            effective_trade_date=date(2026, 3, 31),
+            guard_result=guard,
+        )
+
+        # Should still have all fields populated
+        self.assertIsNotNone(candidate.trade_stage)
+        self.assertIsNotNone(candidate.market_regime)
+
+
 if __name__ == "__main__":
     unittest.main()

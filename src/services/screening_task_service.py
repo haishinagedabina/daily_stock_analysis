@@ -715,6 +715,8 @@ class ScreeningTaskService:
         from src.services.entry_maturity_assessor import EntryMaturityAssessor
         from src.services.candidate_pool_classifier import CandidatePoolClassifier
         from src.services.trade_stage_judge import TradeStageJudge
+        from src.services.strategy_dispatcher import StrategyDispatcher
+        from src.services.setup_resolver import SetupResolver
 
         if not selected:
             return
@@ -769,6 +771,17 @@ class ScreeningTaskService:
         pool_classifier = CandidatePoolClassifier()
         stage_judge = TradeStageJudge()
 
+        # ── Phase 2B: 策略调度器 + 买点收敛器 ──────────────────────────────
+        dispatcher: Optional[StrategyDispatcher] = None
+        setup_resolver: Optional[SetupResolver] = None
+        try:
+            strategy_rules = self._get_strategy_rules_for_dispatch()
+            if strategy_rules:
+                dispatcher = StrategyDispatcher(strategy_rules)
+                setup_resolver = SetupResolver(strategy_rules)
+        except Exception as exc:
+            logger.warning("five_layer: failed to build dispatcher/resolver (degraded): %s", exc)
+
         # ── 逐票裁决 L2→L5 ────────────────────────────────────────────────
         for candidate in selected:
             fs = candidate.factor_snapshot or {}
@@ -778,11 +791,30 @@ class ScreeningTaskService:
             theme_decision = theme_resolver.resolve(stock_boards)
             tp = theme_decision.theme_position
 
+            # Phase 2B: 策略调度 + 买点收敛
+            if dispatcher is not None and setup_resolver is not None:
+                dispatch_result = dispatcher.filter_strategies(
+                    candidate.matched_strategies or [], market_env.regime,
+                )
+                resolution = setup_resolver.resolve(
+                    allowed_strategies=dispatch_result.allowed_strategies,
+                    strategy_scores=candidate.strategy_scores or {},
+                    market_regime=market_env.regime,
+                    theme_position=tp,
+                )
+                st = resolution.setup_type
+                candidate.setup_type = st.value if st != SetupType.NONE else None
+                candidate.strategy_family = (
+                    resolution.strategy_family.value if resolution.strategy_family else None
+                )
+                candidate.matched_strategies = dispatch_result.allowed_strategies
+            else:
+                try:
+                    st = SetupType(candidate.setup_type) if candidate.setup_type else SetupType.NONE
+                except ValueError:
+                    st = SetupType.NONE
+
             # L4: 买点成熟度
-            try:
-                st = SetupType(candidate.setup_type) if candidate.setup_type else SetupType.NONE
-            except ValueError:
-                st = SetupType.NONE
             entry_mat = maturity_assessor.assess(st, fs)
 
             # L3: 候选池分级
@@ -820,6 +852,17 @@ class ScreeningTaskService:
             "five_layer: %d candidates processed, regime=%s",
             len(selected), market_env.regime.value,
         )
+
+    def _get_strategy_rules_for_dispatch(self) -> List:
+        """Retrieve strategy rules metadata for Phase 2B dispatch/resolve."""
+        from src.services.strategy_screening_engine import build_rules_from_skills
+
+        if self._skill_manager is None:
+            return []
+        skills = self._skill_manager.get_screening_rules()
+        if not skills:
+            return []
+        return build_rules_from_skills(skills)
 
     @staticmethod
     def _check_deadline(deadline: float, stage: str) -> None:

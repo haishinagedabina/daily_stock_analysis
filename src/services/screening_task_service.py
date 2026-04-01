@@ -31,6 +31,27 @@ _EXECUTE_RUN_DEADLINE_SECONDS: int = 30 * 60  # 30 分钟
 _CN_MARKET_CLOSE_TIME = dt_time(hour=15, minute=0)
 
 
+def _ai_review_fields(
+    protocol: "AiReviewProtocol",
+    ai_payload: Dict[str, Any],
+    candidate: Any,
+) -> Dict[str, Any]:
+    """Apply AiReviewProtocol.parse_ai_response and return 3 fields dict."""
+    rule_trade_stage = getattr(candidate, "trade_stage", None) or ""
+    market_regime = getattr(candidate, "market_regime", None) or ""
+    review = protocol.parse_ai_response(
+        ai_summary=ai_payload.get("ai_summary"),
+        ai_operation_advice=ai_payload.get("ai_operation_advice"),
+        rule_trade_stage=rule_trade_stage,
+        market_regime=market_regime,
+    )
+    return {
+        "ai_trade_stage": review.ai_trade_stage,
+        "ai_reasoning": review.ai_reasoning,
+        "ai_confidence": review.ai_confidence,
+    }
+
+
 class ScreeningTradeDateNotReadyError(ValueError):
     def __init__(self, message: str, error_code: str = "screening_trade_time_not_ready") -> None:
         super().__init__(message)
@@ -648,6 +669,9 @@ class ScreeningTaskService:
         ai_results: Dict[str, Dict[str, Any]],
         ai_top_k: int,
     ) -> List[Dict[str, Any]]:
+        from src.services.ai_review_protocol import AiReviewProtocol
+
+        protocol = AiReviewProtocol()
         payloads: List[Dict[str, Any]] = []
         for candidate in selected:
             if isinstance(candidate, dict):
@@ -681,6 +705,9 @@ class ScreeningTaskService:
                     "ai_query_id": ai_payload.get("ai_query_id"),
                     "ai_summary": ai_payload.get("ai_summary"),
                     "ai_operation_advice": ai_payload.get("ai_operation_advice"),
+                    **_ai_review_fields(
+                        protocol, ai_payload, candidate
+                    ),
                     # ── 五层决策字段 (Phase 2A) ──
                     "setup_type": getattr(candidate, "setup_type", None),
                     "trade_stage": getattr(candidate, "trade_stage", None),

@@ -39,6 +39,36 @@ _RULE_HIT_ZH: Dict[str, str] = {
 # Number of top candidates that receive the full audit block; the rest get a summary line.
 _AUDIT_TOP_N_DEFAULT = 5
 
+# ---------------------------------------------------------------------------
+# Five-layer decision label mappings (Phase 3B-2)
+# ---------------------------------------------------------------------------
+
+_REGIME_LABELS: Dict[str, str] = {
+    "aggressive": "进攻",
+    "balanced": "均衡",
+    "defensive": "防守",
+    "stand_aside": "观望",
+}
+
+_STAGE_LABELS: Dict[str, str] = {
+    "probe_entry": "试探进场",
+    "add_on_strength": "强势加仓",
+    "focus": "重点关注",
+    "watch": "观察",
+    "stand_aside": "观望",
+    "reject": "拒绝",
+}
+
+_SETUP_LABELS: Dict[str, str] = {
+    "bottom_divergence_breakout": "底背离突破",
+    "low123_breakout": "123结构突破",
+    "trend_breakout": "趋势突破",
+    "trend_pullback": "趋势回踩",
+    "gap_breakout": "缺口突破",
+    "limitup_structure": "涨停结构突破",
+    "none": "无",
+}
+
 
 # ---------------------------------------------------------------------------
 # Module-level private helpers
@@ -363,6 +393,39 @@ class ScreeningNotificationService:
         )
         lines.append("")
 
+        # [五层决策] — shown when any five-layer field is present
+        trade_stage = item.get("trade_stage")
+        has_five_layer = trade_stage is not None or item.get("setup_type") is not None
+        if has_five_layer:
+            lines.append("**[五层决策]**")
+            stage_label = _STAGE_LABELS.get(trade_stage or "", trade_stage or "N/A")
+            lines.append(f"- 交易阶段: **{stage_label}**")
+            setup = item.get("setup_type") or ""
+            setup_label = _SETUP_LABELS.get(setup, setup or "N/A")
+            lines.append(f"- 买点类型: {setup_label}")
+            lines.append(
+                f"- 成熟度: {item.get('entry_maturity', 'N/A')} | "
+                f"风险: {item.get('risk_level', 'N/A')}"
+            )
+            lines.append(
+                f"- 题材地位: {item.get('theme_position', 'N/A')} | "
+                f"候选池: {item.get('candidate_pool_level', 'N/A')}"
+            )
+
+            # Trade plan details for actionable stages
+            trade_plan = item.get("trade_plan")
+            if trade_plan and isinstance(trade_plan, dict):
+                lines.append(
+                    f"- 止损: {trade_plan.get('stop_loss_rule', 'N/A')}"
+                )
+                lines.append(
+                    f"- 仓位: {trade_plan.get('initial_position', 'N/A')} | "
+                    f"持仓期: {trade_plan.get('holding_expectation', 'N/A')}"
+                )
+                if trade_plan.get("add_rule"):
+                    lines.append(f"- 加仓: {trade_plan['add_rule']}")
+            lines.append("")
+
         # [评分汇总]
         lines.append("**[评分汇总]**")
         lines.append(f"- 规则分：{rule_score_display:.1f}")
@@ -448,8 +511,10 @@ class ScreeningNotificationService:
         score_text = f"{float(final_score):.1f}" if final_score is not None else "N/A"
         source = item.get("recommendation_source") or "rules_only"
         source_text = "AI 增强" if source == "rules_plus_ai" else "规则输出"
+        stage = item.get("trade_stage")
+        stage_text = f" | {_STAGE_LABELS.get(stage, stage)}" if stage else ""
         return [
-            f"### {final_rank}. {name} ({code}) — {score_text}分 | 来源: {source_text}",
+            f"### {final_rank}. {name} ({code}) — {score_text}分{stage_text} | 来源: {source_text}",
             "",
         ]
 
@@ -475,8 +540,13 @@ class ScreeningNotificationService:
         universe_size = int(run.get("universe_size") or 0)
         candidate_count = int(run.get("candidate_count") or len(candidates))
 
+        # Extract market_regime from candidates (all share the same regime)
+        regime = self._extract_regime(candidates)
+        regime_label = _REGIME_LABELS.get(regime, "") if regime else ""
+        title_suffix = f" | {regime_label}" if regime_label else ""
+
         lines = [
-            f"# 📣 {trade_date} 全市场筛选推荐名单",
+            f"# 📣 {trade_date} 全市场筛选推荐名单{title_suffix}",
             "",
             (
                 f"> run_id: `{run.get('run_id', '-')}` | "
@@ -491,6 +561,14 @@ class ScreeningNotificationService:
             lines.extend(
                 [
                     "> ⚠️ AI 二筛已降级，本次结果以规则输出为主，候选中仅保留已成功回链的 AI/新闻增强信息。",
+                    "",
+                ]
+            )
+
+        if regime == "stand_aside":
+            lines.extend(
+                [
+                    "> 当前市场处于观望期，以下为观察列表，不含交易计划。",
                     "",
                 ]
             )
@@ -522,6 +600,15 @@ class ScreeningNotificationService:
             ]
         )
         return "\n".join(lines)
+
+    @staticmethod
+    def _extract_regime(candidates: List[Dict[str, Any]]) -> Optional[str]:
+        """Extract market_regime from candidates (all share the same regime)."""
+        for c in candidates:
+            regime = c.get("market_regime")
+            if regime:
+                return regime
+        return None
 
     # ------------------------------------------------------------------
     # Legacy entry point (preserved for backward compatibility)

@@ -830,6 +830,10 @@ class ScreeningCandidate(Base):
     ai_query_id = Column(String(64), index=True)
     ai_summary = Column(Text)
     ai_operation_advice = Column(String(20))
+    # -- AI 二筛协议字段 (Phase 3B-1) --
+    ai_trade_stage = Column(String(32), nullable=True)
+    ai_reasoning = Column(Text, nullable=True)
+    ai_confidence = Column(Float, nullable=True)
     # -- 五层系统新增字段 (Phase 1) --
     trade_stage = Column(String(32), nullable=True)
     setup_type = Column(String(64), nullable=True)
@@ -861,6 +865,9 @@ class ScreeningCandidate(Base):
             "ai_query_id": self.ai_query_id,
             "ai_summary": self.ai_summary,
             "ai_operation_advice": self.ai_operation_advice,
+            "ai_trade_stage": self.ai_trade_stage,
+            "ai_reasoning": self.ai_reasoning,
+            "ai_confidence": self.ai_confidence,
             "trade_stage": self.trade_stage,
             "setup_type": self.setup_type,
             "entry_maturity": self.entry_maturity,
@@ -1069,6 +1076,7 @@ class DatabaseManager:
                 self._migrate_sqlite_screening_runs_notification_fields()
                 self._migrate_sqlite_screening_runs_heartbeat_field()
                 self._migrate_sqlite_screening_candidates_strategy_fields()
+                self._migrate_sqlite_screening_candidates_ai_review_fields()
         except Exception as exc:
             logger.exception("Inline database migration failed: %s", exc)
             raise
@@ -1158,6 +1166,23 @@ class DatabaseManager:
                 "ALTER TABLE screening_candidates ADD COLUMN matched_strategies_json TEXT"
             )
             logger.info("Inline SQLite migration for matched_strategies_json completed")
+
+    def _migrate_sqlite_screening_candidates_ai_review_fields(self) -> None:
+        """Ensure screening_candidates has AI review protocol columns on SQLite."""
+        with self._engine.begin() as conn:
+            existing = {
+                row[1]
+                for row in conn.exec_driver_sql("PRAGMA table_info(screening_candidates)").fetchall()
+            }
+            new_columns = {
+                "ai_trade_stage": "ALTER TABLE screening_candidates ADD COLUMN ai_trade_stage VARCHAR(32)",
+                "ai_reasoning": "ALTER TABLE screening_candidates ADD COLUMN ai_reasoning TEXT",
+                "ai_confidence": "ALTER TABLE screening_candidates ADD COLUMN ai_confidence FLOAT",
+            }
+            for col_name, ddl in new_columns.items():
+                if col_name not in existing:
+                    logger.info("Applying inline SQLite migration: adding %s to screening_candidates", col_name)
+                    conn.exec_driver_sql(ddl)
 
     def get_session(self) -> Session:
         """
@@ -2074,6 +2099,10 @@ class DatabaseManager:
                         ai_query_id=item.get("ai_query_id"),
                         ai_summary=item.get("ai_summary"),
                         ai_operation_advice=item.get("ai_operation_advice"),
+                        # ── AI 二筛协议字段 (Phase 3B-1) ──
+                        ai_trade_stage=item.get("ai_trade_stage"),
+                        ai_reasoning=item.get("ai_reasoning"),
+                        ai_confidence=item.get("ai_confidence"),
                         # ── 五层决策字段 (Phase 2A) ──
                         setup_type=item.get("setup_type"),
                         trade_stage=item.get("trade_stage"),

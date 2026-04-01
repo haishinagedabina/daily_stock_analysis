@@ -673,5 +673,183 @@ class TestBuildRunNotificationAudit(unittest.TestCase):
         self.assertIn("趋势未破坏", content)
 
 
+# ===========================================================================
+# 6. Five-layer decision notification (Phase 3B-2)
+# ===========================================================================
+
+
+def _make_five_layer_candidate(**overrides):
+    """Return a candidate dict with five-layer decision fields populated."""
+    base = _make_candidate()
+    base.update({
+        "trade_stage": "probe_entry",
+        "setup_type": "trend_breakout",
+        "entry_maturity": "high",
+        "risk_level": "medium",
+        "market_regime": "balanced",
+        "theme_position": "main_theme",
+        "candidate_pool_level": "focus_list",
+        "trade_plan": {
+            "initial_position": "1/5仓",
+            "stop_loss_rule": "跌破突破K线实体下沿或MA20止损",
+            "take_profit_plan": "沿MA10移动止盈;跌破MA10减仓",
+            "invalidation_rule": "买入后3个交易日未启动则离场",
+            "risk_level": "medium",
+            "holding_expectation": "1~2周波段",
+            "add_rule": None,
+        },
+    })
+    base.update(overrides)
+    return base
+
+
+class TestFiveLayerAuditBlock(unittest.TestCase):
+    """Tests for five-layer decision section in audit blocks (Phase 3B-2)."""
+
+    def setUp(self):
+        self.svc = _make_service()
+
+    def test_audit_block_includes_five_layer_section(self):
+        """Audit block should contain a [五层决策] section."""
+        item = _make_five_layer_candidate()
+        block = "\n".join(self.svc._format_candidate_audit_block(item))
+        self.assertIn("[五层决策]", block)
+
+    def test_audit_block_probe_entry_shows_stop_loss(self):
+        """probe_entry candidate should display stop_loss_rule in audit block."""
+        item = _make_five_layer_candidate(trade_stage="probe_entry")
+        block = "\n".join(self.svc._format_candidate_audit_block(item))
+        self.assertIn("跌破突破K线实体下沿或MA20止损", block)
+
+    def test_audit_block_probe_entry_shows_position(self):
+        """probe_entry candidate should display initial_position."""
+        item = _make_five_layer_candidate(trade_stage="probe_entry")
+        block = "\n".join(self.svc._format_candidate_audit_block(item))
+        self.assertIn("1/5仓", block)
+
+    def test_audit_block_add_on_shows_add_rule(self):
+        """add_on_strength candidate should display add_rule."""
+        item = _make_five_layer_candidate(
+            trade_stage="add_on_strength",
+            trade_plan={
+                "initial_position": "1/3仓",
+                "stop_loss_rule": "跌破突破K线实体下沿或MA20止损",
+                "take_profit_plan": "沿MA10移动止盈",
+                "invalidation_rule": "3个交易日未启动则离场",
+                "risk_level": "medium",
+                "holding_expectation": "1~2周波段",
+                "add_rule": "回踩MA20不破+放量反弹加仓;最多加仓1次;跌破MA20取消",
+            },
+        )
+        block = "\n".join(self.svc._format_candidate_audit_block(item))
+        self.assertIn("加仓", block)
+        self.assertIn("回踩MA20不破", block)
+
+    def test_audit_block_watch_no_trade_plan(self):
+        """watch candidate should NOT display trade plan details."""
+        item = _make_five_layer_candidate(trade_stage="watch", trade_plan=None)
+        block = "\n".join(self.svc._format_candidate_audit_block(item))
+        self.assertIn("[五层决策]", block)
+        self.assertNotIn("止损", block)
+        self.assertNotIn("仓位", block)
+
+    def test_audit_block_shows_trade_stage_label(self):
+        """Five-layer section should show Chinese label for trade_stage."""
+        item = _make_five_layer_candidate(trade_stage="probe_entry")
+        block = "\n".join(self.svc._format_candidate_audit_block(item))
+        self.assertIn("试探进场", block)
+
+    def test_audit_block_shows_setup_type_label(self):
+        """Five-layer section should show Chinese label for setup_type."""
+        item = _make_five_layer_candidate(setup_type="trend_breakout")
+        block = "\n".join(self.svc._format_candidate_audit_block(item))
+        self.assertIn("趋势突破", block)
+
+    def test_audit_block_shows_theme_position(self):
+        """Five-layer section should show theme_position."""
+        item = _make_five_layer_candidate(theme_position="main_theme")
+        block = "\n".join(self.svc._format_candidate_audit_block(item))
+        self.assertIn("main_theme", block)
+
+    def test_audit_block_no_five_layer_when_no_fields(self):
+        """If no five-layer fields present, [五层决策] section should be absent."""
+        item = _make_candidate()  # no five-layer fields
+        block = "\n".join(self.svc._format_candidate_audit_block(item))
+        self.assertNotIn("[五层决策]", block)
+
+
+class TestFiveLayerSummaryBlock(unittest.TestCase):
+    """Tests for trade_stage in summary block (Phase 3B-2)."""
+
+    def setUp(self):
+        self.svc = _make_service()
+
+    def test_summary_line_includes_trade_stage(self):
+        """Summary block should include trade_stage label."""
+        item = _make_five_layer_candidate(final_rank=6, trade_stage="focus")
+        block = "\n".join(self.svc._format_candidate_summary_block(item))
+        self.assertIn("重点关注", block)
+
+    def test_summary_line_no_stage_when_absent(self):
+        """Summary block without trade_stage should not crash."""
+        item = _make_candidate(final_rank=6)
+        block = "\n".join(self.svc._format_candidate_summary_block(item))
+        self.assertIn("贵州茅台", block)
+
+
+class TestFiveLayerRunNotification(unittest.TestCase):
+    """Tests for run-level five-layer features (Phase 3B-2)."""
+
+    def setUp(self):
+        self.svc = _make_service()
+        self.run = {
+            "run_id": "run-test-3b",
+            "trade_date": "2026-04-01",
+            "mode": "balanced",
+            "status": "completed",
+            "universe_size": 5000,
+            "candidate_count": 3,
+        }
+
+    def test_title_includes_regime_label(self):
+        """Notification title should include market_regime label."""
+        candidates = [
+            _make_five_layer_candidate(
+                final_rank=1, market_regime="balanced",
+            ),
+        ]
+        content = self.svc.build_run_notification(run=self.run, candidates=candidates)
+        self.assertIn("均衡", content)
+
+    def test_title_includes_aggressive_label(self):
+        candidates = [
+            _make_five_layer_candidate(
+                final_rank=1, market_regime="aggressive",
+            ),
+        ]
+        content = self.svc.build_run_notification(run=self.run, candidates=candidates)
+        self.assertIn("进攻", content)
+
+    def test_stand_aside_shows_observation_notice(self):
+        """stand_aside regime should show observation warning."""
+        candidates = [
+            _make_five_layer_candidate(
+                final_rank=1, market_regime="stand_aside",
+                trade_stage="watch", trade_plan=None,
+            ),
+        ]
+        content = self.svc.build_run_notification(run=self.run, candidates=candidates)
+        self.assertIn("观望", content)
+        # Should contain a notice about observation-only
+        self.assertIn("观察", content)
+
+    def test_no_regime_label_when_no_five_layer(self):
+        """When candidates have no market_regime, title should be normal."""
+        candidates = [_make_candidate(final_rank=1)]
+        content = self.svc.build_run_notification(run=self.run, candidates=candidates)
+        # Should still have the normal title
+        self.assertIn("推荐", content)
+
+
 if __name__ == "__main__":
     unittest.main()

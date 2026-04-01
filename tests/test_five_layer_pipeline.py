@@ -434,5 +434,168 @@ class Phase2BDispatchTestCase(unittest.TestCase):
         self.assertIsNotNone(candidate.market_regime)
 
 
+class Phase3ATradePlanTestCase(unittest.TestCase):
+    """Phase 3A: 交易计划生成 集成测试。"""
+
+    def _make_service(self):
+        from src.services.screening_task_service import ScreeningTaskService
+
+        db_mock = MagicMock()
+        db_mock.batch_get_instrument_board_names.return_value = {
+            "600519": ["白酒"],
+        }
+        db_mock.list_sector_heat_history.return_value = []
+
+        svc = ScreeningTaskService.__new__(ScreeningTaskService)
+        svc.db = db_mock
+        svc.config = MagicMock()
+        svc.config.screening_market_guard_enabled = False
+        svc.config.screening_market_guard_index = "sh000001"
+        svc._theme_context = None
+        svc._skill_manager = None
+
+        sync_mock = MagicMock()
+        sync_mock.fetcher_manager.get_market_stats.return_value = {
+            "limit_up_count": 30, "limit_down_count": 10,
+            "up_count": 2500, "down_count": 1500,
+        }
+        svc._market_data_sync_service = sync_mock
+
+        return svc
+
+    def _make_snapshot_df(self):
+        import pandas as pd
+        return pd.DataFrame([
+            {"code": "600519", "name": "贵州茅台", "pct_chg": 5.0, "volume_ratio": 1.5,
+             "turnover_rate": 2.0, "close": 100.0, "ma5": 98.0, "ma10": 96.0,
+             "ma20": 94.0, "ma60": 90.0, "is_limit_up": False,
+             "above_ma100": True, "gap_breakaway": False},
+        ])
+
+    def test_probe_entry_has_trade_plan(self):
+        """probe_entry 候选应有 trade_plan_json，含 stop_loss_rule。"""
+        svc = self._make_service()
+        # TREND_BREAKOUT + ma100_breakout_days=3 → HIGH maturity → probe_entry
+        candidate = ScreeningCandidateRecord(
+            code="600519", name="贵州茅台", rank=1, rule_score=80.0,
+            rule_hits=["hit"],
+            factor_snapshot={"pct_chg": 5.0, "leader_score": 30.0,
+                             "extreme_strength_score": 40.0, "has_stop_loss": True,
+                             "ma100_breakout_days": 3},
+            matched_strategies=["ma100_60min_combined"],
+            strategy_scores={"ma100_60min_combined": 50.0},
+            setup_type="trend_breakout",
+        )
+
+        guard = MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0)
+        svc._apply_five_layer_decision(
+            selected=[candidate],
+            snapshot_df=self._make_snapshot_df(),
+            effective_trade_date=date(2026, 3, 31),
+            guard_result=guard,
+        )
+
+        self.assertEqual(candidate.trade_stage, "probe_entry")
+        self.assertIsNotNone(candidate.trade_plan_json)
+
+        import json
+        plan = json.loads(candidate.trade_plan_json)
+        self.assertIsNotNone(plan["stop_loss_rule"])
+        self.assertIn("止损", plan["stop_loss_rule"])
+        self.assertIsNone(plan["add_rule"])  # probe_entry 无加仓
+        self.assertIsNotNone(plan["invalidation_rule"])
+
+    def test_watch_has_no_trade_plan(self):
+        """watch 候选 trade_plan_json 为 None。"""
+        svc = self._make_service()
+        # NONE setup → watch
+        candidate = ScreeningCandidateRecord(
+            code="600519", name="贵州茅台", rank=1, rule_score=30.0,
+            rule_hits=[],
+            factor_snapshot={"pct_chg": 1.0, "leader_score": 10.0,
+                             "extreme_strength_score": 10.0, "has_stop_loss": False},
+            matched_strategies=[],
+            strategy_scores={},
+            setup_type=None,
+        )
+
+        guard = MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0)
+        svc._apply_five_layer_decision(
+            selected=[candidate],
+            snapshot_df=self._make_snapshot_df(),
+            effective_trade_date=date(2026, 3, 31),
+            guard_result=guard,
+        )
+
+        self.assertEqual(candidate.trade_stage, "watch")
+        self.assertIsNone(getattr(candidate, "trade_plan_json", None))
+
+    def test_trade_plan_json_persists_to_db(self):
+        """trade_plan_json 能正确写入 DB。"""
+        import tempfile, os, json
+
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "test.db")
+        os.environ["DATABASE_PATH"] = db_path
+
+        from src.config import Config
+        from src.storage import DatabaseManager
+
+        Config.reset_instance()
+        DatabaseManager.reset_instance()
+        db = DatabaseManager.get_instance()
+
+        try:
+            run_id = "test-run-3a"
+            db.create_screening_run(
+                run_id=run_id,
+                trade_date=date(2026, 3, 31),
+                trigger_type="manual",
+            )
+
+            trade_plan = {
+                "initial_position": "1/5仓",
+                "stop_loss_rule": "跌破MA20止损",
+                "add_rule": None,
+                "take_profit_plan": "沿MA10移动止盈",
+                "invalidation_rule": "买入后3个交易日未启动则离场",
+                "risk_level": "medium",
+                "holding_expectation": "1~2周波段",
+            }
+
+            candidates = [{
+                "code": "600519",
+                "name": "贵州茅台",
+                "rank": 1,
+                "rule_score": 80.0,
+                "selected_for_ai": True,
+                "matched_strategies": ["trend_breakout"],
+                "rule_hits": ["hit1"],
+                "factor_snapshot": {"pct_chg": 5.0},
+                "trade_stage": "probe_entry",
+                "market_regime": "balanced",
+                "entry_maturity": "high",
+                "risk_level": "medium",
+                "theme_position": "main_theme",
+                "candidate_pool_level": "focus_list",
+                "setup_type": "trend_breakout",
+                "trade_plan_json": json.dumps(trade_plan, ensure_ascii=False),
+            }]
+
+            db.save_screening_candidates(run_id=run_id, candidates=candidates)
+
+            rows = db.list_screening_candidates(run_id=run_id)
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertIsNotNone(row.get("trade_plan"))
+            self.assertEqual(row["trade_plan"]["stop_loss_rule"], "跌破MA20止损")
+            self.assertEqual(row["trade_plan"]["holding_expectation"], "1~2周波段")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            os.environ.pop("DATABASE_PATH", None)
+            temp_dir.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()

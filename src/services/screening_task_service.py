@@ -717,6 +717,7 @@ class ScreeningTaskService:
         from src.services.trade_stage_judge import TradeStageJudge
         from src.services.strategy_dispatcher import StrategyDispatcher
         from src.services.setup_resolver import SetupResolver
+        from src.services.trade_plan_builder import TradePlanBuilder
 
         if not selected:
             return
@@ -782,6 +783,9 @@ class ScreeningTaskService:
         except Exception as exc:
             logger.warning("five_layer: failed to build dispatcher/resolver (degraded): %s", exc)
 
+        # ── Phase 3A: 交易计划生成器 ──────────────────────────────────────────
+        plan_builder = TradePlanBuilder()
+
         # ── 逐票裁决 L2→L5 ────────────────────────────────────────────────
         for candidate in selected:
             fs = candidate.factor_snapshot or {}
@@ -840,6 +844,16 @@ class ScreeningTaskService:
                 has_stop_loss=has_stop,
             )
 
+            # Phase 3A: 交易计划生成
+            trade_plan = plan_builder.build(
+                trade_stage=trade_stage,
+                setup_type=st,
+                entry_maturity=entry_mat,
+                risk_level=market_env.risk_level,
+                pool_level=pool_level,
+                factor_snapshot=fs,
+            )
+
             # 写回 candidate
             candidate.trade_stage = trade_stage.value
             candidate.market_regime = market_env.regime.value
@@ -847,6 +861,20 @@ class ScreeningTaskService:
             candidate.candidate_pool_level = pool_level.value
             candidate.theme_position = tp.value
             candidate.risk_level = market_env.risk_level.value
+            if trade_plan is not None:
+                import json as _json
+                candidate.trade_plan_json = _json.dumps(
+                    {
+                        "initial_position": trade_plan.initial_position,
+                        "add_rule": trade_plan.add_rule,
+                        "stop_loss_rule": trade_plan.stop_loss_rule,
+                        "take_profit_plan": trade_plan.take_profit_plan,
+                        "invalidation_rule": trade_plan.invalidation_rule,
+                        "risk_level": trade_plan.risk_level.value,
+                        "holding_expectation": trade_plan.holding_expectation,
+                    },
+                    ensure_ascii=False,
+                )
 
         logger.info(
             "five_layer: %d candidates processed, regime=%s",

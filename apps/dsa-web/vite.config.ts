@@ -13,7 +13,7 @@ export default defineConfig({
   ],
   server: {
     host: "0.0.0.0", // 允许公网访问
-    port: 5173, // 默认端口
+    port: 1688, // 默认端口
     proxy: {
       "/api": {
         target: "http://127.0.0.1:2026",

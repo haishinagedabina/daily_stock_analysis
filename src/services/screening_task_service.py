@@ -497,8 +497,9 @@ class ScreeningTaskService:
                 rejected_count=len(getattr(evaluation, "rejected", []) or []),
             )
             # ═══ L1→L5 五层决策链路 (Phase 2A) ═══
+            decision_context = None
             try:
-                self._apply_five_layer_decision(
+                decision_context = self._apply_five_layer_decision(
                     selected=selected,
                     snapshot_df=snapshot_df,
                     effective_trade_date=effective_trade_date,
@@ -506,6 +507,12 @@ class ScreeningTaskService:
                 )
             except Exception as exc:
                 logger.warning("five_layer decision failed (degraded): %s", exc)
+
+            if decision_context is not None:
+                try:
+                    self._update_run_context(run_id, decision_context=decision_context)
+                except Exception as exc:
+                    logger.warning("five_layer: failed to persist decision_context: %s", exc)
 
             # Skip AI enriching for extreme_strength_combo strategy
             ai_results: Dict[str, Dict[str, Any]] = {}
@@ -727,8 +734,11 @@ class ScreeningTaskService:
         snapshot_df: Any,
         effective_trade_date: date,
         guard_result: Any = None,
-    ) -> None:
-        """L1→L5 五层决策链路：就地修改 selected 中每个 candidate 的五层字段。"""
+    ) -> Optional[Dict[str, Any]]:
+        """L1→L5 五层决策链路：就地修改 selected 中每个 candidate 的五层字段。
+
+        Returns decision_context dict for L1/L2 snapshot, or None on failure.
+        """
         from src.core.market_guard import MarketGuardResult
         from src.schemas.trading_types import (
             MarketRegime,
@@ -739,6 +749,7 @@ class ScreeningTaskService:
         from src.services.sector_heat_engine import SectorHeatEngine
         from src.services.theme_aggregation_service import ThemeAggregationService
         from src.services.theme_position_resolver import ThemePositionResolver
+        from src.services.theme_mapping_registry import ThemeMappingRegistry
         from src.services.entry_maturity_assessor import EntryMaturityAssessor
         from src.services.candidate_pool_classifier import CandidatePoolClassifier
         from src.services.trade_stage_judge import TradeStageJudge
@@ -785,16 +796,25 @@ class ScreeningTaskService:
             logger.warning("five_layer L2 SectorHeatEngine failed (degraded): %s", exc)
 
         try:
-            agg_service = ThemeAggregationService()
+            theme_registry = ThemeMappingRegistry()
+            if theme_registry.is_empty:
+                logger.warning("five_layer: ThemeMappingRegistry loaded 0 mappings; theme tagging degraded")
+        except Exception as exc:
+            logger.warning("five_layer ThemeMappingRegistry failed (degraded): %s", exc)
+            theme_registry = None
+
+        try:
+            agg_service = ThemeAggregationService(registry=theme_registry)
             theme_results = agg_service.aggregate(sector_results)
         except Exception as exc:
             logger.warning("five_layer L2 ThemeAggregation failed (degraded): %s", exc)
+            theme_registry = None  # 保持 resolver 与 aggregation 状态一致
 
         # ── 准备 per-stock 数据 ────────────────────────────────────────────
         all_codes = [c.code for c in selected]
         board_map = self.db.batch_get_instrument_board_names(all_codes)
 
-        theme_resolver = ThemePositionResolver(sector_results, theme_results, self._theme_context)
+        theme_resolver = ThemePositionResolver(sector_results, theme_results, self._theme_context, registry=theme_registry)
         maturity_assessor = EntryMaturityAssessor()
         pool_classifier = CandidatePoolClassifier()
         stage_judge = TradeStageJudge()
@@ -907,6 +927,36 @@ class ScreeningTaskService:
             "five_layer: %d candidates processed, regime=%s",
             len(selected), market_env.regime.value,
         )
+
+        # ── 构建 decision_context 快照（供前端 L1/L2 展示） ──────────────────
+        decision_context: Dict[str, Any] = {
+            "market_environment": {
+                "market_regime": market_env.regime.value,
+                "risk_level": market_env.risk_level.value,
+                "index_price": getattr(market_env, "index_price", None),
+                "index_ma100": getattr(market_env, "index_ma100", None),
+                "is_safe": guard_result.is_safe if guard_result else None,
+                "message": guard_result.message if guard_result else None,
+            },
+            "sector_heat_results": [
+                {
+                    "board_name": s.board_name,
+                    "board_type": s.board_type,
+                    "sector_hot_score": s.sector_hot_score,
+                    "sector_status": s.sector_status,
+                    "sector_stage": s.sector_stage,
+                    "canonical_theme": theme_registry.resolve_tag(s.board_name) if theme_registry else s.board_name,
+                    "stock_count": s.stock_count,
+                    "up_count": s.up_count,
+                    "limit_up_count": getattr(s, "limit_up_count", 0),
+                }
+                for s in sector_results
+                if s.sector_status in ("hot", "warm")
+            ],
+            "hot_theme_count": sum(1 for s in sector_results if s.sector_status == "hot"),
+            "warm_theme_count": sum(1 for s in sector_results if s.sector_status == "warm"),
+        }
+        return decision_context
 
     def _get_strategy_rules_for_dispatch(self) -> List:
         """Retrieve strategy rules metadata for Phase 2B dispatch/resolve."""
@@ -1428,6 +1478,9 @@ class ScreeningTaskService:
         ]
         enriched["warnings"] = [str(item).strip() for item in (snapshot.get("warnings") or []) if str(item).strip()]
         enriched["sync_failure_ratio"] = float(snapshot.get("sync_failure_ratio") or 0.0)
+        enriched["strategy_names"] = snapshot.get("strategy_names")
+        # 五层决策上下文快照（L1/L2）
+        enriched["decision_context"] = snapshot.get("decision_context")
         return enriched
 
     @staticmethod

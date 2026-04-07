@@ -66,11 +66,67 @@ export interface ScreeningRun {
   notificationSentAt?: string;
   notificationError?: string;
   strategyNames?: string[];
+  decisionContext?: DecisionContext;
 }
 
 export interface ScreeningRunListResponse {
   total: number;
   items: ScreeningRun[];
+}
+
+// ============ 五层决策系统类型 ============
+
+export type MarketRegime = 'aggressive' | 'balanced' | 'defensive' | 'stand_aside';
+export type ThemePosition = 'main_theme' | 'secondary_theme' | 'fading_theme' | 'non_theme';
+export type TradeStage = 'stand_aside' | 'watch' | 'focus' | 'probe_entry' | 'add_on_strength' | 'reject';
+export type EntryMaturity = 'low' | 'medium' | 'high';
+export type CandidatePoolLevel = 'leader_pool' | 'focus_list' | 'watchlist';
+export type SetupType =
+  | 'bottom_divergence_breakout'
+  | 'low123_breakout'
+  | 'trend_breakout'
+  | 'trend_pullback'
+  | 'gap_breakout'
+  | 'limitup_structure'
+  | 'none';
+
+export interface TradePlan {
+  initialPosition?: string;
+  addRule?: string;
+  stopLossRule?: string;
+  takeProfitPlan?: string;
+  invalidationRule?: string;
+  riskLevel?: string;
+  holdingExpectation?: string;
+}
+
+export interface MarketEnvironmentSnapshot {
+  marketRegime?: MarketRegime;
+  riskLevel?: string;
+  indexName?: string;
+  indexPrice?: number;
+  indexMa100?: number;
+  isSafe?: boolean;
+  message?: string;
+}
+
+export interface SectorHeatSnapshot {
+  boardName: string;
+  boardType: string;
+  sectorHotScore: number;
+  sectorStatus: string;
+  sectorStage: string;
+  canonicalTheme?: string;
+  stockCount: number;
+  upCount: number;
+  limitUpCount: number;
+}
+
+export interface DecisionContext {
+  marketEnvironment?: MarketEnvironmentSnapshot;
+  sectorHeatResults: SectorHeatSnapshot[];
+  hotThemeCount: number;
+  warmThemeCount: number;
 }
 
 // ============ 候选 ============
@@ -94,6 +150,19 @@ export interface ScreeningCandidate {
   finalScore?: number;
   finalRank?: number;
   matchedStrategies?: string[];
+  // 五层决策系统字段
+  tradeStage?: TradeStage;
+  setupType?: SetupType;
+  entryMaturity?: EntryMaturity;
+  riskLevel?: string;
+  marketRegime?: MarketRegime;
+  themePosition?: ThemePosition;
+  candidatePoolLevel?: CandidatePoolLevel;
+  tradePlan?: TradePlan;
+  // AI Review Protocol
+  aiTradeStage?: string;
+  aiReasoning?: string;
+  aiConfidence?: number;
 }
 
 export interface ScreeningCandidateListResponse {
@@ -307,3 +376,73 @@ export function getStageIndex(status: ScreeningRunStatus): number {
 export function isTerminalStatus(status: ScreeningRunStatus): boolean {
   return ['completed', 'completed_with_ai_degraded', 'failed'].includes(status);
 }
+
+// ============ 五层决策标签映射 ============
+
+export const TRADE_STAGE_LABELS: Record<string, string> = {
+  probe_entry: '试探入场',
+  add_on_strength: '加仓确认',
+  focus: '重点关注',
+  watch: '持续观察',
+  stand_aside: '暂时回避',
+  reject: '不参与',
+};
+
+export const TRADE_STAGE_COLORS: Record<string, string> = {
+  probe_entry: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+  add_on_strength: 'bg-green-500/20 text-green-400 border-green-500/30',
+  focus: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  watch: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+  stand_aside: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+  reject: 'bg-red-500/20 text-red-400 border-red-500/30',
+};
+
+export const THEME_POSITION_LABELS: Record<string, string> = {
+  main_theme: '主力题材',
+  secondary_theme: '次要题材',
+  fading_theme: '退潮题材',
+  non_theme: '非题材',
+};
+
+export const THEME_POSITION_COLORS: Record<string, string> = {
+  main_theme: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  secondary_theme: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  fading_theme: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+  non_theme: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+};
+
+export const MARKET_REGIME_LABELS: Record<string, string> = {
+  aggressive: '积极进攻',
+  balanced: '均衡配置',
+  defensive: '防御为主',
+  stand_aside: '空仓观望',
+};
+
+export const MARKET_REGIME_COLORS: Record<string, string> = {
+  aggressive: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+  balanced: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  defensive: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+  stand_aside: 'bg-red-500/20 text-red-400 border-red-500/30',
+};
+
+export const SETUP_TYPE_LABELS: Record<string, string> = {
+  bottom_divergence_breakout: '底背离突破',
+  low123_breakout: '低位123突破',
+  trend_breakout: '趋势突破',
+  trend_pullback: '趋势回调',
+  gap_breakout: '跳空突破',
+  limitup_structure: '涨停结构',
+  none: '无',
+};
+
+export const POOL_LEVEL_LABELS: Record<string, string> = {
+  leader_pool: '龙头池',
+  focus_list: '关注池',
+  watchlist: '观察池',
+};
+
+export const ENTRY_MATURITY_LABELS: Record<string, string> = {
+  high: '成熟',
+  medium: '发展中',
+  low: '早期',
+};

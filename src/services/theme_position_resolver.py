@@ -15,11 +15,14 @@ resolve(stock_boards) 处理单只股票。
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from src.schemas.trading_types import ThemeDecision, ThemePosition
 from src.services.sector_heat_engine import SectorHeatResult
 from src.services.theme_aggregation_service import ThemeAggregateResult
+
+if TYPE_CHECKING:
+    from src.services.theme_mapping_registry import ThemeMappingRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,7 @@ class ThemePositionResolver:
         sector_results: List[SectorHeatResult],
         theme_results: List[ThemeAggregateResult],
         theme_context: Optional[Dict[str, dict]] = None,
+        registry: Optional["ThemeMappingRegistry"] = None,
     ) -> None:
         self._sector_map: Dict[str, SectorHeatResult] = {
             s.board_name: s for s in sector_results
@@ -40,6 +44,7 @@ class ThemePositionResolver:
             t.theme_tag: t for t in theme_results
         }
         self._theme_context = theme_context or {}
+        self._registry = registry
 
     def resolve(self, stock_boards: List[str]) -> ThemeDecision:
         if not stock_boards:
@@ -53,12 +58,20 @@ class ThemePositionResolver:
         # 基于盘面判定 theme_position
         position = self._position_from_sector(primary_sector)
 
-        # 题材分数
-        theme_result = self._theme_map.get(primary_board)
+        # 题材标签: 有 registry 时用 canonical_tag，否则用 board_name
+        theme_tag = primary_board
+        if self._registry is not None:
+            theme_tag = self._registry.resolve_tag(primary_board)
+
+        # 题材分数: 优先从 theme_map 取（可能是合并后的结果）
+        theme_result = self._theme_map.get(theme_tag)
+        if theme_result is None:
+            # fallback: 用原始 board_name 查找（无 registry 时的路径）
+            theme_result = self._theme_map.get(primary_board)
         theme_score = theme_result.theme_score if theme_result else primary_sector.sector_hot_score
 
         return ThemeDecision(
-            theme_tag=primary_board,
+            theme_tag=theme_tag,
             theme_score=theme_score,
             theme_position=position,
             leader_score=0.0,

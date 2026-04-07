@@ -9,6 +9,8 @@ TDD RED 阶段：ThemeAggregationService + ThemePositionResolver 单元测试。
 4. 冷启动 / 非热点模式优雅降级
 """
 
+import os
+import tempfile
 import unittest
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -19,6 +21,7 @@ from src.services.theme_aggregation_service import (
     ThemeAggregateResult,
     ThemeAggregationService,
 )
+from src.services.theme_mapping_registry import ThemeMappingRegistry
 from src.services.theme_position_resolver import ThemePositionResolver
 
 
@@ -251,6 +254,127 @@ class ThemeDecisionFieldsTestCase(unittest.TestCase):
         self.assertIsInstance(decision.theme_score, float)
         self.assertIsInstance(decision.theme_position, ThemePosition)
         self.assertIsInstance(decision.sector_strength, float)
+
+
+# ── ThemeMappingRegistry 集成测试 ──────────────────────────────────────────
+
+_INTEGRATION_YAML = """\
+themes:
+  - canonical_tag: "AI大模型"
+    boards:
+      - board_name: "AIGC概念"
+        priority: 100
+      - board_name: "多模态AI"
+        priority: 90
+  - canonical_tag: "半导体"
+    boards:
+      - board_name: "半导体概念"
+        priority: 100
+"""
+
+
+def _write_temp_yaml(content: str) -> str:
+    fd, path = tempfile.mkstemp(suffix=".yaml")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
+
+
+class ThemeAggregationWithRegistryTestCase(unittest.TestCase):
+    """ThemeAggregationService + ThemeMappingRegistry 集成。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._yaml_path = _write_temp_yaml(_INTEGRATION_YAML)
+        cls.registry = ThemeMappingRegistry(config_path=cls._yaml_path)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        os.unlink(cls._yaml_path)
+
+    def test_merges_boards_with_same_tag(self) -> None:
+        """两板块映射同一 canonical_tag → 合并为一个 ThemeAggregateResult。"""
+        sectors = [
+            _hot_sector("AIGC概念", 80.0, status="hot", stage="expand"),
+            _warm_sector("多模态AI", 60.0),
+        ]
+        service = ThemeAggregationService(registry=self.registry)
+        results = service.aggregate(sectors)
+
+        # 应合并为一个 "AI大模型" 题材
+        tags = [r.theme_tag for r in results]
+        self.assertIn("AI大模型", tags)
+        self.assertNotIn("AIGC概念", tags)
+        self.assertNotIn("多模态AI", tags)
+
+        ai_theme = [r for r in results if r.theme_tag == "AI大模型"][0]
+        self.assertIn("AIGC概念", ai_theme.related_sectors)
+        self.assertIn("多模态AI", ai_theme.related_sectors)
+        self.assertEqual(ai_theme.primary_sector, "AIGC概念")  # 高分
+        self.assertEqual(ai_theme.theme_score, 80.0)
+
+    def test_unmapped_boards_pass_through(self) -> None:
+        """未映射板块仍以 board_name 作为 theme_tag。"""
+        sectors = [_hot_sector("白酒", 75.0)]
+        service = ThemeAggregationService(registry=self.registry)
+        results = service.aggregate(sectors)
+
+        tags = [r.theme_tag for r in results]
+        self.assertIn("白酒", tags)
+
+    def test_no_registry_unchanged(self) -> None:
+        """无 registry → 与原始行为一致。"""
+        sectors = [
+            _hot_sector("AIGC概念", 80.0),
+            _warm_sector("多模态AI", 60.0),
+        ]
+        service = ThemeAggregationService()  # no registry
+        results = service.aggregate(sectors)
+
+        tags = [r.theme_tag for r in results]
+        self.assertIn("AIGC概念", tags)
+        self.assertIn("多模态AI", tags)
+        self.assertEqual(len(results), 2)
+
+
+class ThemePositionWithRegistryTestCase(unittest.TestCase):
+    """ThemePositionResolver + ThemeMappingRegistry 集成。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._yaml_path = _write_temp_yaml(_INTEGRATION_YAML)
+        cls.registry = ThemeMappingRegistry(config_path=cls._yaml_path)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        os.unlink(cls._yaml_path)
+
+    def test_resolver_uses_canonical_tag(self) -> None:
+        """有 registry 时 theme_tag 使用 canonical_tag。"""
+        sectors = [_hot_sector("AIGC概念", 80.0, status="hot", stage="expand")]
+        service = ThemeAggregationService(registry=self.registry)
+        themes = service.aggregate(sectors)
+
+        resolver = ThemePositionResolver(
+            sector_results=sectors, theme_results=themes,
+            registry=self.registry,
+        )
+        decision = resolver.resolve(stock_boards=["AIGC概念"])
+
+        self.assertEqual(decision.theme_tag, "AI大模型")
+        self.assertEqual(decision.theme_position, ThemePosition.MAIN_THEME)
+
+    def test_resolver_no_registry_uses_board_name(self) -> None:
+        """无 registry 时 theme_tag = board_name（向后兼容）。"""
+        sectors = [_hot_sector("AIGC概念", 80.0, status="hot", stage="expand")]
+        themes = ThemeAggregationService().aggregate(sectors)
+
+        resolver = ThemePositionResolver(
+            sector_results=sectors, theme_results=themes,
+        )
+        decision = resolver.resolve(stock_boards=["AIGC概念"])
+
+        self.assertEqual(decision.theme_tag, "AIGC概念")
 
 
 if __name__ == "__main__":

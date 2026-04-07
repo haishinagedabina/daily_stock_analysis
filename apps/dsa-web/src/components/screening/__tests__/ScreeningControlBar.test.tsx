@@ -1,16 +1,8 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScreeningControlBar } from '../ScreeningControlBar';
 
 const mockStore = {
-  strategies: [
-    { name: 'volume_breakout', displayName: '放量突破', description: 'd', category: 'trend', hasScreeningRules: true },
-    { name: 'bottom_volume', displayName: '底部放量', description: 'd', category: 'reversal', hasScreeningRules: true },
-    { name: 'legacy', displayName: '旧策略', description: 'd', category: 'trend', hasScreeningRules: false },
-  ],
-  strategiesLoading: false,
-  selectedStrategies: [] as string[],
-  setSelectedStrategies: vi.fn(),
   mode: 'balanced' as const,
   setMode: vi.fn(),
   tradeDate: '2026-03-18',
@@ -33,26 +25,15 @@ vi.mock('../../../stores/screeningStore', () => ({
 describe('ScreeningControlBar', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockStore.selectedStrategies = [];
     mockStore.isRunning = false;
     mockStore.blockingDialog = null;
   });
 
-  it('renders strategy tags', () => {
+  it('shows start button that is always enabled', () => {
     render(<ScreeningControlBar />);
-    expect(screen.getByText('放量突破')).toBeInTheDocument();
-    expect(screen.getByText('底部放量')).toBeInTheDocument();
-    expect(screen.getByText('旧策略')).toBeInTheDocument();
-  });
-
-  it('shows start button', () => {
-    render(<ScreeningControlBar />);
-    expect(screen.getByRole('button', { name: /开始筛选/ })).toBeInTheDocument();
-  });
-
-  it('disables start button when no strategies selected', () => {
-    render(<ScreeningControlBar />);
-    expect(screen.getByRole('button', { name: /开始筛选/ })).toBeDisabled();
+    const btn = screen.getByRole('button', { name: /开始筛选/ });
+    expect(btn).toBeInTheDocument();
+    expect(btn).not.toBeDisabled();
   });
 
   it('shows reset button', () => {
@@ -66,20 +47,22 @@ describe('ScreeningControlBar', () => {
     expect(screen.getByRole('button', { name: /筛选中/ })).toBeDisabled();
   });
 
-  it('renders mode select', () => {
-    render(<ScreeningControlBar />);
-    expect(screen.getByLabelText('筛选模式')).toBeInTheDocument();
-  });
-
   it('renders date input', () => {
     render(<ScreeningControlBar />);
     expect(screen.getByLabelText('交易日')).toBeInTheDocument();
   });
 
-  it('uses the new default candidate and AI limits', () => {
+  it('shows advanced settings when toggled', () => {
     render(<ScreeningControlBar />);
+    const advBtn = screen.getByText('高级');
+    fireEvent.click(advBtn);
     expect(document.getElementById('candidate-limit')).toHaveValue(5);
     expect(document.getElementById('ai-top-k')).toHaveValue(2);
+  });
+
+  it('hides advanced settings by default', () => {
+    render(<ScreeningControlBar />);
+    expect(document.getElementById('candidate-limit')).toBeNull();
   });
 
   it('renders blocking dialog when present', () => {
@@ -87,9 +70,7 @@ describe('ScreeningControlBar', () => {
       title: '今日数据未就绪',
       message: '当前时间未到 15:00',
     };
-
     render(<ScreeningControlBar />);
-
     expect(screen.getByText('今日数据未就绪')).toBeInTheDocument();
     expect(screen.getByText('当前时间未到 15:00')).toBeInTheDocument();
   });

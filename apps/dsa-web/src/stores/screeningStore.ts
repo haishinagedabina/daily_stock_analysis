@@ -7,9 +7,8 @@ import type {
   ScreeningCandidateDetail,
   ScreeningMode,
   ScreeningRun,
-  ScreeningStrategy,
 } from "../types/screening";
-import { isTerminalStatus, TARGET_STRATEGIES } from "../types/screening";
+import { isTerminalStatus } from "../types/screening";
 import {
   buildTodayScreeningBlockDialog,
   getTodayInShanghai,
@@ -21,12 +20,7 @@ interface ScreeningBlockingDialog {
 }
 
 interface ScreeningState {
-  // strategies
-  strategies: ScreeningStrategy[];
-  strategiesLoading: boolean;
-
   // config
-  selectedStrategies: string[];
   mode: ScreeningMode;
   candidateLimit: number;
   aiTopK: number;
@@ -51,8 +45,6 @@ interface ScreeningState {
   blockingDialog: ScreeningBlockingDialog | null;
 
   // actions
-  fetchStrategies: () => Promise<void>;
-  setSelectedStrategies: (names: string[]) => void;
   setMode: (mode: ScreeningMode) => void;
   setCandidateLimit: (limit: number) => void;
   setAiTopK: (k: number) => void;
@@ -76,9 +68,6 @@ interface ScreeningState {
 const today = () => getTodayInShanghai();
 
 export const useScreeningStore = create<ScreeningState>((set, get) => ({
-  strategies: [],
-  strategiesLoading: false,
-  selectedStrategies: [],
   mode: "balanced",
   candidateLimit: 5,
   aiTopK: 2,
@@ -94,44 +83,13 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
   error: null,
   blockingDialog: null,
 
-  fetchStrategies: async () => {
-    set({ strategiesLoading: true });
-    try {
-      const data = await screeningApi.getStrategies();
-      const backendNames = new Set(
-        data.strategies
-          .filter((s) => s.hasScreeningRules)
-          .map((s) => s.name),
-      );
-      // Show only the 4 target strategies; mark as enabled only if backend has rules
-      const merged = TARGET_STRATEGIES.map((t) => ({
-        ...t,
-        hasScreeningRules: t.hasScreeningRules && backendNames.has(t.name),
-      }));
-      set({
-        strategies: merged,
-        selectedStrategies: [],
-        strategiesLoading: false,
-      });
-    } catch {
-      // On API failure, still show target strategies with predefined states
-      set({
-        strategies: TARGET_STRATEGIES,
-        selectedStrategies: [],
-        strategiesLoading: false,
-      });
-    }
-  },
-
-  setSelectedStrategies: (names) => set({ selectedStrategies: names }),
   setMode: (mode) => set({ mode }),
   setCandidateLimit: (limit) => set({ candidateLimit: limit }),
   setAiTopK: (k) => set({ aiTopK: k }),
   setTradeDate: (date) => set({ tradeDate: date }),
 
   startScreening: async () => {
-    const { mode, candidateLimit, aiTopK, selectedStrategies, tradeDate } =
-      get();
+    const { mode, candidateLimit, aiTopK, tradeDate } = get();
     const blockingDialog = buildTodayScreeningBlockDialog(tradeDate);
     if (blockingDialog) {
       set({
@@ -157,7 +115,6 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
           mode,
           candidate_limit: candidateLimit,
           ai_top_k: aiTopK,
-          strategies: selectedStrategies,
         },
         notificationAttempts: 0,
       },
@@ -172,8 +129,6 @@ export const useScreeningStore = create<ScreeningState>((set, get) => ({
         mode,
         candidateLimit,
         aiTopK,
-        strategies:
-          selectedStrategies.length > 0 ? selectedStrategies : undefined,
         tradeDate: tradeDate || undefined,
       });
       set({

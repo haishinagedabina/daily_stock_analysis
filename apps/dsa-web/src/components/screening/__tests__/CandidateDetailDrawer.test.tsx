@@ -82,8 +82,13 @@ describe('CandidateDetailDrawer', () => {
     expect(screen.getByText('建议逢低布局')).toBeInTheDocument();
   });
 
-  it('shows matched strategies', () => {
-    mockStore.selectedCandidate = mockCandidate;
+  it('shows matched strategies for five-layer candidates', () => {
+    mockStore.selectedCandidate = {
+      ...mockCandidate,
+      tradeStage: 'probe_entry',
+      marketRegime: 'balanced',
+      matchedStrategies: ['volume_breakout', 'ma_golden_cross'],
+    };
     render(<CandidateDetailDrawer />);
     expect(screen.getByText('volume_breakout')).toBeInTheDocument();
     expect(screen.getByText('ma_golden_cross')).toBeInTheDocument();

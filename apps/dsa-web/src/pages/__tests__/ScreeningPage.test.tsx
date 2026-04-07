@@ -4,9 +4,6 @@ import ScreeningPage from '../ScreeningPage';
 
 vi.mock('../../stores/screeningStore', () => {
   const store = {
-    strategies: [],
-    strategiesLoading: false,
-    selectedStrategies: [],
     mode: 'balanced' as const,
     candidateLimit: 30,
     aiTopK: 5,
@@ -21,9 +18,7 @@ vi.mock('../../stores/screeningStore', () => {
     selectedCandidate: null,
     error: null,
     blockingDialog: null,
-    fetchStrategies: vi.fn(),
     fetchRunHistory: vi.fn(),
-    setSelectedStrategies: vi.fn(),
     setMode: vi.fn(),
     setCandidateLimit: vi.fn(),
     setAiTopK: vi.fn(),
@@ -61,21 +56,15 @@ describe('ScreeningPage', () => {
     expect(screen.getByText('SCREENING')).toBeInTheDocument();
   });
 
-  it('renders control bar', () => {
-    render(<ScreeningPage />);
-    expect(screen.getByText('筛选配置')).toBeInTheDocument();
-  });
-
   it('renders run panel', () => {
     render(<ScreeningPage />);
     expect(screen.getByTestId('screening-run-panel')).toBeInTheDocument();
   });
 
-  it('calls fetchStrategies and fetchRunHistory on mount', async () => {
+  it('calls fetchRunHistory on mount', async () => {
     const { useScreeningStore } = await import('../../stores/screeningStore');
     render(<ScreeningPage />);
     const store = useScreeningStore() as unknown as Record<string, unknown>;
-    expect(store.fetchStrategies).toBeDefined();
     expect(store.fetchRunHistory).toBeDefined();
   });
 });

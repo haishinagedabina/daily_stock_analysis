@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useScreeningStore } from '../screeningStore';
 import type { ScreeningRun } from '../../types/screening';
-import { TARGET_STRATEGIES } from '../../types/screening';
 
 vi.mock('../../api/screening', () => ({
   screeningApi: {
@@ -21,9 +20,6 @@ const { screeningApi } = await import('../../api/screening');
 describe('screeningStore', () => {
   beforeEach(() => {
     useScreeningStore.setState({
-      strategies: [],
-      strategiesLoading: false,
-      selectedStrategies: [],
       mode: 'balanced',
       candidateLimit: 5,
       aiTopK: 2,
@@ -42,52 +38,10 @@ describe('screeningStore', () => {
     vi.clearAllMocks();
   });
 
-  describe('fetchStrategies', () => {
-    it('merges backend rules with TARGET_STRATEGIES and auto-selects none', async () => {
-      vi.mocked(screeningApi.getStrategies).mockResolvedValue({
-        strategies: [
-          { name: 'bottom_divergence_double_breakout', displayName: '底背离双突破', description: 'desc', category: 'reversal', hasScreeningRules: true },
-          { name: 'ma100_low123_combined', displayName: 'MA100+低位123结构', description: 'desc', category: 'reversal', hasScreeningRules: true },
-        ],
-      });
-
-      await useScreeningStore.getState().fetchStrategies();
-      const state = useScreeningStore.getState();
-
-      expect(state.strategies).toHaveLength(TARGET_STRATEGIES.length);
-      expect(state.selectedStrategies).toEqual([]);
-      expect(state.strategiesLoading).toBe(false);
-      // Backend has rules for the first two; the rest remain disabled
-      expect(state.strategies.filter(s => s.hasScreeningRules).map(s => s.name)).toEqual([
-        'bottom_divergence_double_breakout',
-        'ma100_low123_combined',
-      ]);
-      expect(state.strategies.filter(s => !s.hasScreeningRules).map(s => s.name)).toEqual([
-        'ma100_60min_combined',
-        'extreme_momentum_combined',
-      ]);
-    });
-
-    it('falls back to TARGET_STRATEGIES on API failure', async () => {
-      vi.mocked(screeningApi.getStrategies).mockRejectedValue(new Error('network'));
-
-      await useScreeningStore.getState().fetchStrategies();
-      const state = useScreeningStore.getState();
-
-      expect(state.strategies).toEqual(TARGET_STRATEGIES);
-      expect(state.strategiesLoading).toBe(false);
-    });
-  });
-
   describe('config actions', () => {
     it('setMode updates mode', () => {
       useScreeningStore.getState().setMode('aggressive');
       expect(useScreeningStore.getState().mode).toBe('aggressive');
-    });
-
-    it('setSelectedStrategies updates selection', () => {
-      useScreeningStore.getState().setSelectedStrategies(['a', 'b']);
-      expect(useScreeningStore.getState().selectedStrategies).toEqual(['a', 'b']);
     });
 
     it('setCandidateLimit updates limit', () => {

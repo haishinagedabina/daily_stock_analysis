@@ -24,6 +24,40 @@ class ScreeningNotifyRequest(BaseModel):
     force: bool = Field(False, description="是否强制补发（仅对 failed/skipped 有效，v1 不允许重发 sent）")
 
 
+# ── 五层决策上下文快照 ─────────────────────────────────────────────────────
+
+class MarketEnvironmentSnapshot(BaseModel):
+    """L1 大盘环境快照。"""
+    market_regime: Optional[str] = None
+    risk_level: Optional[str] = None
+    index_name: str = "上证指数"
+    index_price: Optional[float] = None
+    index_ma100: Optional[float] = None
+    is_safe: Optional[bool] = None
+    message: Optional[str] = None
+
+
+class SectorHeatSnapshotItem(BaseModel):
+    """L2 单个板块热度快照。"""
+    board_name: str
+    board_type: str = "concept"
+    sector_hot_score: float = 0.0
+    sector_status: str = "cold"
+    sector_stage: str = "ferment"
+    canonical_theme: Optional[str] = None
+    stock_count: int = 0
+    up_count: int = 0
+    limit_up_count: int = 0
+
+
+class DecisionContextSnapshot(BaseModel):
+    """L1/L2 决策上下文，附在 ScreeningRunResponse 中返回。"""
+    market_environment: Optional[MarketEnvironmentSnapshot] = None
+    sector_heat_results: List[SectorHeatSnapshotItem] = Field(default_factory=list)
+    hot_theme_count: int = 0
+    warm_theme_count: int = 0
+
+
 class ScreeningRunResponse(BaseModel):
     run_id: str
     mode: Optional[str] = None
@@ -46,6 +80,9 @@ class ScreeningRunResponse(BaseModel):
     notification_attempts: int = 0
     notification_sent_at: Optional[str] = None
     notification_error: Optional[str] = None
+    # 五层决策上下文
+    strategy_names: Optional[List[str]] = None
+    decision_context: Optional[DecisionContextSnapshot] = None
 
 
 class ScreeningRunListResponse(BaseModel):
@@ -81,6 +118,10 @@ class ScreeningCandidateItem(BaseModel):
     theme_position: Optional[str] = None
     candidate_pool_level: Optional[str] = None
     trade_plan: Optional[Dict[str, Any]] = None
+    # -- AI Review Protocol (Phase 3B-1) --
+    ai_trade_stage: Optional[str] = None
+    ai_reasoning: Optional[str] = None
+    ai_confidence: Optional[float] = None
 
 
 class ScreeningAnalysisHistoryRef(BaseModel):

@@ -58,6 +58,9 @@ class ThemePositionResolver:
         # 基于盘面判定 theme_position
         position = self._position_from_sector(primary_sector)
 
+        # 双源融合: 外部热点上下文调整
+        position = self._adjust_with_external_context(position, primary_board)
+
         # 题材标签: 有 registry 时用 canonical_tag，否则用 board_name
         theme_tag = primary_board
         if self._registry is not None:
@@ -117,6 +120,48 @@ class ThemePositionResolver:
         if status == "hot" and stage in ("climax", "fade"):
             return ThemePosition.FADING_THEME
         return ThemePosition.NON_THEME
+
+    def _adjust_with_external_context(
+        self, base_position: ThemePosition, primary_board: str,
+    ) -> ThemePosition:
+        """外部热点上下文融合：盘面 + OpenClaw 双源校验。
+
+        盘面强 + 外部强 → 维持/升级
+        盘面强 + 外部弱 → 维持（盘面先行）
+        盘面弱 + 外部强 → 可升级到 FOLLOWER/SECONDARY
+        盘面弱 + 外部弱 → 维持
+        """
+        if not self._theme_context:
+            return base_position
+
+        external_themes = self._theme_context.get("themes", [])
+        match = self._find_matching_theme(primary_board, external_themes)
+        if not match:
+            return base_position
+
+        ext_score = match.get("heat_score", 0)
+        ext_confidence = match.get("confidence", 0)
+
+        if base_position == ThemePosition.NON_THEME and ext_score >= 70 and ext_confidence >= 0.7:
+            return ThemePosition.FOLLOWER_THEME
+        if base_position == ThemePosition.FOLLOWER_THEME and ext_score >= 80 and ext_confidence >= 0.8:
+            return ThemePosition.SECONDARY_THEME
+
+        return base_position
+
+    @staticmethod
+    def _find_matching_theme(
+        board_name: str, external_themes: List[dict],
+    ) -> Optional[dict]:
+        """在外部题材列表中查找匹配的题材。"""
+        if not external_themes:
+            return None
+        board_lower = board_name.lower()
+        for theme in external_themes:
+            theme_name = theme.get("name", "").lower()
+            if theme_name and (theme_name in board_lower or board_lower in theme_name):
+                return theme
+        return None
 
     def _non_theme_decision(self) -> ThemeDecision:
         return ThemeDecision(

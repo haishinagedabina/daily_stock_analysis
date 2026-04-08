@@ -3,6 +3,7 @@
 TDD：EntryMaturityAssessor + CandidatePoolClassifier + TradeStageJudge 测试。
 """
 
+import inspect
 import unittest
 
 from src.schemas.trading_types import (
@@ -106,54 +107,92 @@ class CandidatePoolClassifierTestCase(unittest.TestCase):
             leader_score=75.0,
             extreme_strength_score=50.0,
             theme_position=ThemePosition.MAIN_THEME,
-            entry_maturity=EntryMaturity.MEDIUM,
-            has_entry_core_hit=True,
         )
         self.assertEqual(result, CandidatePoolLevel.LEADER_POOL)
 
-    def test_leader_pool_via_extreme_strength(self) -> None:
-        """extreme_strength≥80 + entry_core → LEADER_POOL。"""
+    def test_leader_pool_via_extreme_strength_with_theme(self) -> None:
+        """extreme_strength≥80 + MAIN_THEME → LEADER_POOL（必须在题材主线内）。"""
         result = self.classifier.classify(
             leader_score=30.0,
             extreme_strength_score=85.0,
-            theme_position=ThemePosition.NON_THEME,
-            entry_maturity=EntryMaturity.HIGH,
-            has_entry_core_hit=True,
+            theme_position=ThemePosition.MAIN_THEME,
         )
         self.assertEqual(result, CandidatePoolLevel.LEADER_POOL)
 
     def test_focus_list_via_extreme_strength(self) -> None:
-        """extreme_strength≥60 → FOCUS_LIST。"""
+        """extreme_strength≥60 + FOLLOWER_THEME → FOCUS_LIST。"""
         result = self.classifier.classify(
             leader_score=30.0,
             extreme_strength_score=65.0,
-            theme_position=ThemePosition.NON_THEME,
-            entry_maturity=EntryMaturity.LOW,
-            has_entry_core_hit=False,
+            theme_position=ThemePosition.FOLLOWER_THEME,
         )
         self.assertEqual(result, CandidatePoolLevel.FOCUS_LIST)
 
-    def test_focus_list_via_entry_core_and_maturity(self) -> None:
-        """entry_core + maturity≥MEDIUM → FOCUS_LIST。"""
+    def test_focus_list_via_leader_score_secondary(self) -> None:
+        """leader_score≥50 → FOCUS_LIST。"""
         result = self.classifier.classify(
-            leader_score=20.0,
+            leader_score=55.0,
             extreme_strength_score=40.0,
-            theme_position=ThemePosition.NON_THEME,
-            entry_maturity=EntryMaturity.MEDIUM,
-            has_entry_core_hit=True,
+            theme_position=ThemePosition.FOLLOWER_THEME,
         )
         self.assertEqual(result, CandidatePoolLevel.FOCUS_LIST)
 
     def test_watchlist_default(self) -> None:
-        """无特殊条件 → WATCHLIST。"""
+        """低分 + FOLLOWER_THEME → WATCHLIST。"""
         result = self.classifier.classify(
             leader_score=20.0,
             extreme_strength_score=30.0,
-            theme_position=ThemePosition.NON_THEME,
-            entry_maturity=EntryMaturity.LOW,
-            has_entry_core_hit=False,
+            theme_position=ThemePosition.FOLLOWER_THEME,
         )
         self.assertEqual(result, CandidatePoolLevel.WATCHLIST)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CandidatePoolClassifier — 防回退测试
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class CandidatePoolRegressionTestCase(unittest.TestCase):
+    """约束矩阵防回退测试。"""
+
+    def setUp(self) -> None:
+        self.classifier = CandidatePoolClassifier()
+
+    def test_non_theme_cannot_enter_leader_pool(self) -> None:
+        """NON_THEME 无论 extreme_strength 多高都不进 leader_pool。"""
+        result = self.classifier.classify(
+            leader_score=90.0,
+            extreme_strength_score=99.0,
+            theme_position=ThemePosition.NON_THEME,
+        )
+        self.assertNotEqual(result, CandidatePoolLevel.LEADER_POOL)
+        self.assertEqual(result, CandidatePoolLevel.WATCHLIST)
+
+    def test_follower_theme_max_focus_list(self) -> None:
+        """FOLLOWER_THEME 最高 FOCUS_LIST，不可进 LEADER_POOL。"""
+        result = self.classifier.classify(
+            leader_score=90.0,
+            extreme_strength_score=99.0,
+            theme_position=ThemePosition.FOLLOWER_THEME,
+        )
+        self.assertNotEqual(result, CandidatePoolLevel.LEADER_POOL)
+        self.assertEqual(result, CandidatePoolLevel.FOCUS_LIST)
+
+    def test_fading_theme_always_watchlist(self) -> None:
+        """FADING_THEME 固定 WATCHLIST。"""
+        result = self.classifier.classify(
+            leader_score=90.0,
+            extreme_strength_score=99.0,
+            theme_position=ThemePosition.FADING_THEME,
+        )
+        self.assertEqual(result, CandidatePoolLevel.WATCHLIST)
+
+    def test_no_l4_params_in_classifier(self) -> None:
+        """classify() 签名不含 entry_maturity / has_entry_core_hit。"""
+        sig = inspect.signature(self.classifier.classify)
+        param_names = set(sig.parameters.keys())
+        self.assertNotIn("entry_maturity", param_names)
+        self.assertNotIn("has_entry_core_hit", param_names)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -299,6 +338,94 @@ class TradeStageJudgeTestCase(unittest.TestCase):
             has_stop_loss=True,
         )
         self.assertIn(result, [TradeStage.PROBE_ENTRY, TradeStage.ADD_ON_STRENGTH])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TradeStageJudge — 防回退测试
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TradeStageRegressionTestCase(unittest.TestCase):
+    """约束矩阵防回退：仅 MAIN_THEME 可达 ADD_ON_STRENGTH。"""
+
+    def setUp(self) -> None:
+        self.judge = TradeStageJudge()
+
+    def test_secondary_theme_max_probe_entry(self) -> None:
+        """SECONDARY_THEME 最高 PROBE_ENTRY，不可达 ADD_ON_STRENGTH。"""
+        result = self.judge.judge(
+            env=_make_env(MarketRegime.AGGRESSIVE),
+            setup_type=SetupType.TREND_BREAKOUT,
+            entry_maturity=EntryMaturity.HIGH,
+            pool_level=CandidatePoolLevel.LEADER_POOL,
+            theme_position=ThemePosition.SECONDARY_THEME,
+            has_stop_loss=True,
+        )
+        self.assertNotEqual(result, TradeStage.ADD_ON_STRENGTH)
+        self.assertIn(result, [TradeStage.PROBE_ENTRY, TradeStage.FOCUS, TradeStage.WATCH])
+
+    def test_only_main_theme_can_add_on_strength(self) -> None:
+        """遍历所有非 MAIN_THEME 的 theme_position，确认无法达到 ADD_ON_STRENGTH。"""
+        non_main_themes = [
+            ThemePosition.SECONDARY_THEME,
+            ThemePosition.FOLLOWER_THEME,
+            ThemePosition.FADING_THEME,
+            ThemePosition.NON_THEME,
+        ]
+        for tp in non_main_themes:
+            with self.subTest(theme_position=tp):
+                result = self.judge.judge(
+                    env=_make_env(MarketRegime.AGGRESSIVE),
+                    setup_type=SetupType.TREND_BREAKOUT,
+                    entry_maturity=EntryMaturity.HIGH,
+                    pool_level=CandidatePoolLevel.LEADER_POOL,
+                    theme_position=tp,
+                    has_stop_loss=True,
+                )
+                self.assertNotEqual(
+                    result, TradeStage.ADD_ON_STRENGTH,
+                    f"{tp} should not reach ADD_ON_STRENGTH",
+                )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ThemePositionResolver — 外部上下文融合防回退测试
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ExternalContextRegressionTestCase(unittest.TestCase):
+    """OpenClaw 外部热点上下文融合测试。"""
+
+    def test_external_context_upgrades_non_theme(self) -> None:
+        """OpenClaw 强信号可将 non_theme 升级为 follower_theme。"""
+        from src.services.sector_heat_engine import SectorHeatResult
+        from src.services.theme_aggregation_service import ThemeAggregateResult
+        from src.services.theme_position_resolver import ThemePositionResolver
+
+        sector = SectorHeatResult(
+            board_name="AI应用",
+            board_type="concept",
+            sector_hot_score=25.0,
+            sector_status="cold",
+            sector_stage="ferment",
+        )
+        theme = ThemeAggregateResult(
+            theme_tag="AI应用",
+            theme_score=25.0,
+        )
+        context = {
+            "themes": [
+                {"name": "AI应用", "heat_score": 85, "confidence": 0.9},
+            ]
+        }
+
+        resolver = ThemePositionResolver(
+            sector_results=[sector],
+            theme_results=[theme],
+            theme_context=context,
+        )
+        decision = resolver.resolve(["AI应用"])
+        self.assertEqual(decision.theme_position, ThemePosition.FOLLOWER_THEME)
 
 
 if __name__ == "__main__":

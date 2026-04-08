@@ -52,6 +52,10 @@ def _ai_review_fields(
         "ai_trade_stage": review.ai_trade_stage,
         "ai_reasoning": reasoning,
         "ai_confidence": review.ai_confidence,
+        "ai_environment_ok": review.ai_environment_ok,
+        "ai_theme_alignment": review.ai_theme_alignment,
+        "ai_entry_quality": review.ai_entry_quality,
+        "stage_conflict": review.stage_conflict,
     }
 
 
@@ -881,8 +885,6 @@ class ScreeningTaskService:
                 leader_score=leader_score,
                 extreme_strength_score=extreme_strength,
                 theme_position=tp,
-                entry_maturity=entry_mat,
-                has_entry_core_hit=has_entry_core,
                 market_regime=market_env.regime,
             )
 

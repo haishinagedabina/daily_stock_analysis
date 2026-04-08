@@ -24,6 +24,9 @@ AI_REVIEW_SCHEMA = {
     "reasoning": "string: 关键判断理由",
     "risk_flags": ["string: 风险标记列表"],
     "summary": "string: 一句话总结",
+    "environment_ok": "bool: AI 对市场环境的独立判断",
+    "theme_alignment": "bool: AI 对题材一致性的判断",
+    "entry_quality": "low|medium|high: AI 对买点质量的判断",
 }
 
 _VALID_STAGES = frozenset({
@@ -40,6 +43,10 @@ class AiReviewResult:
     ai_confidence: float  # 0.0~1.0 置信度
     raw_advice: str  # 原始 operation_advice (兼容透传)
     risk_flags: List[str] = field(default_factory=list)  # 风险标记
+    ai_environment_ok: Optional[bool] = None  # AI 对市场环境的独立判断
+    ai_theme_alignment: Optional[bool] = None  # AI 对题材一致性的判断
+    ai_entry_quality: Optional[str] = None  # low|medium|high
+    stage_conflict: bool = False  # 规则层 vs AI 建议是否冲突
 
 
 # ── operation_advice 关键词 → ai_trade_stage 映射 ──────────────────────────
@@ -108,11 +115,17 @@ class AiReviewProtocol:
         lines.append('  "confidence": 0.0,')
         lines.append('  "reasoning": "关键判断理由",')
         lines.append('  "risk_flags": ["风险标记1", "风险标记2"],')
-        lines.append('  "summary": "一句话总结"')
+        lines.append('  "summary": "一句话总结",')
+        lines.append('  "environment_ok": true,')
+        lines.append('  "theme_alignment": true,')
+        lines.append('  "entry_quality": "low|medium|high"')
         lines.append("}")
         lines.append("```")
         lines.append("")
         lines.append("suggested_stage 取值范围: probe_entry, focus, watch, stand_aside, reject")
+        lines.append("environment_ok: 你对当前市场环境是否适合操作的独立判断（bool）")
+        lines.append("theme_alignment: 该股票是否与当前主流题材一致（bool）")
+        lines.append("entry_quality: 买点质量评估（low/medium/high）")
 
         return "\n".join(lines)
 
@@ -205,6 +218,20 @@ class AiReviewProtocol:
         json_confidence = data.get("confidence")
         ai_summary = data.get("summary", "")
 
+        # 提取新增字段
+        environment_ok = data.get("environment_ok")
+        if not isinstance(environment_ok, bool):
+            environment_ok = None
+        theme_alignment = data.get("theme_alignment")
+        if not isinstance(theme_alignment, bool):
+            theme_alignment = None
+        entry_quality = data.get("entry_quality")
+        if entry_quality not in ("low", "medium", "high"):
+            entry_quality = None
+
+        # stage_conflict: 规则层 vs AI 建议不一致
+        stage_conflict = (raw_stage is not None and raw_stage != rule_trade_stage)
+
         # 应用 regime ceiling
         final_stage, conflict_reason = self._apply_regime_ceiling(
             raw_stage, market_regime, rule_trade_stage, raw_advice
@@ -236,6 +263,10 @@ class AiReviewProtocol:
             ai_confidence=confidence,
             raw_advice=raw_advice,
             risk_flags=risk_flags,
+            ai_environment_ok=environment_ok,
+            ai_theme_alignment=theme_alignment,
+            ai_entry_quality=entry_quality,
+            stage_conflict=stage_conflict,
         )
 
     # ── 关键词 Fallback 路径 ────────────────────────────────────────────

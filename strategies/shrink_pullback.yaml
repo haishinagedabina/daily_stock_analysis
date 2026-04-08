@@ -69,9 +69,9 @@ instructions: |
      - `search_stock_news` 无利空消息。
      - 筹码分布健康（获利比例 50-80%）。
 
-  评分调整：
-  - 缩量回踩 MA5：sentiment_score +10
-  - 缩量回踩 MA10 且量能 < 0.6 倍均量：sentiment_score +8
+  买点结构确认：
+  - 缩量回踩 MA5 → 高成熟度买点
+  - 缩量回踩 MA10 且量能 < 0.6 倍均量 → 中成熟度买点
   - 理想买点设在 MA5 水平，次优买点设在 MA10。
   - 止损设在 MA20 水平。
   - 在 `buy_reason` 中注明"缩量回踩"。

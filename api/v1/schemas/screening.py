@@ -122,6 +122,10 @@ class ScreeningCandidateItem(BaseModel):
     ai_trade_stage: Optional[str] = None
     ai_reasoning: Optional[str] = None
     ai_confidence: Optional[float] = None
+    ai_environment_ok: Optional[bool] = None
+    ai_theme_alignment: Optional[bool] = None
+    ai_entry_quality: Optional[str] = None
+    stage_conflict: Optional[bool] = None
 
 
 class ScreeningAnalysisHistoryRef(BaseModel):

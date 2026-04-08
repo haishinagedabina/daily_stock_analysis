@@ -5,8 +5,8 @@ L5 交易阶段裁决 — 综合环境/题材/候选池/买点裁决 trade_stage
 硬规则（前序层否决后序层，不可推翻）:
   stand_aside  → 最高 WATCH
   defensive    → 禁止 ADD_ON_STRENGTH
+  非 MAIN_THEME → 禁止 ADD_ON_STRENGTH
   fading_theme → 最高 WATCH（有例外）
-  non_theme    → 禁止 ADD_ON_STRENGTH
   no setup     → 最高 WATCH
   maturity=LOW → 最高 FOCUS
   无止损锚点   → 最高 FOCUS
@@ -75,13 +75,11 @@ class TradeStageJudge:
         return TradeStage.FOCUS
 
     def _ceiling(self, regime: MarketRegime, theme: ThemePosition) -> TradeStage:
-        """根据环境和题材确定阶段上限。"""
-        # defensive → 禁止 add_on
+        """根据环境和题材确定阶段上限。仅 MAIN_THEME + 非 DEFENSIVE 可达 ADD_ON。"""
         if regime == MarketRegime.DEFENSIVE:
             return TradeStage.PROBE_ENTRY
 
-        # non_theme / follower_theme → 禁止 add_on
-        if theme in (ThemePosition.NON_THEME, ThemePosition.FOLLOWER_THEME):
+        if theme != ThemePosition.MAIN_THEME:
             return TradeStage.PROBE_ENTRY
 
         return TradeStage.ADD_ON_STRENGTH

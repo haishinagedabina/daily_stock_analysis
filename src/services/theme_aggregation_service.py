@@ -28,6 +28,16 @@ WARM_THEME_THRESHOLD = 50.0
 NEUTRAL_THEME_THRESHOLD = 30.0
 
 
+# ── 技术阶段 → 交易语义映射 ──────────────────────────────────────────────────
+_STAGE_TO_TRADE_STAGE = {
+    "launch": "启动期",
+    "ferment": "启动期",
+    "expand": "加速期",
+    "climax": "分歧高位",
+    "fade": "退潮期",
+}
+
+
 @dataclass
 class ThemeAggregateResult:
     """题材级聚合结果。"""
@@ -37,6 +47,7 @@ class ThemeAggregateResult:
     primary_sector: str = ""
     sector_status_rollup: str = "neutral"
     sector_stage_rollup: str = "ferment"
+    trade_theme_stage: str = "启动期"
     theme_reason: str = ""
     debug_info: dict = field(default_factory=dict)
 
@@ -64,6 +75,7 @@ class ThemeAggregationService:
             status_rollup = self._classify_status(theme_score)
             stage_rollup = sector.sector_stage
 
+            trade_stage = _STAGE_TO_TRADE_STAGE.get(stage_rollup, stage_rollup)
             results.append(ThemeAggregateResult(
                 theme_tag=sector.board_name,
                 theme_score=theme_score,
@@ -71,6 +83,7 @@ class ThemeAggregationService:
                 primary_sector=sector.board_name,
                 sector_status_rollup=status_rollup,
                 sector_stage_rollup=stage_rollup,
+                trade_theme_stage=trade_stage,
                 theme_reason=f"score={theme_score:.1f} status={status_rollup} stage={stage_rollup}",
             ))
         return sorted(results, key=lambda r: r.theme_score, reverse=True)
@@ -93,6 +106,7 @@ class ThemeAggregationService:
             status_rollup = self._classify_status(theme_score)
             stage_rollup = best.sector_stage
 
+            trade_stage = _STAGE_TO_TRADE_STAGE.get(stage_rollup, stage_rollup)
             results.append(ThemeAggregateResult(
                 theme_tag=tag,
                 theme_score=theme_score,
@@ -100,6 +114,7 @@ class ThemeAggregationService:
                 primary_sector=best.board_name,
                 sector_status_rollup=status_rollup,
                 sector_stage_rollup=stage_rollup,
+                trade_theme_stage=trade_stage,
                 theme_reason=f"score={theme_score:.1f} status={status_rollup} stage={stage_rollup} merged={len(sectors)}",
                 debug_info={"constituent_scores": {s.board_name: s.sector_hot_score for s in sectors}},
             ))

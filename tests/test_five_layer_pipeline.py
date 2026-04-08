@@ -527,7 +527,8 @@ class Phase3ATradePlanTestCase(unittest.TestCase):
             guard_result=guard,
         )
 
-        self.assertEqual(candidate.trade_stage, "watch")
+        # Phase 4: NON_THEME + NONE setup + LOW maturity → REJECT
+        self.assertEqual(candidate.trade_stage, "reject")
         self.assertIsNone(getattr(candidate, "trade_plan_json", None))
 
     def test_trade_plan_json_persists_to_db(self):

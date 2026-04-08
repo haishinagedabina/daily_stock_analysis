@@ -28,6 +28,7 @@ class ThemePosition(str, Enum):
     """L2 题材地位"""
     MAIN_THEME = "main_theme"
     SECONDARY_THEME = "secondary_theme"
+    FOLLOWER_THEME = "follower_theme"
     FADING_THEME = "fading_theme"
     NON_THEME = "non_theme"
 

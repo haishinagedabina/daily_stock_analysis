@@ -153,7 +153,7 @@ class SetupResolver:
         """Return family priority list (highest first) for context."""
         if regime == MarketRegime.DEFENSIVE:
             return list(_PRIORITY_DEFENSIVE_OR_NON_THEME)
-        if theme in (ThemePosition.NON_THEME, ThemePosition.FADING_THEME):
+        if theme in (ThemePosition.NON_THEME, ThemePosition.FADING_THEME, ThemePosition.FOLLOWER_THEME):
             return list(_PRIORITY_DEFENSIVE_OR_NON_THEME)
         if regime == MarketRegime.BALANCED:
             return list(_PRIORITY_BALANCED_THEME)

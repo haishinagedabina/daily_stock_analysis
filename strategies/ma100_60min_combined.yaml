@@ -14,7 +14,7 @@ required_tools:
 system_role: entry_core
 strategy_family: trend
 applicable_market: [balanced, aggressive]
-applicable_theme: [main_theme, secondary_theme, non_theme]
+applicable_theme: [main_theme, secondary_theme, follower_theme, non_theme]
 setup_type: trend_breakout
 
 screening:

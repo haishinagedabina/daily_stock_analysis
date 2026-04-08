@@ -36,7 +36,7 @@ def _ai_review_fields(
     ai_payload: Dict[str, Any],
     candidate: Any,
 ) -> Dict[str, Any]:
-    """Apply AiReviewProtocol.parse_ai_response and return 3 fields dict."""
+    """Apply AiReviewProtocol.parse_ai_response and return AI review fields dict."""
     rule_trade_stage = getattr(candidate, "trade_stage", None) or ""
     market_regime = getattr(candidate, "market_regime", None) or ""
     review = protocol.parse_ai_response(
@@ -45,9 +45,12 @@ def _ai_review_fields(
         rule_trade_stage=rule_trade_stage,
         market_regime=market_regime,
     )
+    reasoning = review.ai_reasoning
+    if review.risk_flags:
+        reasoning = f"{reasoning} | 风险标记: {', '.join(review.risk_flags)}"
     return {
         "ai_trade_stage": review.ai_trade_stage,
-        "ai_reasoning": review.ai_reasoning,
+        "ai_reasoning": reasoning,
         "ai_confidence": review.ai_confidence,
     }
 
@@ -531,6 +534,7 @@ class ScreeningTaskService:
                 stage_started_at = time.perf_counter()
                 self._must_update_status(run_id=run_id, status="ai_enriching")
                 try:
+                    five_layer_contexts = self._build_five_layer_contexts(selected)
                     ai_batch = self.candidate_analysis_service.analyze_top_k(
                         selected,
                         top_k=runtime_config.ai_top_k,
@@ -538,6 +542,7 @@ class ScreeningTaskService:
                             selected_count=len(selected),
                             ai_top_k=runtime_config.ai_top_k,
                         ),
+                        five_layer_contexts=five_layer_contexts,
                     )
                     ai_results, failed_codes = self._normalize_ai_batch(ai_batch)
                     if failed_codes:
@@ -878,6 +883,7 @@ class ScreeningTaskService:
                 theme_position=tp,
                 entry_maturity=entry_mat,
                 has_entry_core_hit=has_entry_core,
+                market_regime=market_env.regime,
             )
 
             # L5: 交易阶段裁决
@@ -957,6 +963,50 @@ class ScreeningTaskService:
             "warm_theme_count": sum(1 for s in sector_results if s.sector_status == "warm"),
         }
         return decision_context
+
+    @staticmethod
+    def _build_five_layer_contexts(
+        selected: "List[ScreeningCandidateRecord]",
+    ) -> Dict[str, str]:
+        """将每个候选已有的五层决策字段格式化为 system_context 字符串。
+
+        返回 {stock_code: context_str} 映射，供 AI 二筛使用。
+        仅对已填充五层字段的候选生成上下文，其余跳过。
+        """
+        import json as _json
+
+        ctx_map: Dict[str, str] = {}
+        for c in selected:
+            if not getattr(c, "trade_stage", None):
+                continue
+
+            lines = [
+                f"- 市场环境(L1): {getattr(c, 'market_regime', 'N/A')}",
+                f"- 风险等级: {getattr(c, 'risk_level', 'N/A')}",
+                f"- 题材地位(L2): {getattr(c, 'theme_position', 'N/A')}",
+                f"- 候选池(L3): {getattr(c, 'candidate_pool_level', 'N/A')}",
+                f"- 买点类型(L4): {getattr(c, 'setup_type', 'N/A') or 'none'}",
+                f"- 买点成熟度: {getattr(c, 'entry_maturity', 'N/A')}",
+                f"- 交易阶段(L5): {c.trade_stage}",
+            ]
+
+            trade_plan_json = getattr(c, "trade_plan_json", None)
+            if trade_plan_json:
+                try:
+                    plan = _json.loads(trade_plan_json)
+                    if plan.get("stop_loss_rule"):
+                        lines.append(f"- 止损规则: {plan['stop_loss_rule']}")
+                    if plan.get("initial_position"):
+                        lines.append(f"- 建议仓位: {plan['initial_position']}")
+                except (ValueError, TypeError):
+                    pass
+
+            matched = getattr(c, "matched_strategies", None)
+            if matched:
+                lines.append(f"- 匹配策略: {', '.join(matched)}")
+
+            ctx_map[c.code] = "\n".join(lines)
+        return ctx_map
 
     def _get_strategy_rules_for_dispatch(self) -> List:
         """Retrieve strategy rules metadata for Phase 2B dispatch/resolve."""

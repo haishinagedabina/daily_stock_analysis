@@ -29,8 +29,9 @@ const TRADE_STAGE_ORDER: Record<string, number> = {
 const THEME_POSITION_ORDER: Record<string, number> = {
   main_theme: 0,
   secondary_theme: 1,
-  fading_theme: 2,
-  non_theme: 3,
+  follower_theme: 2,
+  fading_theme: 3,
+  non_theme: 4,
 };
 
 function sortCandidates(items: ScreeningCandidate[], key: SortKey, dir: SortDir): ScreeningCandidate[] {

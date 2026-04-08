@@ -122,15 +122,15 @@ class ThemePositionResolverBasicTestCase(unittest.TestCase):
         self.assertEqual(decision.theme_position, ThemePosition.MAIN_THEME)
         self.assertEqual(decision.theme_tag, "白酒")
 
-    def test_warm_sector_gives_secondary_theme(self) -> None:
-        """stock 归属 warm 板块 → SECONDARY_THEME。"""
+    def test_warm_sector_gives_follower_theme(self) -> None:
+        """stock 归属 warm 板块(ferment) → FOLLOWER_THEME。"""
         sectors = [_warm_sector("锂电池", 55.0)]
         themes = ThemeAggregationService().aggregate(sectors)
 
         resolver = ThemePositionResolver(sector_results=sectors, theme_results=themes)
         decision = resolver.resolve(stock_boards=["锂电池"])
 
-        self.assertEqual(decision.theme_position, ThemePosition.SECONDARY_THEME)
+        self.assertEqual(decision.theme_position, ThemePosition.FOLLOWER_THEME)
 
     def test_cold_sector_gives_non_theme(self) -> None:
         """stock 归属 cold 板块 → NON_THEME。"""

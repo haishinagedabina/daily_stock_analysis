@@ -117,6 +117,7 @@ class StockAnalysisPipeline(DataMixin, AnalysisMixin, AgentMixin, NotificationMi
         single_stock_notify: bool = False,
         report_type: ReportType = ReportType.SIMPLE,
         analysis_query_id: Optional[str] = None,
+        system_context: Optional[str] = None,
     ) -> Optional[AnalysisResult]:
         """
         处理单只股票的完整流程：数据获取 → AI 分析 → 单股推送（可选）
@@ -135,7 +136,7 @@ class StockAnalysisPipeline(DataMixin, AnalysisMixin, AgentMixin, NotificationMi
                 return None
 
             effective_query_id = analysis_query_id or self.query_id or uuid.uuid4().hex
-            result = self.analyze_stock(code, report_type, query_id=effective_query_id)
+            result = self.analyze_stock(code, report_type, query_id=effective_query_id, system_context=system_context)
 
             if result:
                 if not result.success:

@@ -338,7 +338,7 @@ class TestThemePositionResolver(FiveLayerLocalTestBase):
         theme_results = service.aggregate(sector_results)
 
         resolver = ThemePositionResolver(sector_results, theme_results)
-        valid_positions = {"main_theme", "secondary_theme", "fading_theme", "non_theme"}
+        valid_positions = {"main_theme", "secondary_theme", "follower_theme", "fading_theme", "non_theme"}
 
         # 取几只有板块归属的股票
         tested = 0

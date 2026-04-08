@@ -1263,6 +1263,15 @@ class GeminiAnalyzer:
 在回答技术面问题（如均线、乖离率）时，请直接说明“数据缺失，无法判断”，**严禁编造数据**。
 """
 
+        # 注入五层决策上下文（选股流程传入）
+        if context.get('system_context'):
+            prompt += f"""
+---
+
+## 🧭 五层决策上下文
+{context['system_context']}
+"""
+
         # 明确的输出要求
         prompt += f"""
 ---

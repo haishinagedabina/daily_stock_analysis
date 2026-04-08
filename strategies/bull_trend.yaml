@@ -13,7 +13,7 @@ required_tools:
 system_role: stock_pool
 strategy_family: trend
 applicable_market: [balanced, aggressive, defensive]
-applicable_theme: [main_theme, secondary_theme, non_theme]
+applicable_theme: [main_theme, secondary_theme, follower_theme, non_theme]
 
 instructions: |
   **默认多头趋势（Default Bull Trend Strategy）**

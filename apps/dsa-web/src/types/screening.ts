@@ -77,7 +77,7 @@ export interface ScreeningRunListResponse {
 // ============ 五层决策系统类型 ============
 
 export type MarketRegime = 'aggressive' | 'balanced' | 'defensive' | 'stand_aside';
-export type ThemePosition = 'main_theme' | 'secondary_theme' | 'fading_theme' | 'non_theme';
+export type ThemePosition = 'main_theme' | 'secondary_theme' | 'follower_theme' | 'fading_theme' | 'non_theme';
 export type TradeStage = 'stand_aside' | 'watch' | 'focus' | 'probe_entry' | 'add_on_strength' | 'reject';
 export type EntryMaturity = 'low' | 'medium' | 'high';
 export type CandidatePoolLevel = 'leader_pool' | 'focus_list' | 'watchlist';
@@ -400,6 +400,7 @@ export const TRADE_STAGE_COLORS: Record<string, string> = {
 export const THEME_POSITION_LABELS: Record<string, string> = {
   main_theme: '主力题材',
   secondary_theme: '次要题材',
+  follower_theme: '跟风题材',
   fading_theme: '退潮题材',
   non_theme: '非题材',
 };
@@ -407,6 +408,7 @@ export const THEME_POSITION_LABELS: Record<string, string> = {
 export const THEME_POSITION_COLORS: Record<string, string> = {
   main_theme: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
   secondary_theme: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  follower_theme: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
   fading_theme: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
   non_theme: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
 };

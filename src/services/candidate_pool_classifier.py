@@ -9,11 +9,20 @@ watchlist:   其余
 
 from __future__ import annotations
 
-from src.schemas.trading_types import CandidatePoolLevel, EntryMaturity, ThemePosition
+from typing import Optional
+
+from src.schemas.trading_types import CandidatePoolLevel, EntryMaturity, MarketRegime, ThemePosition
 
 LEADER_POOL_LEADER_SCORE = 70.0
+LEADER_POOL_LEADER_SCORE_DEFENSIVE = 80.0
 LEADER_POOL_EXTREME_STRENGTH = 80.0
 FOCUS_LIST_EXTREME_STRENGTH = 60.0
+
+# Theme positions eligible for LEADER_POOL via leader_score path
+_LEADER_ELIGIBLE_THEMES = frozenset({
+    ThemePosition.MAIN_THEME,
+    ThemePosition.SECONDARY_THEME,
+})
 
 
 class CandidatePoolClassifier:
@@ -25,10 +34,22 @@ class CandidatePoolClassifier:
         theme_position: ThemePosition,
         entry_maturity: EntryMaturity,
         has_entry_core_hit: bool,
+        market_regime: Optional[MarketRegime] = None,
     ) -> CandidatePoolLevel:
-        # leader_pool 路径 1: 龙头 + 主题
-        if (leader_score >= LEADER_POOL_LEADER_SCORE
-                and theme_position in (ThemePosition.MAIN_THEME, ThemePosition.SECONDARY_THEME)):
+        # stand_aside → 所有候选降级为 WATCHLIST
+        if market_regime == MarketRegime.STAND_ASIDE:
+            return CandidatePoolLevel.WATCHLIST
+
+        # defensive 模式提高 leader_pool 门槛
+        leader_threshold = (
+            LEADER_POOL_LEADER_SCORE_DEFENSIVE
+            if market_regime == MarketRegime.DEFENSIVE
+            else LEADER_POOL_LEADER_SCORE
+        )
+
+        # leader_pool 路径 1: 龙头 + 主题（FOLLOWER_THEME 不进入龙头池）
+        if (leader_score >= leader_threshold
+                and theme_position in _LEADER_ELIGIBLE_THEMES):
             return CandidatePoolLevel.LEADER_POOL
 
         # leader_pool 路径 2: 极强个股 + entry_core

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class AnalysisMixin(PipelineMixin):
     """负责股票技术分析及上下文增强的相关方法"""
 
-    def analyze_stock(self, code: str, report_type: ReportType, query_id: str) -> Optional[AnalysisResult]:
+    def analyze_stock(self, code: str, report_type: ReportType, query_id: str, system_context: Optional[str] = None) -> Optional[AnalysisResult]:
         """
         分析单只股票（增强版：含量比、换手率、筹码分析、多维度情报）
 
@@ -179,6 +179,10 @@ class AnalysisMixin(PipelineMixin):
             enhanced_context = self._enhance_context(
                 context, realtime_quote, chip_data, trend_result, stock_name, fundamental_context,
             )
+
+            # Step 6.5: 注入五层决策上下文
+            if system_context:
+                enhanced_context['system_context'] = system_context
 
             # Step 7: 调用 AI 分析
             result = self.analyzer.analyze(enhanced_context, news_context=news_context)

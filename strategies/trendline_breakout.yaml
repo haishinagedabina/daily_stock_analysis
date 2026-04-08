@@ -14,7 +14,7 @@ required_tools:
 system_role: confirm
 strategy_family: auxiliary
 applicable_market: [balanced, aggressive]
-applicable_theme: [main_theme, secondary_theme, non_theme]
+applicable_theme: [main_theme, secondary_theme, follower_theme, non_theme]
 
 screening:
   filters:

@@ -2,14 +2,33 @@
 """
 Phase 3B-1 — AiReviewProtocol: AI 二筛协议。
 
-从现有 AI 自由文本输出 (operation_advice / ai_summary) 推断结构化字段，
-并在规则层优先原则下处理冲突。不要求 AI 改为 JSON 输出。
+优先从 AI 输出中解析固定 JSON schema，失败时 fallback 到关键词匹配。
+规则层优先原则下处理冲突。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import logging
+import re
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+# ── AI Review JSON Schema 定义 ───────────────────────────────────────────────
+
+AI_REVIEW_SCHEMA = {
+    "suggested_stage": "probe_entry|focus|watch|stand_aside|reject",
+    "confidence": "0.0~1.0",
+    "reasoning": "string: 关键判断理由",
+    "risk_flags": ["string: 风险标记列表"],
+    "summary": "string: 一句话总结",
+}
+
+_VALID_STAGES = frozenset({
+    "probe_entry", "add_on_strength", "focus", "watch", "stand_aside", "reject",
+})
 
 
 @dataclass
@@ -20,6 +39,7 @@ class AiReviewResult:
     ai_reasoning: str  # 关键判断理由
     ai_confidence: float  # 0.0~1.0 置信度
     raw_advice: str  # 原始 operation_advice (兼容透传)
+    risk_flags: List[str] = field(default_factory=list)  # 风险标记
 
 
 # ── operation_advice 关键词 → ai_trade_stage 映射 ──────────────────────────
@@ -64,7 +84,7 @@ class AiReviewProtocol:
         trade_plan: Optional[dict],
         factor_snapshot: dict,
     ) -> str:
-        """构建注入五层上下文的结构化 prompt 附加段。"""
+        """构建注入五层上下文的结构化 prompt 附加段，要求 AI 以 JSON 格式输出。"""
         lines = [
             "",
             "## 五层决策上下文",
@@ -78,8 +98,22 @@ class AiReviewProtocol:
             stop_loss = trade_plan.get("stop_loss_rule", "")
             if stop_loss:
                 lines.append(f"- 止损规则: {stop_loss}")
+
         lines.append("")
-        lines.append("请在 operation_advice 中考虑以上约束。")
+        lines.append("## 输出要求")
+        lines.append("请严格以如下 JSON 格式输出你的分析结论，不要包含其他文字：")
+        lines.append("```json")
+        lines.append("{")
+        lines.append('  "suggested_stage": "probe_entry|focus|watch|stand_aside|reject",')
+        lines.append('  "confidence": 0.0,')
+        lines.append('  "reasoning": "关键判断理由",')
+        lines.append('  "risk_flags": ["风险标记1", "风险标记2"],')
+        lines.append('  "summary": "一句话总结"')
+        lines.append("}")
+        lines.append("```")
+        lines.append("")
+        lines.append("suggested_stage 取值范围: probe_entry, focus, watch, stand_aside, reject")
+
         return "\n".join(lines)
 
     def parse_ai_response(
@@ -89,7 +123,10 @@ class AiReviewProtocol:
         rule_trade_stage: str,
         market_regime: str,
     ) -> AiReviewResult:
-        """从 AI 输出提取结构化字段 + 裁决冲突。"""
+        """从 AI 输出提取结构化字段 + 裁决冲突。
+
+        优先尝试 JSON 解析，失败时 fallback 到关键词匹配。
+        """
         advice = (ai_operation_advice or "").strip()
         summary = (ai_summary or "").strip()
 
@@ -102,15 +139,121 @@ class AiReviewProtocol:
                 raw_advice="",
             )
 
-        # 映射 advice → raw_stage
+        # 优先尝试从 advice 或 summary 中解析 JSON
+        json_result = self._try_parse_json(advice) or self._try_parse_json(summary)
+
+        if json_result is not None:
+            return self._build_from_json(json_result, advice, rule_trade_stage, market_regime)
+
+        # Fallback: 关键词匹配
+        return self._build_from_keywords(advice, summary, rule_trade_stage, market_regime)
+
+    # ── JSON 解析路径 ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _try_parse_json(text: str) -> Optional[dict]:
+        """尝试从文本中提取并解析 JSON 对象。"""
+        if not text:
+            return None
+
+        # 尝试直接解析
+        try:
+            obj = json.loads(text)
+            if isinstance(obj, dict) and "suggested_stage" in obj:
+                return obj
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 尝试从 ```json ... ``` 代码块提取
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if match:
+            try:
+                obj = json.loads(match.group(1))
+                if isinstance(obj, dict) and "suggested_stage" in obj:
+                    return obj
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # 尝试提取第一个 {...} 块
+        match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+        if match:
+            try:
+                obj = json.loads(match.group(0))
+                if isinstance(obj, dict) and "suggested_stage" in obj:
+                    return obj
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        return None
+
+    def _build_from_json(
+        self,
+        data: dict,
+        raw_advice: str,
+        rule_trade_stage: str,
+        market_regime: str,
+    ) -> AiReviewResult:
+        """从 JSON 解析结果构建 AiReviewResult。"""
+        raw_stage = data.get("suggested_stage")
+        if raw_stage not in _VALID_STAGES:
+            raw_stage = None
+
+        reasoning = data.get("reasoning", "")
+        risk_flags = data.get("risk_flags", [])
+        if not isinstance(risk_flags, list):
+            risk_flags = []
+        json_confidence = data.get("confidence")
+        ai_summary = data.get("summary", "")
+
+        # 应用 regime ceiling
+        final_stage, conflict_reason = self._apply_regime_ceiling(
+            raw_stage, market_regime, rule_trade_stage, raw_advice
+        )
+
+        # 优先使用 AI 返回的 confidence，缺失时走计算逻辑
+        if json_confidence is not None:
+            try:
+                confidence = max(0.0, min(1.0, float(json_confidence)))
+            except (TypeError, ValueError):
+                confidence = self._compute_confidence(
+                    final_stage, raw_stage, rule_trade_stage, market_regime
+                )
+            # AI 被降级时扣减置信度
+            if raw_stage != final_stage:
+                confidence = max(0.0, confidence - 0.2)
+        else:
+            confidence = self._compute_confidence(
+                final_stage, raw_stage, rule_trade_stage, market_regime
+            )
+
+        full_reasoning = conflict_reason if conflict_reason != f"AI建议: {raw_advice}" else reasoning
+        if not full_reasoning:
+            full_reasoning = ai_summary or f"AI建议: {raw_advice}"
+
+        return AiReviewResult(
+            ai_trade_stage=final_stage,
+            ai_reasoning=full_reasoning,
+            ai_confidence=confidence,
+            raw_advice=raw_advice,
+            risk_flags=risk_flags,
+        )
+
+    # ── 关键词 Fallback 路径 ────────────────────────────────────────────
+
+    def _build_from_keywords(
+        self,
+        advice: str,
+        summary: str,
+        rule_trade_stage: str,
+        market_regime: str,
+    ) -> AiReviewResult:
+        """关键词匹配 fallback（兼容旧版 AI 输出）。"""
         raw_stage = self._map_advice_to_stage(advice)
 
-        # 规则层冲突处理
         final_stage, reasoning = self._apply_regime_ceiling(
             raw_stage, market_regime, rule_trade_stage, advice
         )
 
-        # 置信度
         confidence = self._compute_confidence(
             final_stage, raw_stage, rule_trade_stage, market_regime
         )
@@ -158,7 +301,6 @@ class AiReviewProtocol:
         ceiling_order = _STAGE_ORDER.get(ceiling, 0)
 
         if raw_order > ceiling_order:
-            # 冲突: AI 建议高于 regime 上限 → 降级
             return ceiling, (
                 f"冲突: AI建议'{advice}'但{market_regime}环境限制，"
                 f"降级为{ceiling}"

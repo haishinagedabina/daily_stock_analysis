@@ -40,23 +40,29 @@ class TradeStageJudge:
         if env.regime == MarketRegime.STAND_ASIDE:
             return TradeStage.WATCH
 
-        # ── 2. 无买点 → WATCH ────────────────────────────────────────────────
+        # ── 2. 显式拒绝：弱题材 + 无买点 + 低成熟度 ────────────────────────
+        if (theme_position in (ThemePosition.FADING_THEME, ThemePosition.NON_THEME)
+                and setup_type == SetupType.NONE
+                and entry_maturity == EntryMaturity.LOW):
+            return TradeStage.REJECT
+
+        # ── 3. 无买点 → WATCH ────────────────────────────────────────────────
         if setup_type == SetupType.NONE:
             return TradeStage.WATCH
 
-        # ── 3. 题材约束 ─────────────────────────────────────────────────────
+        # ── 4. 题材约束 ─────────────────────────────────────────────────────
         if theme_position == ThemePosition.FADING_THEME:
             return TradeStage.WATCH
 
-        # ── 4. 成熟度约束 ───────────────────────────────────────────────────
+        # ── 5. 成熟度约束 ───────────────────────────────────────────────────
         if entry_maturity == EntryMaturity.LOW:
             return TradeStage.FOCUS
 
-        # ── 5. 止损锚点检查 ─────────────────────────────────────────────────
+        # ── 6. 止损锚点检查 ─────────────────────────────────────────────────
         if not has_stop_loss:
             return TradeStage.FOCUS
 
-        # ── 6. 正向裁决 ─────────────────────────────────────────────────────
+        # ── 7. 正向裁决 ─────────────────────────────────────────────────────
         ceiling = self._ceiling(env.regime, theme_position)
 
         if (entry_maturity == EntryMaturity.HIGH
@@ -74,8 +80,8 @@ class TradeStageJudge:
         if regime == MarketRegime.DEFENSIVE:
             return TradeStage.PROBE_ENTRY
 
-        # non_theme → 禁止 add_on
-        if theme == ThemePosition.NON_THEME:
+        # non_theme / follower_theme → 禁止 add_on
+        if theme in (ThemePosition.NON_THEME, ThemePosition.FOLLOWER_THEME):
             return TradeStage.PROBE_ENTRY
 
         return TradeStage.ADD_ON_STRENGTH

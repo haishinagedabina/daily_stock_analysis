@@ -44,9 +44,11 @@ class CandidateAnalysisService:
         candidates: Iterable[Any],
         top_k: int,
         news_top_m: Optional[int] = None,
+        five_layer_contexts: Optional[Dict[str, str]] = None,
     ) -> CandidateAnalysisBatchResult:
         candidate_list = list(candidates)
         news_query_ids = self._enrich_news_for_top_m(candidate_list, news_top_m if news_top_m is not None else top_k)
+        ctx_map = five_layer_contexts or {}
 
         results: Dict[str, Dict[str, Any]] = {}
         failed_codes: list[str] = []
@@ -58,6 +60,7 @@ class CandidateAnalysisService:
                     report_type="simple",
                     force_refresh=False,
                     send_notification=False,
+                    system_context=ctx_map.get(code),
                 )
             except Exception as exc:
                 logger.warning("AI analysis failed for %s: %s", code, exc)

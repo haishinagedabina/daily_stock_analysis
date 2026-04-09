@@ -5,6 +5,10 @@ L2 题材地位解析 — per-stock theme_position 推算 + 双通道融合。
 构造函数注入上下文（sector_results / theme_results / theme_context），
 resolve(stock_boards) 处理单只股票。
 
+D3 修复: 新增 identify_main_themes() 实现"先找主线，再匹配股票"。
+  旧逻辑: 从股票所属板块中找最热的 → 推算 position（挂标签）
+  新逻辑: 先全市场识别主线/次线题材 → 检查股票是否属于主线 → 不属于再走兜底
+
 盘面先行原则:
   盘面强 + OpenClaw 强 → MAIN_THEME
   盘面强 + OpenClaw 弱/无 → SECONDARY_THEME（或由盘面独立判定）
@@ -15,7 +19,8 @@ resolve(stock_boards) 处理单只股票。
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 from src.schemas.trading_types import ThemeDecision, ThemePosition
 from src.services.sector_heat_engine import SectorHeatResult
@@ -25,6 +30,18 @@ if TYPE_CHECKING:
     from src.services.theme_mapping_registry import ThemeMappingRegistry
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class IdentifiedTheme:
+    """全市场识别出的主线/次线题材。"""
+    name: str
+    position: ThemePosition
+    score: float = 0.0
+    stage: str = ""
+    leader_codes: List[str] = field(default_factory=list)
+    front_codes: List[str] = field(default_factory=list)
+    member_boards: List[str] = field(default_factory=list)
 
 
 class ThemePositionResolver:
@@ -46,30 +63,123 @@ class ThemePositionResolver:
         self._theme_context = theme_context or {}
         self._registry = registry
 
+        # D3: 构造时即识别全市场主线题材
+        self._identified_themes: List[IdentifiedTheme] = self.identify_main_themes()
+        # 构建快速查找: board_name → IdentifiedTheme
+        self._board_to_theme: Dict[str, IdentifiedTheme] = {}
+        for theme in self._identified_themes:
+            for board in theme.member_boards:
+                self._board_to_theme[board] = theme
+
+    def identify_main_themes(self) -> List[IdentifiedTheme]:
+        """从全市场角度识别主线/次线题材（不依赖具体股票）。
+
+        方案要求: "先由市场盘面确认，不是先由资讯定义"
+        遍历所有板块，按 status + stage 规则筛选 MAIN_THEME / SECONDARY_THEME。
+        有 registry 时合并同 canonical_tag 下的多个板块。
+        """
+        # 第一遍: 逐板块判定 position
+        raw_themes: List[tuple] = []  # (board_name, position, sector)
+        for board_name, sector in self._sector_map.items():
+            position = self._position_from_sector(sector)
+            if position in (ThemePosition.MAIN_THEME, ThemePosition.SECONDARY_THEME):
+                raw_themes.append((board_name, position, sector))
+
+        if not raw_themes:
+            return []
+
+        # 有 registry 时按 canonical_tag 合并
+        if self._registry is not None:
+            tag_groups: Dict[str, List[tuple]] = {}
+            for board_name, position, sector in raw_themes:
+                tag = self._registry.resolve_tag(board_name)
+                tag_groups.setdefault(tag, []).append((board_name, position, sector))
+
+            themes: List[IdentifiedTheme] = []
+            for tag, group in tag_groups.items():
+                # 取组内最高分的板块作为代表
+                best = max(group, key=lambda x: x[2].sector_hot_score)
+                _, best_position, best_sector = best
+                all_boards = [g[0] for g in group]
+                all_leaders = []
+                all_fronts = []
+                for _, _, s in group:
+                    all_leaders.extend(s.leader_codes)
+                    all_fronts.extend(s.front_codes)
+                themes.append(IdentifiedTheme(
+                    name=tag,
+                    position=best_position,
+                    score=best_sector.sector_hot_score,
+                    stage=best_sector.sector_stage,
+                    leader_codes=list(set(all_leaders)),
+                    front_codes=list(set(all_fronts)),
+                    member_boards=all_boards,
+                ))
+            themes.sort(key=lambda t: t.score, reverse=True)
+            return themes
+
+        # 无 registry: 每个板块独立为一个 theme
+        themes = [
+            IdentifiedTheme(
+                name=board_name,
+                position=position,
+                score=sector.sector_hot_score,
+                stage=sector.sector_stage,
+                leader_codes=list(sector.leader_codes),
+                front_codes=list(sector.front_codes),
+                member_boards=[board_name],
+            )
+            for board_name, position, sector in raw_themes
+        ]
+        themes.sort(key=lambda t: t.score, reverse=True)
+        return themes
+
+    def get_main_theme_boards(self) -> Set[str]:
+        """返回所有主线/次线题材涉及的板块名集合（用于 L2 Universe 缩小）。"""
+        boards: Set[str] = set()
+        for theme in self._identified_themes:
+            boards.update(theme.member_boards)
+        return boards
+
     def resolve(self, stock_boards: List[str]) -> ThemeDecision:
         if not stock_boards:
             return self._non_theme_decision()
 
-        # 选取 sector_hot_score 最高的板块作为 primary
+        # ── D3 修复: 主线优先匹配 ──────────────────────────────────────
+        # 先检查股票板块是否属于已识别的主线/次线题材
+        for board_name in stock_boards:
+            matched_theme = self._board_to_theme.get(board_name)
+            if matched_theme is not None:
+                theme_tag = matched_theme.name
+                theme_result = self._theme_map.get(theme_tag)
+                theme_score = theme_result.theme_score if theme_result else matched_theme.score
+                return ThemeDecision(
+                    theme_tag=theme_tag,
+                    theme_score=theme_score,
+                    theme_position=matched_theme.position,
+                    leader_score=0.0,
+                    sector_strength=self._sector_map.get(board_name, SectorHeatResult(board_name="")).strength_score,
+                    leader_stocks=matched_theme.leader_codes,
+                    front_stocks=matched_theme.front_codes,
+                )
+
+        # ── 兜底: 不在主线中，走原有 warm/follower 逻辑 ─────────────
         primary_board, primary_sector = self._pick_primary_board(stock_boards)
         if primary_sector is None:
             return self._non_theme_decision()
 
-        # 基于盘面判定 theme_position
         position = self._position_from_sector(primary_sector)
 
         # 双源融合: 外部热点上下文调整
         position = self._adjust_with_external_context(position, primary_board)
 
-        # 题材标签: 有 registry 时用 canonical_tag，否则用 board_name
+        # 题材标签
         theme_tag = primary_board
         if self._registry is not None:
             theme_tag = self._registry.resolve_tag(primary_board)
 
-        # 题材分数: 优先从 theme_map 取（可能是合并后的结果）
         theme_result = self._theme_map.get(theme_tag)
         if theme_result is None:
-            # fallback: 用原始 board_name 查找（无 registry 时的路径）
             theme_result = self._theme_map.get(primary_board)
         theme_score = theme_result.theme_score if theme_result else primary_sector.sector_hot_score
 
@@ -124,13 +234,7 @@ class ThemePositionResolver:
     def _adjust_with_external_context(
         self, base_position: ThemePosition, primary_board: str,
     ) -> ThemePosition:
-        """外部热点上下文融合：盘面 + OpenClaw 双源校验。
-
-        盘面强 + 外部强 → 维持/升级
-        盘面强 + 外部弱 → 维持（盘面先行）
-        盘面弱 + 外部强 → 可升级到 FOLLOWER/SECONDARY
-        盘面弱 + 外部弱 → 维持
-        """
+        """外部热点上下文融合：盘面 + OpenClaw 双源校验。"""
         if not self._theme_context:
             return base_position
 

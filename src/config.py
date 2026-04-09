@@ -559,6 +559,7 @@ class Config:
     screening_ingest_failure_threshold: float = 0.20
     screening_market_guard_enabled: bool = True
     screening_market_guard_index: str = "sh000001"
+    screening_use_five_layer_pipeline: bool = False
 
     # Discord 机器人状态
     discord_bot_status: str = "A股智能分析 | /help"
@@ -1136,6 +1137,7 @@ class Config:
             screening_ingest_failure_threshold=float(os.getenv('SCREENING_INGEST_FAILURE_THRESHOLD', '0.20')),
             screening_market_guard_enabled=parse_env_bool(os.getenv('SCREENING_MARKET_GUARD_ENABLED'), default=True),
             screening_market_guard_index=os.getenv('SCREENING_MARKET_GUARD_INDEX', 'sh000001'),
+            screening_use_five_layer_pipeline=parse_env_bool(os.getenv('SCREENING_USE_FIVE_LAYER_PIPELINE'), default=False),
         )
     
     @classmethod

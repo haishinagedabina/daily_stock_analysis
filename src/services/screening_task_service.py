@@ -30,6 +30,24 @@ logger = logging.getLogger(__name__)
 _EXECUTE_RUN_DEADLINE_SECONDS: int = 30 * 60  # 30 分钟
 _CN_MARKET_CLOSE_TIME = dt_time(hour=15, minute=0)
 
+# ── L1 硬开关：市场环境 → 候选上限映射 ───────────────────────────────────────
+# stand_aside → 0 候选（总开关关闭）
+# defensive  → 原上限减半（至少 2 个）
+# balanced / aggressive → 不限制
+def _make_regime_candidate_cap() -> dict:
+    from src.schemas.trading_types import MarketRegime
+    return {
+        MarketRegime.STAND_ASIDE: 0,
+        MarketRegime.DEFENSIVE: None,   # 占位，运行时按 max(2, limit//2) 计算
+        MarketRegime.BALANCED: None,    # 不限制
+        MarketRegime.AGGRESSIVE: None,  # 不限制
+    }
+
+try:
+    _REGIME_CANDIDATE_CAP = _make_regime_candidate_cap()
+except Exception:
+    _REGIME_CANDIDATE_CAP = {}
+
 
 def _ai_review_fields(
     protocol: "AiReviewProtocol",
@@ -316,8 +334,10 @@ class ScreeningTaskService:
             # 全局 deadline：防止任意阶段无限阻塞
             deadline = time.perf_counter() + _EXECUTE_RUN_DEADLINE_SECONDS
 
-            # 大盘 MA100 安全门控：生成市场情绪提示（不阻断流水线）
+            # ── L1 硬开关：大盘 MA100 + 环境判定 → 决定候选上限 ──
             guard_result = None
+            market_env = None
+            regime_candidate_cap: Optional[int] = None
             if self.config.screening_market_guard_enabled:
                 guard = MarketGuard(
                     fetcher_manager=self.market_data_sync_service.fetcher_manager,
@@ -337,6 +357,33 @@ class ScreeningTaskService:
                         "screening_run event=market_guard_unsafe %s",
                         guard_result.message,
                     )
+
+                # L1 前置环境评估：根据 regime 决定候选上限
+                try:
+                    from src.services.market_environment_engine import MarketEnvironmentEngine
+                    from src.schemas.trading_types import MarketRegime
+
+                    env_engine = MarketEnvironmentEngine()
+                    index_bars = guard.get_index_bars()
+                    market_stats = None
+                    try:
+                        market_stats = self.market_data_sync_service.fetcher_manager.get_market_stats()
+                    except Exception:
+                        pass
+                    market_env = env_engine.assess(guard_result, index_bars, market_stats)
+                    regime_candidate_cap = _REGIME_CANDIDATE_CAP.get(
+                        market_env.regime,
+                    )
+                    # defensive → 减半 (至少 2)
+                    if regime_candidate_cap is None and market_env.regime.value == "defensive":
+                        regime_candidate_cap = max(2, runtime_config.candidate_limit // 2)
+                    # stand_aside → 0（已在字典中配置）
+                    logger.info(
+                        "screening_run event=l1_regime_gate regime=%s cap=%s original_limit=%d",
+                        market_env.regime.value, regime_candidate_cap, runtime_config.candidate_limit,
+                    )
+                except Exception as exc:
+                    logger.warning("L1 regime gate failed (degraded, no cap): %s", exc)
 
             current_stage = "resolving_universe"
             self._last_stage_hint = current_stage
@@ -494,26 +541,71 @@ class ScreeningTaskService:
             self._last_stage_hint = current_stage
             stage_started_at = time.perf_counter()
             self._must_update_status(run_id=run_id, status="screening")
-            evaluation = runtime_screener_service.evaluate(snapshot_df)
-            selected = evaluation.selected[: runtime_config.candidate_limit]
+
+            # L1 硬开关: stand_aside → 直接输出 0 候选，跳过选股
+            effective_limit = runtime_config.candidate_limit
+            if regime_candidate_cap is not None:
+                effective_limit = min(effective_limit, regime_candidate_cap)
+                logger.info(
+                    "screening_run event=regime_cap_applied effective_limit=%d regime=%s",
+                    effective_limit,
+                    market_env.regime.value if market_env else "unknown",
+                )
+
+            if effective_limit == 0:
+                # stand_aside: 环境总开关关闭，不执行选股
+                selected: List[ScreeningCandidateRecord] = []
+                logger.info(
+                    "screening_run event=stand_aside_skip reason=regime_cap_zero regime=%s",
+                    market_env.regime.value if market_env else "stand_aside",
+                )
+            elif self._should_use_five_layer_pipeline() and market_env is not None:
+                # ═══ 五层前置管线 (Phase 2 D1/D3/D5) ═══
+                from src.services.five_layer_pipeline import FiveLayerPipeline
+
+                pipeline = FiveLayerPipeline()
+                pipeline_result = pipeline.run(
+                    snapshot_df=snapshot_df,
+                    trade_date=effective_trade_date,
+                    market_env=market_env,
+                    guard_result=guard_result,
+                    screener_service=runtime_screener_service,
+                    candidate_limit=effective_limit,
+                    db_manager=self.db,
+                    theme_context=self._theme_context,
+                    skill_manager=self._skill_manager,
+                )
+                selected = pipeline_result.candidates
+                decision_context = pipeline_result.decision_context
+                logger.info(
+                    "screening_run event=five_layer_pipeline_done candidates=%d stats=%s",
+                    len(selected), pipeline_result.pipeline_stats,
+                )
+            else:
+                evaluation = runtime_screener_service.evaluate(snapshot_df)
+                selected = evaluation.selected[: effective_limit]
             self._log_stage_completed(
                 screening_run_id=run_id,
                 stage=current_stage,
                 started_at=stage_started_at,
                 selected_count=len(selected),
-                rejected_count=len(getattr(evaluation, "rejected", []) or []),
+                rejected_count=len(getattr(evaluation, "rejected", []) or []) if effective_limit > 0 and not self._should_use_five_layer_pipeline() else 0,
+                regime_cap=regime_candidate_cap,
             )
-            # ═══ L1→L5 五层决策链路 (Phase 2A) ═══
-            decision_context = None
-            try:
-                decision_context = self._apply_five_layer_decision(
-                    selected=selected,
-                    snapshot_df=snapshot_df,
-                    effective_trade_date=effective_trade_date,
-                    guard_result=guard_result if self.config.screening_market_guard_enabled else None,
-                )
-            except Exception as exc:
-                logger.warning("five_layer decision failed (degraded): %s", exc)
+            # ═══ L1→L5 五层决策链路 ═══
+            # 新管线已内置 L2-L5 裁决，仅旧路径需要后置标注
+            if not (self._should_use_five_layer_pipeline() and market_env is not None and effective_limit > 0):
+                decision_context = None
+                try:
+                    decision_context = self._apply_five_layer_decision(
+                        selected=selected,
+                        snapshot_df=snapshot_df,
+                        effective_trade_date=effective_trade_date,
+                        guard_result=guard_result if self.config.screening_market_guard_enabled else None,
+                        precomputed_market_env=market_env,
+                    )
+                except Exception as exc:
+                    logger.warning("five_layer decision failed (degraded): %s", exc)
 
             if decision_context is not None:
                 try:
@@ -743,6 +835,7 @@ class ScreeningTaskService:
         snapshot_df: Any,
         effective_trade_date: date,
         guard_result: Any = None,
+        precomputed_market_env: Any = None,
     ) -> Optional[Dict[str, Any]]:
         """L1→L5 五层决策链路：就地修改 selected 中每个 candidate 的五层字段。
 
@@ -770,27 +863,34 @@ class ScreeningTaskService:
             return
 
         # ── L1: 市场环境 ───────────────────────────────────────────────────
-        env_engine = MarketEnvironmentEngine()
-        if guard_result is None:
-            guard_result = MarketGuardResult(is_safe=True, message="guard disabled")
+        # 优先使用 execute_run() 中已前置计算的 market_env，避免重复请求
+        if precomputed_market_env is not None:
+            market_env = precomputed_market_env
+            if guard_result is None:
+                guard_result = MarketGuardResult(is_safe=market_env.is_safe, message=market_env.message)
+        else:
+            env_engine = MarketEnvironmentEngine()
+            if guard_result is None:
+                guard_result = MarketGuardResult(is_safe=True, message="guard disabled")
 
         # 尝试获取指数日线和市场统计（容错：数据不可用时仍可降级运行）
-        index_bars = None
-        market_stats = None
-        try:
-            guard = MarketGuard(
-                fetcher_manager=self.market_data_sync_service.fetcher_manager,
-                index_code=self.config.screening_market_guard_index,
-            )
-            index_bars = guard.get_index_bars()
-        except Exception as exc:
-            logger.warning("five_layer: failed to fetch index bars: %s", exc)
-        try:
-            market_stats = self.market_data_sync_service.fetcher_manager.get_market_stats()
-        except Exception as exc:
-            logger.warning("five_layer: failed to fetch market stats: %s", exc)
+        if precomputed_market_env is None:
+            index_bars = None
+            market_stats = None
+            try:
+                guard = MarketGuard(
+                    fetcher_manager=self.market_data_sync_service.fetcher_manager,
+                    index_code=self.config.screening_market_guard_index,
+                )
+                index_bars = guard.get_index_bars()
+            except Exception as exc:
+                logger.warning("five_layer: failed to fetch index bars: %s", exc)
+            try:
+                market_stats = self.market_data_sync_service.fetcher_manager.get_market_stats()
+            except Exception as exc:
+                logger.warning("five_layer: failed to fetch market stats: %s", exc)
 
-        market_env = env_engine.assess(guard_result, index_bars, market_stats)
+            market_env = env_engine.assess(guard_result, index_bars, market_stats)
         logger.info("five_layer L1: regime=%s risk=%s", market_env.regime.value, market_env.risk_level.value)
 
         # ── L2: 板块热度 + 题材聚合 ────────────────────────────────────────
@@ -798,9 +898,19 @@ class ScreeningTaskService:
         theme_results = []
         try:
             sector_engine = SectorHeatEngine(db_manager=self.db)
-            sector_results = sector_engine.compute_all_sectors(snapshot_df, effective_trade_date)
+            all_sector_results = sector_engine.compute_all_sectors(snapshot_df, effective_trade_date)
+
+            # L2 过滤：仅保留 hot/warm 板块进入题材聚合管道
+            sector_results = [
+                s for s in all_sector_results
+                if s.sector_status in ("hot", "warm")
+            ]
             hot_count = sum(1 for s in sector_results if s.sector_status == "hot")
-            logger.info("five_layer L2: %d sectors computed, %d hot", len(sector_results), hot_count)
+            warm_count = len(sector_results) - hot_count
+            logger.info(
+                "five_layer L2: %d sectors computed, %d hot + %d warm passed filter (from %d total)",
+                len(sector_results), hot_count, warm_count, len(all_sector_results),
+            )
         except Exception as exc:
             logger.warning("five_layer L2 SectorHeatEngine failed (degraded): %s", exc)
 
@@ -936,6 +1046,32 @@ class ScreeningTaskService:
             len(selected), market_env.regime.value,
         )
 
+        # ── 五层决策后重排序：trade_stage 权重 + rule_score 综合排名 ─────────
+        _STAGE_WEIGHT: Dict[str, int] = {
+            "add_on_strength": 50,
+            "probe_entry": 40,
+            "focus": 20,
+            "watch": 5,
+            "stand_aside": 0,
+            "reject": -10,
+        }
+        _POOL_WEIGHT: Dict[str, int] = {
+            "leader_pool": 30,
+            "focus_list": 15,
+            "watchlist": 0,
+        }
+        for candidate in selected:
+            stage_w = _STAGE_WEIGHT.get(candidate.trade_stage or "", 0)
+            pool_w = _POOL_WEIGHT.get(candidate.candidate_pool_level or "", 0)
+            candidate.rule_score = candidate.rule_score + stage_w + pool_w
+        selected.sort(key=lambda c: c.rule_score, reverse=True)
+        for i, candidate in enumerate(selected, 1):
+            candidate.rank = i
+        logger.info(
+            "five_layer rerank: top3 = %s",
+            [(c.code, c.rule_score, c.trade_stage, c.theme_position) for c in selected[:3]],
+        )
+
         # ── 构建 decision_context 快照（供前端 L1/L2 展示） ──────────────────
         decision_context: Dict[str, Any] = {
             "market_environment": {
@@ -959,7 +1095,6 @@ class ScreeningTaskService:
                     "limit_up_count": getattr(s, "limit_up_count", 0),
                 }
                 for s in sector_results
-                if s.sector_status in ("hot", "warm")
             ],
             "hot_theme_count": sum(1 for s in sector_results if s.sector_status == "hot"),
             "warm_theme_count": sum(1 for s in sector_results if s.sector_status == "warm"),
@@ -1020,6 +1155,10 @@ class ScreeningTaskService:
         if not skills:
             return []
         return build_rules_from_skills(skills)
+
+    def _should_use_five_layer_pipeline(self) -> bool:
+        """配置开关: 是否使用五层前置管线 (Phase 2)。"""
+        return bool(getattr(self.config, "screening_use_five_layer_pipeline", False))
 
     @staticmethod
     def _check_deadline(deadline: float, stage: str) -> None:

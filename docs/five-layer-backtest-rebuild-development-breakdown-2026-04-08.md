@@ -31,11 +31,59 @@
 - 最后变成混合系统
 
 ### 总体阶段建议
+- **Phase -1：现状勘查与迁移前审计**
 - **Phase 0：重构准备与冻结旧系统**
 - **Phase 1：新数据模型与基础骨架**
 - **Phase 2：核心评估链路（signal + execution + evaluators）**
 - **Phase 3：统计、校准、建议输出**
 - **Phase 4：API / Agent Tools / 旧系统清理**
+
+---
+
+## 三、Phase -1：现状勘查与迁移前审计
+
+### 目标
+在真正编码前，把当前系统中的可复用入口、隐藏依赖、迁移风险和数据缺口摸清，避免后续在 Phase 1~4 中途返工。
+
+### 任务
+#### -1.1 盘点旧 backtest 入口与依赖方
+至少确认：
+- 旧 backtest service / repo / API / agent tool 的调用入口
+- Web/API/Agent/测试代码中对旧 backtest 的依赖点
+- 当前是否存在隐式脚本、定时任务或内部工具直接依赖旧 backtest 输出
+
+#### -1.2 盘点新回测所需数据源是否已具备
+至少确认：
+- `screening_runs`
+- `screening_candidates`
+- 五层字段快照完整性
+- forward bars 数据可用性
+- 旧 `AnalysisHistory` 是否仅保留为兼容基线，而非新主链路输入
+
+#### -1.3 盘点现有版本、日志与可观测性能力
+至少确认：
+- 数据版本字段当前是否已有来源
+- 现有日志/trace 是否足够支持回放问题定位
+- 新 run-based 回测需要新增哪些审计日志
+
+#### -1.4 输出迁移风险清单
+至少覆盖：
+- API 契约切换风险
+- Web/Agent 引用切换风险
+- 历史数据不完整风险
+- snapshot 与 replay 混用风险
+- 旧系统提前删除风险
+
+### 交付物
+- 旧 backtest 入口清单
+- 依赖方清单
+- 数据可用性清单
+- 缺口清单
+- 迁移风险清单
+
+### 验收标准
+- 在进入 Phase 0/1 前，团队对“哪些要迁、哪些能复用、哪些不能动”达成明确共识
+- 不允许在未完成迁移前审计的情况下直接进入大规模编码
 
 ---
 
@@ -206,6 +254,13 @@ evaluation 模型必须支持：
 - 是否禁止使用 enrich 后验结果替代快照
 - `rule_replay / parameter_calibration` 如何保留与快照值的差异
 
+### 任务 7.2：补充 snapshot 真实性红线
+必须显式写入实现约束：
+- `historical_snapshot` 模式下，所有决策字段必须来自“决策当时已持久化”的快照字段
+- 若当时未保存某字段，允许为空，但不得用 replay/calibration 结果回填冒充 snapshot 值
+- snapshot 与 replay/calibration 结果必须在存储、查询和 API 返回中可明确区分
+- 默认禁止在 summary 中 silent merge 不同模式结果，除非显式声明合并口径
+
 ### 交付物
 - service 骨架
 - config dataclass / schema
@@ -303,6 +358,7 @@ evaluation 模型必须支持：
   - 样例测试
   - pipeline hook
 - 待退出型样本源明确后，再升级为生产启用能力
+- 在退出型样本源未被证明可靠前，`ExitSignalEvaluator` 不得被标记为生产可用结论引擎，其结果默认仅用于开发测试与结构验证，不进入正式 recommendation 证据链
 
 ### 任务 12：实现 `ObservationSignalEvaluator`
 评估重点：
@@ -454,6 +510,12 @@ evaluation 模型必须支持：
 - 稳定性
 - replay / calibration 验证状态
 
+### 任务 21.1：明确 recommendation 的权限边界
+必须显式规定：
+- recommendation engine 只生成结构化建议，不直接修改生产规则、阈值、分类映射或执行参数
+- 所有 `actionable` recommendation 仍需人工审核，或进入独立 replay/calibration 复核流程后，才能进入规则变更流程
+- 禁止把 recommendation engine 实现为自动调参器或自动改规则器
+
 ### 验收标准
 - 不会基于低样本直接生成 actionable
 - recommendation 可追溯到 group summary / evaluation evidence
@@ -540,15 +602,212 @@ evaluation 模型必须支持：
 
 为了控制风险，建议不要一个超大 PR 直接上全部内容。
 
-### PR-1：新数据模型 + repository + service skeleton
-### PR-2：SignalClassifier + ExecutionModelResolver
-### PR-3：Entry / Exit / Observation evaluators
-### PR-4：evaluation pipeline + write path
-### PR-5：summary / calibration / recommendation engines
-### PR-6：API + schemas + agent tools
-### PR-7：删除旧 backtest 代码和旧表路径
+### PR-1：新回测基础骨架与数据模型
+
+#### 目标
+先把新子系统的地基搭起来，但不接入真实评估逻辑。
+
+#### 范围
+- 新增 `src/backtest/` 目录骨架
+- 新增 5 张核心表 ORM
+- 落库 run 级版本字段：
+  - `data_version`
+  - `market_data_version`
+  - `theme_mapping_version`
+  - `candidate_snapshot_version`
+- 落库 `snapshot_* / replayed_*` 双轨字段
+- 新建 run / evaluation / summary / recommendation repository skeleton
+- 新建 `FiveLayerBacktestService` skeleton
+- 旧 backtest 标记 deprecated，但不删除
+
+#### 验收标准
+- 能创建空 run
+- 能写入最小 evaluation 占位记录
+- 新表索引、唯一约束、字段合同稳定
+- 不改旧 API 语义
+
+#### 风险点
+- ORM 设计返工
+- 双轨字段设计不完整
+
+---
+
+### PR-2：候选选择口径与 SignalClassifier
+
+#### 目标
+把“回测谁、按什么模式回测、信号怎么分类”做实。
+
+#### 范围
+- `historical_snapshot / rule_replay / parameter_calibration` 候选读取逻辑
+- 禁止把 enrich 后验字段当快照字段
+- 实现 `SignalClassifier`
+- 明确 `entry / observation / exit` 分类映射
+- 为 exit 预留框架，但不强行要求生产启用
+
+#### 验收标准
+- 同一候选在 snapshot 与 replay 模式下能明确区分来源
+- `probe_entry / add_on_strength / watch / focus / stand_aside` 等典型样本分类稳定
+- 单测覆盖典型 stage / setup 组合
+
+#### 风险点
+- look-ahead bias
+- replay 与 snapshot 混用
+
+---
+
+### PR-3：ExecutionModelResolver 与日线执行约束
+
+#### 目标
+把“能不能成交、按什么价成交”从黑箱变成结构化逻辑。
+
+#### 范围
+- 实现 `conservative / baseline / optimistic`
+- 处理收盘后信号不得当日收盘成交
+- 处理涨停买不到、跌停卖不掉
+- 处理 gap 穿越止损/止盈
+- 处理同日双触发保守逻辑
+- 输出：
+  - `fill_status`
+  - `fill_price`
+  - `limit_blocked`
+  - `gap_adjusted`
+  - `ambiguous_intraday_order`
+
+#### 验收标准
+- 单测覆盖一字涨停、一字跌停、gap down、同日双触发
+- evaluation 记录能落全执行字段
+- `conservative` 可作为默认主结论模型
+
+#### 风险点
+- 行情约束取数不稳定
+- 日线语义实现偏乐观
+
+---
+
+### PR-4：三类 evaluator 与 candidate-level pipeline
+
+#### 目标
+让系统第一次真正跑出“候选级回测事实表”。
+
+#### 范围
+- `EntrySignalEvaluator`
+- `ObservationSignalEvaluator`
+- `ExitSignalEvaluator` 的接口、schema、样例测试
+- candidate-level evaluation pipeline
+- 批量写入 `five_layer_backtest_evaluations`
+
+#### 验收标准
+- 指定区间可生成一批 evaluation records
+- Entry / Observation 生产可用
+- Exit 至少框架可用、测试可跑、pipeline 已挂接
+- 不依赖旧 `AnalysisHistory`
+
+#### 风险点
+- 三类 evaluator 又被写回同一套评分函数
+- pipeline 中混入过多 service 分支逻辑
+
+---
+
+### PR-5：summary、排序有效性与稳定性指标
+
+#### 目标
+把事实表变成可以读、可以比较、可以看出层次效果的统计层。
+
+#### 范围
+- overall summary
+- 单维度 summary
+- combo summary
+- Top-K 命中率
+- 候选池超额收益
+- 分层排序一致性
+- `median / p25 / p75 / stddev / extreme_sample_ratio / time_bucket_stability`
+
+#### 验收标准
+- 能回答：
+  - `leader_pool vs watchlist`
+  - `main_theme vs non_theme`
+  - `HIGH vs MEDIUM / LOW`
+- summary 不再局限 overall / stock
+- 稳定性指标能参与后续建议闸门
+
+#### 风险点
+- 只做收益均值，忘了排序有效性
+- 指标很多但不可解释
+
+---
+
+### PR-6：calibration、recommendation、API 与 Agent/Web 切换
+
+#### 目标
+把新系统正式暴露给上层使用。
+
+#### 范围
+- calibration output 生成
+- recommendation engine
+- `observation / hypothesis / actionable` 分级
+- 样本量、稳定性、复核闸门
+- 新 backtest API
+- agent tools 重写
+- Web API / types 迁移到 run-based 语义
+
+#### 验收标准
+- recommendation 不会因小样本直接出 actionable
+- API 以 `backtest_run_id` 为主索引
+- Web 和 Agent 能读新 run-based 结果
+- 旧 overall / stock summary 不再是主接口语义
+
+#### 风险点
+- 前后端契约切换不彻底
+- recommendation 证据链不完整
+
+---
+
+### PR-7：旧系统下线与清理
+
+#### 目标
+确保仓库里只剩一套回测主链路。
+
+#### 范围
+- 删除旧 backtest 代码
+- 移除旧表主写入路径
+- 清理旧测试
+- 清理旧 API / agent tool 残留引用
+- 文档更新为新主链路
+
+#### 前置条件
+- 新系统完成验收
+- Web / Agent / API 已切换
+- 旧链路不再承载新功能
+
+#### 验收标准
+- 项目中只保留一套 backtest 主链路
+- 不存在新旧语义混杂
+
+#### 风险点
+- 删除过早影响联调
+- 隐藏依赖未迁完
 
 这样能保证每个阶段都能单独 review。
+
+### PR 统一闸门
+
+每个 PR 都必须满足：
+- 只完成当前 PR 范围，不夹带无关重构
+- 补对应测试，不靠手工说明替代
+- 说明 snapshot / replay / calibration 是否受影响
+- 说明是否影响 API / Web / Agent
+- 不得跳过执行模型、样本门槛或稳定性约束
+
+### 验证顺序闸门
+除开发范围外，每个阶段还必须满足最小验证要求：
+
+- **PR-1 后**：必须能创建空 run，并写入最小 evaluation 占位记录
+- **PR-2 后**：必须有 snapshot vs replay 的最小 smoke case，证明两种模式不会混用
+- **PR-3 后**：必须通过执行模型边界 smoke，包括涨停买不到、跌停卖不掉、gap、同日双触发
+- **PR-4 后**：必须先跑 candidate-level smoke，再允许进入批量历史区间回放
+- **PR-5 后**：必须验证 summary 与 evidence 的可回溯性，再允许输出 recommendation
+- **PR-6 后**：必须完成 API / Web / Agent 的合同 smoke，才允许切换主接口语义
+- **PR-7 前**：必须完成新旧结果对照、依赖清点和残留引用排查，才允许删除旧系统
 
 ---
 

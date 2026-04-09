@@ -28,10 +28,15 @@ logger = logging.getLogger(__name__)
 # ── 可配置常量 ──────────────────────────────────────────────────────────────
 MIN_SECTOR_STOCK_COUNT = 5
 HOT_THRESHOLD = 70.0
-WARM_THRESHOLD = 50.0
+WARM_THRESHOLD = 62.0        # D2 修复: 从 50.0 提高到 62.0，约 top 15-20% 板块
 NEUTRAL_THRESHOLD = 30.0
 LEADER_SCORE_THRESHOLD = 70.0
 FRONT_TOP_N = 10
+
+# ── L2 硬门槛 (D2 修复): 联动/持续性/前排过滤 ──────────────────────────────
+HOT_MIN_BREADTH = 0.30       # hot 板块最低上涨面(breadth_score)
+HOT_MIN_PERSISTENCE = 20.0   # hot 板块最低持续性分数（连续 2 天 warm+）
+HOT_REQUIRE_LEADER = True    # hot 板块必须有 leader_code
 
 
 @dataclass
@@ -103,6 +108,7 @@ class SectorHeatEngine:
                 sector_df=sector_df,
                 trade_date=trade_date,
             )
+            result = self._apply_hard_filters(result)
             results.append(result)
 
         # 持久化
@@ -161,6 +167,32 @@ class SectorHeatEngine:
             front_codes=front_codes,
             reason=reason,
         )
+
+    # ── L2 硬门槛过滤 (D2 修复) ──────────────────────────────────────────────
+
+    @staticmethod
+    def _apply_hard_filters(result: SectorHeatResult) -> SectorHeatResult:
+        """方案要求: 最小样本 + 联动(breadth) + 前排(leader) + 持续性过滤。
+
+        对已分类的 SectorHeatResult 做降级处理，确保 hot 板块具备真实联动强度。
+        """
+        if result.sector_status == "hot":
+            # 联动过滤: 上涨面不足 → 降级为 warm
+            if result.breadth_score < HOT_MIN_BREADTH:
+                result.sector_status = "warm"
+                result.reason += " | downgraded:low_breadth"
+
+            # 前排过滤: 无龙头股 → 降级为 warm
+            elif HOT_REQUIRE_LEADER and not result.leader_codes:
+                result.sector_status = "warm"
+                result.reason += " | downgraded:no_leader"
+
+            # 持续性过滤: 持续性分数过低（无连续性）→ 降级为 warm
+            elif result.persistence_score < (HOT_MIN_PERSISTENCE / 100.0):
+                result.sector_status = "warm"
+                result.reason += " | downgraded:low_persistence"
+
+        return result
 
     # ── 四维评分 ─────────────────────────────────────────────────────────────
 

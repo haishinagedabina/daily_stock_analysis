@@ -6,9 +6,9 @@ Checks whether the broad market index (default: Shanghai Composite sh000001) is
 above its 100-day moving average.  When the index is below MA100, individual
 stock signals should be treated with extra caution.
 
-Design: MarketGuard never blocks the analysis pipeline — it provides an advisory
-signal that downstream consumers (pipeline, strategies) can use for scoring or
-risk flagging.
+Design: MarketGuard is the L1 hard gate of the five-layer system.  When the
+market regime is ``stand_aside``, the pipeline MUST output zero candidates.
+When ``defensive``, candidate output is capped (see screening_task_service).
 """
 
 import logging

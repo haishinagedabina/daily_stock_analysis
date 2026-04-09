@@ -111,6 +111,43 @@ class StrategyDispatcher:
             reason=reason,
         )
 
+    def get_allowed_rules(
+        self,
+        all_rules: List[Any],
+        market_regime: MarketRegime,
+    ) -> List[Any]:
+        """事前过滤：返回当前环境允许的策略规则列表 (D5 修复)。
+
+        在选股 *之前* 调用，确保只有环境允许的策略参与选股，
+        而非事后清空候选已匹配的策略。
+
+        Parameters
+        ----------
+        all_rules:
+            全部 StrategyScreeningRule 列表（来自 build_rules_from_skills）。
+        market_regime:
+            当前 L1 市场环境。
+
+        Returns
+        -------
+        当前环境允许的 StrategyScreeningRule 子列表。
+        """
+        allowed: List[Any] = []
+        for rule in all_rules:
+            meta = _StrategyMeta(
+                name=rule.strategy_name,
+                system_role=rule.system_role or "",
+                strategy_family=rule.strategy_family or "",
+                applicable_market=list(rule.applicable_market or []),
+            )
+            if self._is_allowed(meta, market_regime):
+                allowed.append(rule)
+        logger.info(
+            "dispatcher pre-filter: regime=%s total=%d allowed=%d",
+            market_regime.value, len(all_rules), len(allowed),
+        )
+        return allowed
+
     # ── private helpers ─────────────────────────────────────────────────
 
     @staticmethod

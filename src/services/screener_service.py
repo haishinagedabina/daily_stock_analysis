@@ -77,15 +77,34 @@ class ScreenerService:
             candidate_limit = _config_attr("screening_candidate_limit", 30)
         return self.evaluate(snapshot_df).selected[:candidate_limit]
 
-    def evaluate(self, snapshot_df: pd.DataFrame) -> ScreeningEvaluationResult:
-        """输出入选候选与淘汰原因。"""
+    def evaluate(
+        self,
+        snapshot_df: pd.DataFrame,
+        prefiltered_rules: Optional[List] = None,
+    ) -> ScreeningEvaluationResult:
+        """输出入选候选与淘汰原因。
+
+        Parameters
+        ----------
+        snapshot_df : DataFrame
+            因子快照。
+        prefiltered_rules : list, optional
+            外部预过滤的 StrategyScreeningRule 列表。提供时直接使用这些规则，
+            跳过内部 skill_manager 查询——用于五层管线的策略事前过滤 (D5)。
+        """
+        if prefiltered_rules is not None:
+            return self._evaluate_with_engine(snapshot_df, rules_override=prefiltered_rules)
         if self._use_strategy_engine:
             return self._evaluate_with_engine(snapshot_df)
         return self._evaluate_legacy(snapshot_df)
 
     # ── Strategy engine path ─────────────────────────────────────────────
 
-    def _evaluate_with_engine(self, snapshot_df: pd.DataFrame) -> ScreeningEvaluationResult:
+    def _evaluate_with_engine(
+        self,
+        snapshot_df: pd.DataFrame,
+        rules_override: Optional[List] = None,
+    ) -> ScreeningEvaluationResult:
         from src.services.strategy_screening_engine import (
             CommonFilterConfig,
             StrategyScreeningEngine,
@@ -95,14 +114,16 @@ class ScreenerService:
         if snapshot_df is None or snapshot_df.empty:
             return ScreeningEvaluationResult(selected=[], rejected=[])
 
-        skills = self._skill_manager.get_screening_rules(
-            strategy_names=self._strategy_names,
-        )
-        if not skills:
-            logger.warning("No screening strategies found; falling back to legacy mode")
-            return self._evaluate_legacy(snapshot_df)
-
-        rules = build_rules_from_skills(skills)
+        if rules_override is not None:
+            rules = rules_override
+        else:
+            skills = self._skill_manager.get_screening_rules(
+                strategy_names=self._strategy_names,
+            )
+            if not skills:
+                logger.warning("No screening strategies found; falling back to legacy mode")
+                return self._evaluate_legacy(snapshot_df)
+            rules = build_rules_from_skills(skills)
         engine = StrategyScreeningEngine()
         common = CommonFilterConfig(
             exclude_st=True,

@@ -216,7 +216,7 @@ class PayloadOutputTestCase(unittest.TestCase):
         self.assertEqual(p["risk_level"], "medium")
 
     def test_payload_handles_none_five_layer_fields(self):
-        """五层字段未赋值时 payload 中为 None。"""
+        """统一决策对象在缺省情况下仍输出主语义默认值。"""
         from src.services.screening_task_service import ScreeningTaskService
 
         candidate = _make_candidate()
@@ -229,8 +229,8 @@ class PayloadOutputTestCase(unittest.TestCase):
         )
 
         p = payloads[0]
-        self.assertIsNone(p["trade_stage"])
-        self.assertIsNone(p["market_regime"])
+        self.assertEqual(p["trade_stage"], "watch")
+        self.assertEqual(p["market_regime"], "balanced")
 
 
 class DBSaveTestCase(unittest.TestCase):
@@ -299,6 +299,91 @@ class DBSaveTestCase(unittest.TestCase):
         self.assertEqual(row["candidate_pool_level"], "leader_pool")
         self.assertEqual(row["risk_level"], "medium")
         self.assertEqual(row["setup_type"], "trend_breakout")
+
+    def test_list_candidates_falls_back_when_candidate_decision_json_is_invalid(self):
+        """坏掉的 candidate_decision_json 不应导致整条候选记录读取失败。"""
+        from src.storage import ScreeningCandidate
+
+        run_id = "test-run-invalid-json"
+        self.db.create_screening_run(
+            run_id=run_id,
+            trade_date=date(2026, 3, 31),
+            trigger_type="manual",
+        )
+        with self.db.get_session() as session:
+            session.add(
+                ScreeningCandidate(
+                    run_id=run_id,
+                    code="600519",
+                    name="贵州茅台",
+                    rank=1,
+                    rule_score=88.0,
+                    matched_strategies_json='["trend_breakout"]',
+                    rule_hits_json='["hit1"]',
+                    factor_snapshot_json='{"pct_chg": 5.0}',
+                    candidate_decision_json='{"code":"600519",',
+                    trade_stage="probe_entry",
+                    setup_type="trend_breakout",
+                    created_at=datetime(2026, 3, 31, 15, 0, 0),
+                )
+            )
+            session.commit()
+
+        rows = self.db.list_screening_candidates(run_id=run_id)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["code"], "600519")
+        self.assertEqual(rows[0]["trade_stage"], "probe_entry")
+
+    def test_list_candidates_merges_row_metadata_when_candidate_decision_json_exists(self):
+        """统一对象 JSON 读取后仍应保留行级元数据。"""
+        run_id = "test-run-metadata-merge"
+        self.db.create_screening_run(
+            run_id=run_id,
+            trade_date=date(2026, 3, 31),
+            trigger_type="manual",
+        )
+
+        candidates = [{
+            "code": "600519",
+            "name": "贵州茅台",
+            "rank": 1,
+            "rule_score": 80.0,
+            "selected_for_ai": True,
+            "matched_strategies": ["trend_breakout"],
+            "rule_hits": ["hit1"],
+            "factor_snapshot": {"pct_chg": 5.0},
+            "trade_stage": "probe_entry",
+            "market_regime": "balanced",
+            "entry_maturity": "high",
+            "risk_level": "medium",
+            "theme_position": "main_theme",
+            "candidate_pool_level": "leader_pool",
+            "setup_type": "trend_breakout",
+        }]
+
+        self.db.save_screening_candidates(run_id=run_id, candidates=candidates)
+
+        rows = self.db.list_screening_candidates(run_id=run_id)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertIn("id", row)
+        self.assertEqual(row["run_id"], run_id)
+        self.assertIsNotNone(row["created_at"])
+
+
+class CandidateDecisionCompatibilityTestCase(unittest.TestCase):
+    """测试统一对象对历史 payload 的兼容性。"""
+
+    def test_from_payload_accepts_legacy_limitup_structure_value(self):
+        from src.schemas.trading_types import CandidateDecision, SetupType
+
+        decision = CandidateDecision.from_payload({
+            "code": "600519",
+            "name": "贵州茅台",
+            "setup_type": "limitup_structure_breakout",
+        })
+
+        self.assertEqual(decision.setup_type, SetupType.LIMITUP_STRUCTURE)
 
 
 class Phase2BDispatchTestCase(unittest.TestCase):

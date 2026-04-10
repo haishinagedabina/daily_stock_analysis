@@ -824,6 +824,7 @@ class ScreeningCandidate(Base):
     rank = Column(Integer, nullable=False, index=True)
     rule_score = Column(Float, nullable=False, default=0.0)
     selected_for_ai = Column(Boolean, nullable=False, default=False)
+    candidate_decision_json = Column(Text)
     matched_strategies_json = Column(Text)
     rule_hits_json = Column(Text)
     factor_snapshot_json = Column(Text)
@@ -851,7 +852,7 @@ class ScreeningCandidate(Base):
     )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        fallback_payload = {
             "id": self.id,
             "run_id": self.run_id,
             "code": self.code,
@@ -878,6 +879,19 @@ class ScreeningCandidate(Base):
             "trade_plan": json.loads(self.trade_plan_json) if self.trade_plan_json else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+        if self.candidate_decision_json:
+            try:
+                payload = json.loads(self.candidate_decision_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                logger.warning(
+                    "Failed to decode candidate_decision_json for screening candidate %s/%s; falling back to row fields",
+                    self.run_id,
+                    self.code,
+                )
+            else:
+                if isinstance(payload, dict):
+                    return {**fallback_payload, **payload}
+        return fallback_payload
 
 
 class DailySectorHeat(Base):
@@ -1075,11 +1089,30 @@ class DatabaseManager:
             if dialect == "sqlite":
                 self._migrate_sqlite_screening_runs_notification_fields()
                 self._migrate_sqlite_screening_runs_heartbeat_field()
+                self._migrate_sqlite_screening_candidates_decision_fields()
                 self._migrate_sqlite_screening_candidates_strategy_fields()
                 self._migrate_sqlite_screening_candidates_ai_review_fields()
         except Exception as exc:
             logger.exception("Inline database migration failed: %s", exc)
             raise
+
+    def _migrate_sqlite_screening_candidates_decision_fields(self) -> None:
+        """Ensure screening_candidates has the unified candidate_decision_json column."""
+        with self._engine.begin() as conn:
+            existing = {
+                row[1]
+                for row in conn.exec_driver_sql("PRAGMA table_info(screening_candidates)").fetchall()
+            }
+            if "candidate_decision_json" in existing:
+                return
+
+            logger.info(
+                "Applying inline SQLite migration: adding candidate_decision_json to screening_candidates"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE screening_candidates ADD COLUMN candidate_decision_json TEXT"
+            )
+            logger.info("Inline SQLite migration for candidate_decision_json completed")
 
     def _migrate_sqlite_screening_runs_notification_fields(self) -> None:
         """Ensure screening_runs has notification-related columns on SQLite."""
@@ -2085,6 +2118,30 @@ class DatabaseManager:
             )
 
             for item in candidates:
+                ai_review = item.get("ai_review") or {}
+                if not ai_review:
+                    ai_review = {
+                        "ai_query_id": item.get("ai_query_id"),
+                        "ai_summary": item.get("ai_summary"),
+                        "ai_operation_advice": item.get("ai_operation_advice"),
+                        "ai_trade_stage": item.get("ai_trade_stage"),
+                        "ai_reasoning": item.get("ai_reasoning"),
+                        "ai_confidence": item.get("ai_confidence"),
+                        "ai_environment_ok": item.get("ai_environment_ok"),
+                        "ai_theme_alignment": item.get("ai_theme_alignment"),
+                        "ai_entry_quality": item.get("ai_entry_quality"),
+                        "stage_conflict": item.get("stage_conflict"),
+                    }
+                decision_payload = dict(item)
+                if "ai_review" not in decision_payload and any(value is not None for value in ai_review.values()):
+                    decision_payload["ai_review"] = ai_review
+                if decision_payload.get("trade_plan") is None and item.get("trade_plan_json"):
+                    try:
+                        parsed_trade_plan = json.loads(item["trade_plan_json"])
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        parsed_trade_plan = None
+                    if isinstance(parsed_trade_plan, dict):
+                        decision_payload["trade_plan"] = parsed_trade_plan
                 session.add(
                     ScreeningCandidate(
                         run_id=run_id,
@@ -2093,16 +2150,17 @@ class DatabaseManager:
                         rank=int(item.get("rank", 0)),
                         rule_score=float(item.get("rule_score", 0.0)),
                         selected_for_ai=bool(item.get("selected_for_ai", False)),
+                        candidate_decision_json=self._safe_json_dumps(decision_payload),
                         matched_strategies_json=self._safe_json_dumps(item.get("matched_strategies", [])),
                         rule_hits_json=self._safe_json_dumps(item.get("rule_hits", [])),
                         factor_snapshot_json=self._safe_json_dumps(item.get("factor_snapshot", {})),
-                        ai_query_id=item.get("ai_query_id"),
-                        ai_summary=item.get("ai_summary"),
-                        ai_operation_advice=item.get("ai_operation_advice"),
+                        ai_query_id=ai_review.get("ai_query_id"),
+                        ai_summary=ai_review.get("ai_summary"),
+                        ai_operation_advice=ai_review.get("ai_operation_advice"),
                         # ── AI 二筛协议字段 (Phase 3B-1) ──
-                        ai_trade_stage=item.get("ai_trade_stage"),
-                        ai_reasoning=item.get("ai_reasoning"),
-                        ai_confidence=item.get("ai_confidence"),
+                        ai_trade_stage=ai_review.get("ai_trade_stage"),
+                        ai_reasoning=ai_review.get("ai_reasoning"),
+                        ai_confidence=ai_review.get("ai_confidence"),
                         # ── 五层决策字段 (Phase 2A) ──
                         setup_type=item.get("setup_type"),
                         trade_stage=item.get("trade_stage"),
@@ -2111,7 +2169,7 @@ class DatabaseManager:
                         market_regime=item.get("market_regime"),
                         theme_position=item.get("theme_position"),
                         candidate_pool_level=item.get("candidate_pool_level"),
-                        trade_plan_json=item.get("trade_plan_json"),
+                        trade_plan_json=self._safe_json_dumps(item.get("trade_plan")) if item.get("trade_plan") is not None else None,
                         created_at=datetime.now(),
                     )
                 )
@@ -2154,7 +2212,7 @@ class DatabaseManager:
             return None
 
         item["analysis_history"] = self._build_screening_analysis_history_ref(
-            query_id=item.get("ai_query_id"),
+            query_id=(item.get("ai_review") or {}).get("ai_query_id"),
             code=item.get("code"),
         )
         return item
@@ -2167,24 +2225,38 @@ class DatabaseManager:
         enriched: List[Dict[str, Any]] = []
         for item in items:
             news_records = []
-            ai_query_id = item.get("ai_query_id")
+            ai_review = item.get("ai_review") or {}
+            if not ai_review:
+                ai_review = {
+                    "ai_query_id": item.get("ai_query_id"),
+                    "ai_summary": item.get("ai_summary"),
+                    "ai_operation_advice": item.get("ai_operation_advice"),
+                    "ai_trade_stage": item.get("ai_trade_stage"),
+                    "ai_reasoning": item.get("ai_reasoning"),
+                    "ai_confidence": item.get("ai_confidence"),
+                    "ai_environment_ok": item.get("ai_environment_ok"),
+                    "ai_theme_alignment": item.get("ai_theme_alignment"),
+                    "ai_entry_quality": item.get("ai_entry_quality"),
+                    "stage_conflict": item.get("stage_conflict"),
+                }
+            ai_query_id = ai_review.get("ai_query_id")
             if ai_query_id:
                 news_records = self.get_news_intel_by_query_id(ai_query_id, limit=3, as_of_date=as_of_date)
 
             news_titles = [record.title for record in news_records if getattr(record, "title", None)]
             news_count = len(news_records)
-            has_ai_analysis = bool(item.get("ai_summary") or item.get("ai_operation_advice"))
+            has_ai_analysis = bool(ai_review.get("ai_summary") or ai_review.get("ai_operation_advice"))
             recommendation_source = "rules_plus_ai" if has_ai_analysis else "rules_only"
             final_score = round(
                 float(item.get("rule_score", 0.0))
-                + self._screening_ai_bonus(item.get("ai_operation_advice"))
+                + self._screening_ai_bonus(ai_review.get("ai_operation_advice"))
                 + min(news_count, 3),
                 2,
             )
 
             reason_parts = [f"规则得分 {float(item.get('rule_score', 0.0)):.1f}"]
             if has_ai_analysis:
-                reason_parts.append(f"AI 建议 {item.get('ai_operation_advice') or '已分析'}")
+                reason_parts.append(f"AI 建议 {ai_review.get('ai_operation_advice') or '已分析'}")
             else:
                 reason_parts.append("按规则结果输出")
             if news_count:
@@ -2198,7 +2270,22 @@ class DatabaseManager:
                 "recommendation_source": recommendation_source,
                 "recommendation_reason": "；".join(reason_parts),
                 "final_score": final_score,
+                "ai_query_id": ai_query_id,
+                "ai_summary": ai_review.get("ai_summary"),
+                "ai_operation_advice": ai_review.get("ai_operation_advice"),
+                "ai_trade_stage": ai_review.get("ai_trade_stage"),
+                "ai_reasoning": ai_review.get("ai_reasoning"),
+                "ai_confidence": ai_review.get("ai_confidence"),
+                "ai_environment_ok": ai_review.get("ai_environment_ok"),
+                "ai_theme_alignment": ai_review.get("ai_theme_alignment"),
+                "ai_entry_quality": ai_review.get("ai_entry_quality"),
+                "stage_conflict": ai_review.get("stage_conflict"),
             }
+            if ai_review:
+                enriched_item["ai_review"] = {
+                    **ai_review,
+                    "ai_query_id": ai_query_id,
+                }
             enriched.append(enriched_item)
 
         ordered = sorted(

@@ -388,8 +388,8 @@ class TestFormatCandidateAuditBlock(unittest.TestCase):
     def test_contains_rule_breakdown_section(self):
         self.assertIn("[规则分拆解]", self.block)
 
-    def test_contains_rule_hits_section(self):
-        self.assertIn("[规则命中]", self.block)
+    def test_contains_audit_evidence_section(self):
+        self.assertIn("[审计证据]", self.block)
 
     def test_contains_factor_snapshot_section(self):
         self.assertIn("[原始指标]", self.block)

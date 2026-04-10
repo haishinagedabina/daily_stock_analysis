@@ -548,9 +548,12 @@ class Config:
     portfolio_fx_update_enabled: bool = True
 
     # === 全市场筛选配置 ===
+    # === 全市场筛选 / 预处理配置 ===
     screening_default_mode: str = "balanced"
     screening_candidate_limit: int = 30
     screening_ai_top_k: int = 5
+    # Engineering preflight thresholds kept for compatibility with the old
+    # screening entry. They are not formal L0 trading-system rules.
     screening_min_list_days: int = 120
     screening_min_volume_ratio: float = 1.2
     screening_min_avg_amount: float = 50_000_000.0
@@ -559,8 +562,6 @@ class Config:
     screening_ingest_failure_threshold: float = 0.20
     screening_market_guard_enabled: bool = True
     screening_market_guard_index: str = "sh000001"
-    screening_use_five_layer_pipeline: bool = False
-
     # Discord 机器人状态
     discord_bot_status: str = "A股智能分析 | /help"
 
@@ -1137,7 +1138,6 @@ class Config:
             screening_ingest_failure_threshold=float(os.getenv('SCREENING_INGEST_FAILURE_THRESHOLD', '0.20')),
             screening_market_guard_enabled=parse_env_bool(os.getenv('SCREENING_MARKET_GUARD_ENABLED'), default=True),
             screening_market_guard_index=os.getenv('SCREENING_MARKET_GUARD_INDEX', 'sh000001'),
-            screening_use_five_layer_pipeline=parse_env_bool(os.getenv('SCREENING_USE_FIVE_LAYER_PIPELINE'), default=False),
         )
     
     @classmethod

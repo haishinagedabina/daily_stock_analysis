@@ -90,6 +90,16 @@ def _fmt_amount(val: Any) -> str:
     return f"{v:.0f}"
 
 
+def _fmt_percent(val: Any) -> str:
+    if val is None:
+        return "N/A"
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return "N/A"
+    return f"{v * 100:.0f}%"
+
+
 def _get_rule_hits(item: Dict[str, Any]) -> List[str]:
     """Extract rule_hits list from a candidate dict, handling JSON string or list."""
     rule_hits = item.get("rule_hits")
@@ -363,7 +373,7 @@ class ScreeningNotificationService:
     def _format_candidate_audit_block(self, item: Dict[str, Any]) -> List[str]:
         """Format a single candidate as a full audit block (used for Top N).
 
-        Sections: [总览] [评分汇总] [规则分拆解] [规则命中] [原始指标]
+        Sections: [总览] [五层决策] [评分汇总] [审计证据] [原始指标]
                   [AI增强] (if available)  [新闻增强] (if available)
         """
         code = item.get("code", "-")
@@ -405,10 +415,12 @@ class ScreeningNotificationService:
             lines.append(f"- 买点类型: {setup_label}")
             lines.append(
                 f"- 成熟度: {item.get('entry_maturity', 'N/A')} | "
-                f"风险: {item.get('risk_level', 'N/A')}"
+                f"风险: {item.get('risk_level', 'N/A')} | "
+                f"新鲜度: {_fmt_percent(item.get('setup_freshness'))}"
             )
             lines.append(
-                f"- 题材地位: {item.get('theme_position', 'N/A')} | "
+                f"- 题材: {item.get('theme_tag', 'N/A')} | "
+                f"题材地位: {item.get('theme_position', 'N/A')} | "
                 f"候选池: {item.get('candidate_pool_level', 'N/A')}"
             )
 
@@ -422,6 +434,8 @@ class ScreeningNotificationService:
                     f"- 仓位: {trade_plan.get('initial_position', 'N/A')} | "
                     f"持仓期: {trade_plan.get('holding_expectation', 'N/A')}"
                 )
+                if trade_plan.get("execution_note"):
+                    lines.append(f"- 执行备注: {trade_plan['execution_note']}")
                 if trade_plan.get("add_rule"):
                     lines.append(f"- 加仓: {trade_plan['add_rule']}")
             lines.append("")
@@ -443,9 +457,9 @@ class ScreeningNotificationService:
             lines.append("- （无规则命中）")
         lines.append("")
 
-        # [规则命中]
+        # [审计证据]
         hit_texts = [_RULE_HIT_ZH.get(h, h) for h in rule_hits]
-        lines.append(f"**[规则命中]** {' | '.join(hit_texts) if hit_texts else '无'}")
+        lines.append(f"**[审计证据]** {' | '.join(hit_texts) if hit_texts else '无'}")
         lines.append("")
 
         # [原始指标]

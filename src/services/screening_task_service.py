@@ -14,6 +14,7 @@ from src.core.trading_calendar import MARKET_TIMEZONE, is_market_open
 from src.core.market_guard import MarketGuard
 from src.services.candidate_analysis_service import CandidateAnalysisService
 from src.services.candidate_analysis_service import CandidateAnalysisBatchResult
+from src.services.candidate_decision_builder import CandidateDecisionBuilder
 from src.services.factor_service import FactorService
 from src.services.market_data_sync_service import MarketDataSyncService
 from src.services.screening_mode_registry import (
@@ -57,6 +58,8 @@ def _ai_review_fields(
     """Apply AiReviewProtocol.parse_ai_response and return AI review fields dict."""
     rule_trade_stage = getattr(candidate, "trade_stage", None) or ""
     market_regime = getattr(candidate, "market_regime", None) or ""
+    rule_trade_stage = getattr(rule_trade_stage, "value", rule_trade_stage)
+    market_regime = getattr(market_regime, "value", market_regime)
     review = protocol.parse_ai_response(
         ai_summary=ai_payload.get("ai_summary"),
         ai_operation_advice=ai_payload.get("ai_operation_advice"),
@@ -338,6 +341,8 @@ class ScreeningTaskService:
             guard_result = None
             market_env = None
             regime_candidate_cap: Optional[int] = None
+            decision_context = None
+            selected: List[ScreeningCandidateRecord] = []
             if self.config.screening_market_guard_enabled:
                 guard = MarketGuard(
                     fetcher_manager=self.market_data_sync_service.fetcher_manager,
@@ -384,6 +389,15 @@ class ScreeningTaskService:
                     )
                 except Exception as exc:
                     logger.warning("L1 regime gate failed (degraded, no cap): %s", exc)
+            if market_env is None:
+                from src.schemas.trading_types import MarketEnvironment, MarketRegime, RiskLevel
+
+                market_env = MarketEnvironment(
+                    regime=MarketRegime.BALANCED,
+                    risk_level=RiskLevel.MEDIUM,
+                    is_safe=True,
+                    message="L1 guard disabled or degraded; default to balanced regime",
+                )
 
             current_stage = "resolving_universe"
             self._last_stage_hint = current_stage
@@ -559,7 +573,7 @@ class ScreeningTaskService:
                     "screening_run event=stand_aside_skip reason=regime_cap_zero regime=%s",
                     market_env.regime.value if market_env else "stand_aside",
                 )
-            elif self._should_use_five_layer_pipeline() and market_env is not None:
+            elif market_env is not None:
                 # ═══ 五层前置管线 (Phase 2 D1/D3/D5) ═══
                 from src.services.five_layer_pipeline import FiveLayerPipeline
 
@@ -581,37 +595,22 @@ class ScreeningTaskService:
                     "screening_run event=five_layer_pipeline_done candidates=%d stats=%s",
                     len(selected), pipeline_result.pipeline_stats,
                 )
-            else:
-                evaluation = runtime_screener_service.evaluate(snapshot_df)
-                selected = evaluation.selected[: effective_limit]
             self._log_stage_completed(
                 screening_run_id=run_id,
                 stage=current_stage,
                 started_at=stage_started_at,
                 selected_count=len(selected),
-                rejected_count=len(getattr(evaluation, "rejected", []) or []) if effective_limit > 0 and not self._should_use_five_layer_pipeline() else 0,
+                rejected_count=0,
                 regime_cap=regime_candidate_cap,
             )
-            # ═══ L1→L5 五层决策链路 ═══
-            # 新管线已内置 L2-L5 裁决，仅旧路径需要后置标注
-            if not (self._should_use_five_layer_pipeline() and market_env is not None and effective_limit > 0):
-                decision_context = None
-                try:
-                    decision_context = self._apply_five_layer_decision(
-                        selected=selected,
-                        snapshot_df=snapshot_df,
-                        effective_trade_date=effective_trade_date,
-                        guard_result=guard_result if self.config.screening_market_guard_enabled else None,
-                        precomputed_market_env=market_env,
-                    )
-                except Exception as exc:
-                    logger.warning("five_layer decision failed (degraded): %s", exc)
 
             if decision_context is not None:
                 try:
                     self._update_run_context(run_id, decision_context=decision_context)
                 except Exception as exc:
                     logger.warning("five_layer: failed to persist decision_context: %s", exc)
+
+            selected = CandidateDecisionBuilder.build_initial(selected)
 
             # Skip AI enriching for extreme_strength_combo strategy
             ai_results: Dict[str, Dict[str, Any]] = {}
@@ -773,60 +772,31 @@ class ScreeningTaskService:
 
     @staticmethod
     def _build_candidate_payloads(
-        selected: List[ScreeningCandidateRecord],
+        selected: List[Any],
         ai_results: Dict[str, Dict[str, Any]],
         ai_top_k: int,
     ) -> List[Dict[str, Any]]:
         from src.services.ai_review_protocol import AiReviewProtocol
 
         protocol = AiReviewProtocol()
+        normalized = [
+            candidate if hasattr(candidate, "to_payload") else CandidateDecisionBuilder.build_initial([candidate])[0]
+            for candidate in selected
+        ]
+        decisions = CandidateDecisionBuilder.attach_ai_reviews(normalized, ai_results, ai_top_k)
         payloads: List[Dict[str, Any]] = []
-        for candidate in selected:
-            if isinstance(candidate, dict):
-                code = candidate["code"]
-                name = candidate.get("name")
-                rank = int(candidate.get("rank", 0))
-                rule_score = float(candidate.get("rule_score", 0.0))
-                matched_strategies = list(candidate.get("matched_strategies", []))
-                rule_hits = candidate.get("rule_hits", [])
-                factor_snapshot = candidate.get("factor_snapshot", {})
-            else:
-                code = candidate.code
-                name = candidate.name
-                rank = candidate.rank
-                rule_score = candidate.rule_score
-                matched_strategies = list(candidate.matched_strategies)
-                rule_hits = candidate.rule_hits
-                factor_snapshot = candidate.factor_snapshot
-
-            ai_payload = ai_results.get(code, {})
-            payloads.append(
-                {
-                    "code": code,
-                    "name": name,
-                    "rank": rank,
-                    "rule_score": rule_score,
-                    "selected_for_ai": rank <= ai_top_k,
-                    "matched_strategies": matched_strategies,
-                    "rule_hits": rule_hits,
-                    "factor_snapshot": factor_snapshot,
-                    "ai_query_id": ai_payload.get("ai_query_id"),
-                    "ai_summary": ai_payload.get("ai_summary"),
-                    "ai_operation_advice": ai_payload.get("ai_operation_advice"),
-                    **_ai_review_fields(
-                        protocol, ai_payload, candidate
-                    ),
-                    # ── 五层决策字段 (Phase 2A) ──
-                    "setup_type": getattr(candidate, "setup_type", None),
-                    "trade_stage": getattr(candidate, "trade_stage", None),
-                    "entry_maturity": getattr(candidate, "entry_maturity", None),
-                    "risk_level": getattr(candidate, "risk_level", None),
-                    "market_regime": getattr(candidate, "market_regime", None),
-                    "theme_position": getattr(candidate, "theme_position", None),
-                    "candidate_pool_level": getattr(candidate, "candidate_pool_level", None),
-                    "trade_plan_json": getattr(candidate, "trade_plan_json", None),
-                }
-            )
+        for candidate in decisions:
+            ai_payload = ai_results.get(candidate.code, {})
+            if ai_payload:
+                review_fields = _ai_review_fields(protocol, ai_payload, candidate)
+                candidate.ai_review = CandidateDecisionBuilder._build_ai_review(
+                    {
+                        **ai_payload,
+                        **review_fields,
+                    }
+                )
+                candidate.has_ai_analysis = True
+            payloads.append(candidate.to_payload())
         return payloads
 
     def _apply_five_layer_decision(
@@ -1157,8 +1127,8 @@ class ScreeningTaskService:
         return build_rules_from_skills(skills)
 
     def _should_use_five_layer_pipeline(self) -> bool:
-        """配置开关: 是否使用五层前置管线 (Phase 2)。"""
-        return bool(getattr(self.config, "screening_use_five_layer_pipeline", False))
+        """五层前置管线已成为唯一主路径。"""
+        return True
 
     @staticmethod
     def _check_deadline(deadline: float, stage: str) -> None:

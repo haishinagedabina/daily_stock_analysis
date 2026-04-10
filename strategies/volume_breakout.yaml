@@ -16,6 +16,7 @@ system_role: confirm
 strategy_family: auxiliary
 applicable_market: [balanced, aggressive, defensive]
 applicable_theme: [main_theme, secondary_theme, follower_theme, non_theme]
+setup_type: trend_breakout
 
 screening:
   filters:

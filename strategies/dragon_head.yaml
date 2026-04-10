@@ -12,10 +12,11 @@ required_tools:
   - search_stock_news
 
 # -- 五层系统 metadata --
-system_role: theme_score
+system_role: stock_pool
 strategy_family: auxiliary
 applicable_market: [balanced, aggressive]
 applicable_theme: [main_theme, secondary_theme]
+setup_type: none
 
 instructions: |
   **龙头策略（Dragon Head Strategy）**

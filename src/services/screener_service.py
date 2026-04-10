@@ -42,11 +42,7 @@ class ScreeningEvaluationResult:
 class ScreenerService:
     """规则首筛服务。
 
-    Operates in two modes:
-    - **Strategy mode** (skill_manager provided): delegates evaluation to
-      StrategyScreeningEngine using YAML-defined rules.
-    - **Legacy mode** (no skill_manager): backward-compatible hardcoded rules
-      for trend-volume-breakout screening.
+    统一走基于 YAML 策略元数据的 StrategyScreeningEngine 路径。
     """
 
     def __init__(
@@ -58,10 +54,13 @@ class ScreenerService:
         skill_manager: Optional[Any] = None,
         strategy_names: Optional[List[str]] = None,
     ) -> None:
+        if skill_manager is None:
+            from src.agent.skills.base import SkillManager
+
+            skill_manager = SkillManager()
+            skill_manager.load_builtin_strategies()
         self._skill_manager = skill_manager
         self._strategy_names = strategy_names
-        self._use_strategy_engine = skill_manager is not None
-
         self.min_list_days = min_list_days if min_list_days is not None else _config_attr("screening_min_list_days", 120)
         self.min_volume_ratio = min_volume_ratio if min_volume_ratio is not None else _config_attr("screening_min_volume_ratio", 1.2)
         self.min_avg_amount = min_avg_amount if min_avg_amount is not None else _config_attr("screening_min_avg_amount", 50_000_000)
@@ -94,9 +93,7 @@ class ScreenerService:
         """
         if prefiltered_rules is not None:
             return self._evaluate_with_engine(snapshot_df, rules_override=prefiltered_rules)
-        if self._use_strategy_engine:
-            return self._evaluate_with_engine(snapshot_df)
-        return self._evaluate_legacy(snapshot_df)
+        return self._evaluate_with_engine(snapshot_df)
 
     # ── Strategy engine path ─────────────────────────────────────────────
 
@@ -117,12 +114,13 @@ class ScreenerService:
         if rules_override is not None:
             rules = rules_override
         else:
+            if self._skill_manager is None:
+                raise RuntimeError("ScreenerService requires a skill_manager-backed strategy engine")
             skills = self._skill_manager.get_screening_rules(
                 strategy_names=self._strategy_names,
             )
             if not skills:
-                logger.warning("No screening strategies found; falling back to legacy mode")
-                return self._evaluate_legacy(snapshot_df)
+                raise RuntimeError("No screening strategies found for strategy-engine path")
             rules = build_rules_from_skills(skills)
         engine = StrategyScreeningEngine()
         common = CommonFilterConfig(
@@ -152,100 +150,6 @@ class ScreenerService:
             for c in result.selected
         ]
         return ScreeningEvaluationResult(selected=selected, rejected=result.rejected)
-
-    # ── Legacy path (backward compatible) ────────────────────────────────
-
-    def _evaluate_legacy(self, snapshot_df: pd.DataFrame) -> ScreeningEvaluationResult:
-        if snapshot_df is None or snapshot_df.empty:
-            return ScreeningEvaluationResult(selected=[], rejected=[])
-
-        selected: List[ScreeningCandidateRecord] = []
-        rejected: List[Dict[str, Any]] = []
-
-        for row in snapshot_df.to_dict("records"):
-            reasons = self._collect_rejection_reasons(row)
-            if reasons:
-                rejected.append({
-                    "code": row.get("code"),
-                    "name": row.get("name"),
-                    "rejection_reasons": reasons,
-                })
-                continue
-
-            rule_hits = self._build_rule_hits(row)
-            score = self._score(row, rule_hits)
-            selected.append(
-                ScreeningCandidateRecord(
-                    code=str(row.get("code", "")),
-                    name=str(row.get("name", "")),
-                    rank=0,
-                    rule_score=score,
-                    rule_hits=rule_hits,
-                    factor_snapshot=dict(row),
-                )
-            )
-
-        selected.sort(key=lambda item: item.rule_score, reverse=True)
-        for idx, item in enumerate(selected, start=1):
-            item.rank = idx
-
-        return ScreeningEvaluationResult(selected=selected, rejected=rejected)
-
-    def _collect_rejection_reasons(self, row: Dict[str, Any]) -> List[str]:
-        reasons: List[str] = []
-
-        if bool(row.get("is_st", False)):
-            reasons.append("st_filtered")
-        if float(row.get("days_since_listed") or 0) < self.min_list_days:
-            reasons.append("listed_days_below_threshold")
-        if float(row.get("avg_amount") or 0.0) < self.min_avg_amount:
-            reasons.append("liquidity_below_threshold")
-        if not self._is_trend_aligned(row):
-            reasons.append("trend_not_aligned")
-        if float(row.get("volume_ratio") or 0.0) < self.min_volume_ratio:
-            reasons.append("volume_below_threshold")
-
-        return reasons
-
-    @staticmethod
-    def _is_trend_aligned(row: Dict[str, Any]) -> bool:
-        close = float(row.get("close") or 0.0)
-        ma5 = float(row.get("ma5") or 0.0)
-        ma10 = float(row.get("ma10") or 0.0)
-        ma20 = float(row.get("ma20") or 0.0)
-        return close >= ma20 and ma5 >= ma10 >= ma20 and ma20 > 0
-
-    def _build_rule_hits(self, row: Dict[str, Any]) -> List[str]:
-        hits: List[str] = []
-
-        if self._is_trend_aligned(row):
-            hits.append("trend_aligned")
-        if float(row.get("volume_ratio") or 0.0) >= self.min_volume_ratio:
-            hits.append("volume_expanding")
-        if float(row.get("breakout_ratio") or 0.0) >= 0.995:
-            hits.append("near_breakout")
-        if float(row.get("avg_amount") or 0.0) >= self.min_avg_amount:
-            hits.append("liquidity_ok")
-
-        return hits
-
-    @staticmethod
-    def _score(row: Dict[str, Any], rule_hits: List[str]) -> float:
-        score = 0.0
-        if "trend_aligned" in rule_hits:
-            score += 40.0
-        if "volume_expanding" in rule_hits:
-            score += 30.0
-        if "near_breakout" in rule_hits:
-            score += 20.0
-        if "liquidity_ok" in rule_hits:
-            score += 10.0
-
-        breakout_ratio = max(float(row.get("breakout_ratio") or 0.0) - 1.0, 0.0)
-        score += breakout_ratio * 1000
-        score += min(float(row.get("volume_ratio") or 0.0), 3.0)
-        return round(score, 2)
-
 
 def _config_attr(attr: str, default: Any) -> Any:
     """Safely read a config attribute with fallback."""

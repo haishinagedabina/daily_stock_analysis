@@ -542,7 +542,7 @@ def test_screening_task_service_logs_stage_durations_and_health_report(caplog):
     assert "duration_ms=" in caplog.text
     assert "health_summary=ok" in caplog.text
     assert "selected_count=1" in caplog.text
-    assert "rejected_count=1" in caplog.text
+    assert "rejected_count=0" in caplog.text
     assert "event=run_completed" in caplog.text
 
 

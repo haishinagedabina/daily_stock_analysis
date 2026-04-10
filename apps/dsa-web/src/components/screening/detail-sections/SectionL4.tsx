@@ -68,6 +68,19 @@ export const SectionL4: React.FC<{
                 </span>
               </>
             )}
+            {candidate.setupFreshness != null && (
+              <>
+                <span className="text-xs text-secondary-text">新鲜度:</span>
+                <span className="text-xs font-medium text-foreground">
+                  {(candidate.setupFreshness * 100).toFixed(0)}%
+                </span>
+              </>
+            )}
+          </div>
+        )}
+        {candidate.setupHitReasons && candidate.setupHitReasons.length > 0 && (
+          <div className="rounded border border-border/40 bg-elevated/20 px-2 py-1.5 text-xs text-secondary-text">
+            {candidate.setupHitReasons.join(' / ')}
           </div>
         )}
 

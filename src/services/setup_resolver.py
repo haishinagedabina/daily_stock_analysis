@@ -89,6 +89,7 @@ class SetupResolver:
         strategy_scores: Dict[str, float],
         market_regime: MarketRegime,
         theme_position: ThemePosition,
+        factor_snapshot: Optional[Dict[str, Any]] = None,
     ) -> SetupResolution:
         """Resolve allowed strategies into one primary setup.
 
@@ -134,7 +135,13 @@ class SetupResolver:
         # Step 2: single entry_core → use directly
         if len(entry_cores) == 1:
             meta = self._meta[entry_cores[0]]
-            return self._build_resolution(meta, entry_cores, allowed_strategies, "single_entry_core")
+            return self._build_resolution(
+                meta,
+                entry_cores,
+                allowed_strategies,
+                "single_entry_core",
+                factor_snapshot=factor_snapshot,
+            )
 
         # Step 3: multiple entry_cores → sort by priority matrix
         priority = self._family_priority(market_regime, theme_position)
@@ -142,6 +149,7 @@ class SetupResolver:
         return self._build_resolution(
             best, entry_cores, allowed_strategies,
             f"multi_entry_core; priority={[f.value for f in priority]}",
+            factor_snapshot=factor_snapshot,
         )
 
     # ── private helpers ─────────────────────────────────────────────────
@@ -191,11 +199,19 @@ class SetupResolver:
         entry_cores: List[str],
         all_strategies: List[str],
         reason_detail: str,
+        factor_snapshot: Optional[Dict[str, Any]] = None,
     ) -> SetupResolution:
         try:
             setup = SetupType(meta.setup_type) if meta.setup_type else SetupType.NONE
         except ValueError:
             setup = SetupType.NONE
+
+        if meta.name == "gap_limitup_breakout":
+            snapshot = factor_snapshot or {}
+            if snapshot.get("limit_up_breakout") or snapshot.get("is_limit_up"):
+                setup = SetupType.LIMITUP_STRUCTURE
+            else:
+                setup = SetupType.GAP_BREAKOUT
 
         try:
             family = StrategyFamily(meta.strategy_family) if meta.strategy_family else None

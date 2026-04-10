@@ -75,6 +75,11 @@ def get_screening_strategies() -> list[dict]:
             "description": s.description,
             "category": s.category,
             "has_screening_rules": s.screening is not None,
+            "system_role": s.system_role,
+            "strategy_family": s.strategy_family,
+            "applicable_market": list(s.applicable_market or []),
+            "applicable_theme": list(s.applicable_theme or []),
+            "setup_type": s.setup_type,
         }
         for s in mgr.list_skills()
     ]

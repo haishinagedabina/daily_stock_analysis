@@ -9,9 +9,10 @@ Each layer's output constrains downstream layers via hard rules
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import List, Optional
+import json
+from typing import Any, Dict, List, Optional
 
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ class SetupType(str, Enum):
     TREND_BREAKOUT = "trend_breakout"
     TREND_PULLBACK = "trend_pullback"
     GAP_BREAKOUT = "gap_breakout"
-    LIMITUP_STRUCTURE = "limitup_structure_breakout"
+    LIMITUP_STRUCTURE = "limitup_structure"
     NONE = "none"
 
 
@@ -92,6 +93,13 @@ class StrategyRole(str, Enum):
     OBSERVATION = "observation"
 
 
+_ENUM_ALIASES: Dict[type[Enum], Dict[str, str]] = {
+    SetupType: {
+        "limitup_structure_breakout": SetupType.LIMITUP_STRUCTURE.value,
+    },
+}
+
+
 # ── Dataclasses ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -114,6 +122,7 @@ class ThemeDecision:
     leader_score: float = 0.0
     sector_strength: float = 0.0
     theme_duration: str = "unknown"
+    trade_theme_stage: str = "unknown"
     leader_stocks: List[str] = field(default_factory=list)
     front_stocks: List[str] = field(default_factory=list)
 
@@ -137,6 +146,22 @@ class TradePlan:
     invalidation_rule: Optional[str] = None
     risk_level: RiskLevel = RiskLevel.MEDIUM
     holding_expectation: Optional[str] = None
+    execution_note: Optional[str] = None
+
+
+@dataclass
+class AiReviewDecision:
+    """AI 二筛统一输出。"""
+    ai_query_id: Optional[str] = None
+    ai_summary: Optional[str] = None
+    ai_operation_advice: Optional[str] = None
+    ai_trade_stage: Optional[TradeStage] = None
+    ai_reasoning: str = ""
+    ai_confidence: float = 0.0
+    ai_environment_ok: Optional[bool] = None
+    ai_theme_alignment: Optional[bool] = None
+    ai_entry_quality: Optional[str] = None
+    stage_conflict: bool = False
 
 
 @dataclass
@@ -144,13 +169,28 @@ class CandidateDecision:
     """统一候选股决策结果——贯穿 5 层的最终输出"""
     code: str
     name: str = ""
+    rank: int = 0
+    selected_for_ai: bool = False
+    rule_hits: List[str] = field(default_factory=list)
+    factor_snapshot: Dict[str, Any] = field(default_factory=dict)
+    strategy_scores: Dict[str, float] = field(default_factory=dict)
     # L1
     market_regime: MarketRegime = MarketRegime.BALANCED
+    risk_level: RiskLevel = RiskLevel.MEDIUM
     environment_ok: bool = True
+    index_price: float = 0.0
+    index_ma100: float = 0.0
+    market_message: str = ""
     # L2
     theme_tag: str = ""
+    theme_score: float = 0.0
     theme_position: ThemePosition = ThemePosition.NON_THEME
     leader_score: float = 0.0
+    sector_strength: float = 0.0
+    theme_duration: str = "unknown"
+    trade_theme_stage: str = "unknown"
+    leader_stocks: List[str] = field(default_factory=list)
+    front_stocks: List[str] = field(default_factory=list)
     # L3
     candidate_pool_level: CandidatePoolLevel = CandidatePoolLevel.WATCHLIST
     relative_strength_market: float = 0.0
@@ -159,14 +199,249 @@ class CandidateDecision:
     setup_type: SetupType = SetupType.NONE
     entry_maturity: EntryMaturity = EntryMaturity.LOW
     setup_freshness: float = 0.0
+    strategy_family: Optional[StrategyFamily] = None
+    setup_hit_reasons: List[str] = field(default_factory=list)
     matched_strategies: List[str] = field(default_factory=list)
     # L5
     trade_stage: TradeStage = TradeStage.WATCH
     trade_plan: Optional[TradePlan] = None
     # AI 二筛
-    ai_trade_stage: Optional[TradeStage] = None
-    ai_reasoning: str = ""
-    ai_confidence: float = 0.0
+    ai_review: Optional[AiReviewDecision] = None
+    # 展示/推荐
+    has_ai_analysis: bool = False
+    news_count: int = 0
+    news_summary: Optional[str] = None
+    recommendation_source: Optional[str] = None
+    recommendation_reason: Optional[str] = None
     # 评分
     rule_score: float = 0.0
     final_score: float = 0.0
+    final_rank: int = 0
+
+    @classmethod
+    def from_record(cls, record: Any) -> "CandidateDecision":
+        """从初筛候选记录构造统一决策对象。"""
+        return cls(
+            code=getattr(record, "code"),
+            name=getattr(record, "name", ""),
+            rank=int(getattr(record, "rank", 0) or 0),
+            rule_score=float(getattr(record, "rule_score", 0.0) or 0.0),
+            rule_hits=list(getattr(record, "rule_hits", []) or []),
+            factor_snapshot=dict(getattr(record, "factor_snapshot", {}) or {}),
+            matched_strategies=list(getattr(record, "matched_strategies", []) or []),
+            strategy_scores=dict(getattr(record, "strategy_scores", {}) or {}),
+            setup_type=cls._coerce_enum(
+                SetupType,
+                getattr(record, "setup_type", None),
+                SetupType.NONE,
+            ),
+            entry_maturity=cls._coerce_enum(
+                EntryMaturity,
+                getattr(record, "entry_maturity", None),
+                EntryMaturity.LOW,
+            ),
+            trade_stage=cls._coerce_enum(
+                TradeStage,
+                getattr(record, "trade_stage", None),
+                TradeStage.WATCH,
+            ),
+            market_regime=cls._coerce_enum(
+                MarketRegime,
+                getattr(record, "market_regime", None),
+                MarketRegime.BALANCED,
+            ),
+            risk_level=cls._coerce_enum(
+                RiskLevel,
+                getattr(record, "risk_level", None),
+                RiskLevel.MEDIUM,
+            ),
+            theme_position=cls._coerce_enum(
+                ThemePosition,
+                getattr(record, "theme_position", None),
+                ThemePosition.NON_THEME,
+            ),
+            theme_tag=str(getattr(record, "theme_tag", "") or ""),
+            theme_score=float(getattr(record, "theme_score", 0.0) or 0.0),
+            leader_score=float(getattr(record, "leader_score", 0.0) or 0.0),
+            sector_strength=float(getattr(record, "sector_strength", 0.0) or 0.0),
+            theme_duration=str(getattr(record, "theme_duration", "unknown") or "unknown"),
+            trade_theme_stage=str(getattr(record, "trade_theme_stage", "unknown") or "unknown"),
+            leader_stocks=list(getattr(record, "leader_stocks", []) or []),
+            front_stocks=list(getattr(record, "front_stocks", []) or []),
+            candidate_pool_level=cls._coerce_enum(
+                CandidatePoolLevel,
+                getattr(record, "candidate_pool_level", None),
+                CandidatePoolLevel.WATCHLIST,
+            ),
+            strategy_family=cls._coerce_optional_enum(
+                StrategyFamily,
+                getattr(record, "strategy_family", None),
+            ),
+            setup_freshness=float(getattr(record, "setup_freshness", 0.0) or 0.0),
+            setup_hit_reasons=list(getattr(record, "setup_hit_reasons", []) or []),
+            trade_plan=cls._coerce_trade_plan(record),
+        )
+
+    def to_payload(self) -> Dict[str, Any]:
+        payload = _serialize_value(self)
+        payload.setdefault("ai_query_id", None)
+        payload.setdefault("ai_summary", None)
+        payload.setdefault("ai_operation_advice", None)
+        payload.setdefault("ai_trade_stage", None)
+        payload.setdefault("ai_reasoning", None)
+        payload.setdefault("ai_confidence", None)
+        payload.setdefault("ai_environment_ok", None)
+        payload.setdefault("ai_theme_alignment", None)
+        payload.setdefault("ai_entry_quality", None)
+        payload.setdefault("stage_conflict", None)
+        ai_review = payload.get("ai_review")
+        if isinstance(ai_review, dict):
+            payload["ai_query_id"] = ai_review.get("ai_query_id")
+            payload["ai_summary"] = ai_review.get("ai_summary")
+            payload["ai_operation_advice"] = ai_review.get("ai_operation_advice")
+            payload["ai_trade_stage"] = ai_review.get("ai_trade_stage")
+            payload["ai_reasoning"] = ai_review.get("ai_reasoning")
+            payload["ai_confidence"] = ai_review.get("ai_confidence")
+            payload["ai_environment_ok"] = ai_review.get("ai_environment_ok")
+            payload["ai_theme_alignment"] = ai_review.get("ai_theme_alignment")
+            payload["ai_entry_quality"] = ai_review.get("ai_entry_quality")
+            payload["stage_conflict"] = ai_review.get("stage_conflict")
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: Dict[str, Any]) -> "CandidateDecision":
+        trade_plan_payload = payload.get("trade_plan")
+        ai_review_payload = payload.get("ai_review")
+        if not isinstance(ai_review_payload, dict):
+            flat_ai_values = {
+                "ai_query_id": payload.get("ai_query_id"),
+                "ai_summary": payload.get("ai_summary"),
+                "ai_operation_advice": payload.get("ai_operation_advice"),
+                "ai_trade_stage": payload.get("ai_trade_stage"),
+                "ai_reasoning": payload.get("ai_reasoning"),
+                "ai_confidence": payload.get("ai_confidence"),
+                "ai_environment_ok": payload.get("ai_environment_ok"),
+                "ai_theme_alignment": payload.get("ai_theme_alignment"),
+                "ai_entry_quality": payload.get("ai_entry_quality"),
+                "stage_conflict": payload.get("stage_conflict"),
+            }
+            if any(value is not None and value != "" for value in flat_ai_values.values()):
+                ai_review_payload = flat_ai_values
+        return cls(
+            code=str(payload.get("code", "")),
+            name=str(payload.get("name", "")),
+            rank=int(payload.get("rank", 0) or 0),
+            selected_for_ai=bool(payload.get("selected_for_ai", False)),
+            rule_hits=list(payload.get("rule_hits", []) or []),
+            factor_snapshot=dict(payload.get("factor_snapshot", {}) or {}),
+            strategy_scores=dict(payload.get("strategy_scores", {}) or {}),
+            market_regime=cls._coerce_enum(MarketRegime, payload.get("market_regime"), MarketRegime.BALANCED),
+            risk_level=cls._coerce_enum(RiskLevel, payload.get("risk_level"), RiskLevel.MEDIUM),
+            environment_ok=bool(payload.get("environment_ok", True)),
+            index_price=float(payload.get("index_price", 0.0) or 0.0),
+            index_ma100=float(payload.get("index_ma100", 0.0) or 0.0),
+            market_message=str(payload.get("market_message", "") or ""),
+            theme_tag=str(payload.get("theme_tag", "") or ""),
+            theme_score=float(payload.get("theme_score", 0.0) or 0.0),
+            theme_position=cls._coerce_enum(ThemePosition, payload.get("theme_position"), ThemePosition.NON_THEME),
+            leader_score=float(payload.get("leader_score", 0.0) or 0.0),
+            sector_strength=float(payload.get("sector_strength", 0.0) or 0.0),
+            theme_duration=str(payload.get("theme_duration", "unknown") or "unknown"),
+            trade_theme_stage=str(payload.get("trade_theme_stage", "unknown") or "unknown"),
+            leader_stocks=list(payload.get("leader_stocks", []) or []),
+            front_stocks=list(payload.get("front_stocks", []) or []),
+            candidate_pool_level=cls._coerce_enum(
+                CandidatePoolLevel,
+                payload.get("candidate_pool_level"),
+                CandidatePoolLevel.WATCHLIST,
+            ),
+            relative_strength_market=float(payload.get("relative_strength_market", 0.0) or 0.0),
+            relative_strength_sector=float(payload.get("relative_strength_sector", 0.0) or 0.0),
+            setup_type=cls._coerce_enum(SetupType, payload.get("setup_type"), SetupType.NONE),
+            entry_maturity=cls._coerce_enum(EntryMaturity, payload.get("entry_maturity"), EntryMaturity.LOW),
+            setup_freshness=float(payload.get("setup_freshness", 0.0) or 0.0),
+            strategy_family=cls._coerce_optional_enum(StrategyFamily, payload.get("strategy_family")),
+            setup_hit_reasons=list(payload.get("setup_hit_reasons", []) or []),
+            matched_strategies=list(payload.get("matched_strategies", []) or []),
+            trade_stage=cls._coerce_enum(TradeStage, payload.get("trade_stage"), TradeStage.WATCH),
+            trade_plan=TradePlan(**trade_plan_payload) if isinstance(trade_plan_payload, dict) else None,
+            ai_review=(
+                AiReviewDecision(
+                    ai_query_id=ai_review_payload.get("ai_query_id"),
+                    ai_summary=ai_review_payload.get("ai_summary"),
+                    ai_operation_advice=ai_review_payload.get("ai_operation_advice"),
+                    ai_trade_stage=cls._coerce_optional_enum(TradeStage, ai_review_payload.get("ai_trade_stage")),
+                    ai_reasoning=str(ai_review_payload.get("ai_reasoning", "") or ""),
+                    ai_confidence=float(ai_review_payload.get("ai_confidence", 0.0) or 0.0),
+                    ai_environment_ok=ai_review_payload.get("ai_environment_ok"),
+                    ai_theme_alignment=ai_review_payload.get("ai_theme_alignment"),
+                    ai_entry_quality=ai_review_payload.get("ai_entry_quality"),
+                    stage_conflict=bool(ai_review_payload.get("stage_conflict", False)),
+                )
+                if isinstance(ai_review_payload, dict) else None
+            ),
+            has_ai_analysis=bool(payload.get("has_ai_analysis", False)),
+            news_count=int(payload.get("news_count", 0) or 0),
+            news_summary=payload.get("news_summary"),
+            recommendation_source=payload.get("recommendation_source"),
+            recommendation_reason=payload.get("recommendation_reason"),
+            rule_score=float(payload.get("rule_score", 0.0) or 0.0),
+            final_score=float(payload.get("final_score", 0.0) or 0.0),
+            final_rank=int(payload.get("final_rank", 0) or 0),
+        )
+
+    @staticmethod
+    def _coerce_enum(enum_cls: Any, raw: Any, default: Any) -> Any:
+        if isinstance(raw, enum_cls):
+            return raw
+        if raw in (None, ""):
+            return default
+        if isinstance(raw, str):
+            raw = _ENUM_ALIASES.get(enum_cls, {}).get(raw, raw)
+        try:
+            return enum_cls(raw)
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _coerce_optional_enum(enum_cls: Any, raw: Any) -> Optional[Any]:
+        if raw in (None, ""):
+            return None
+        if isinstance(raw, enum_cls):
+            return raw
+        try:
+            return enum_cls(raw)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _coerce_trade_plan(record: Any) -> Optional[TradePlan]:
+        raw = getattr(record, "trade_plan", None)
+        if isinstance(raw, dict):
+            return TradePlan(**raw)
+        trade_plan_json = getattr(record, "trade_plan_json", None)
+        if not trade_plan_json:
+            return None
+        try:
+            payload = json.loads(trade_plan_json)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return TradePlan(**payload)
+
+
+def _serialize_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if hasattr(value, "__dataclass_fields__"):
+        return {
+            key: _serialize_value(item)
+            for key, item in asdict(value).items()
+            if item is not None
+        }
+    if isinstance(value, dict):
+        return {key: _serialize_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_serialize_value(item) for item in value]
+    return value

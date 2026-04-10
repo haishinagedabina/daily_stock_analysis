@@ -11,6 +11,11 @@ export interface ScreeningStrategy {
   description: string;
   category: 'trend' | 'pattern' | 'reversal' | 'framework';
   hasScreeningRules: boolean;
+  systemRole?: string;
+  strategyFamily?: string;
+  applicableMarket?: string[];
+  applicableTheme?: string[];
+  setupType?: SetupType | 'none';
 }
 
 export interface ScreeningStrategyListResponse {
@@ -98,6 +103,7 @@ export interface TradePlan {
   invalidationRule?: string;
   riskLevel?: string;
   holdingExpectation?: string;
+  executionNote?: string;
 }
 
 export interface MarketEnvironmentSnapshot {
@@ -139,6 +145,14 @@ export interface ScreeningCandidate {
   selectedForAi: boolean;
   ruleHits: string[];
   factorSnapshot: ScreeningFactorSnapshot;
+  marketMessage?: string;
+  themeTag?: string;
+  themeScore?: number;
+  sectorStrength?: number;
+  themeDuration?: string;
+  tradeThemeStage?: string;
+  leaderStocks?: string[];
+  frontStocks?: string[];
   aiQueryId?: string;
   aiSummary?: string;
   aiOperationAdvice?: string;
@@ -158,6 +172,8 @@ export interface ScreeningCandidate {
   marketRegime?: MarketRegime;
   themePosition?: ThemePosition;
   candidatePoolLevel?: CandidatePoolLevel;
+  setupFreshness?: number;
+  setupHitReasons?: string[];
   tradePlan?: TradePlan;
   // AI Review Protocol
   aiTradeStage?: string;

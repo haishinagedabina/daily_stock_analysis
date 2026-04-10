@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # ── AI Review JSON Schema 定义 ───────────────────────────────────────────────
 
 AI_REVIEW_SCHEMA = {
-    "suggested_stage": "probe_entry|focus|watch|stand_aside|reject",
+    "suggested_stage": "add_on_strength|probe_entry|focus|watch|stand_aside|reject",
     "confidence": "0.0~1.0",
     "reasoning": "string: 关键判断理由",
     "risk_flags": ["string: 风险标记列表"],
@@ -111,7 +111,7 @@ class AiReviewProtocol:
         lines.append("请严格以如下 JSON 格式输出你的分析结论，不要包含其他文字：")
         lines.append("```json")
         lines.append("{")
-        lines.append('  "suggested_stage": "probe_entry|focus|watch|stand_aside|reject",')
+        lines.append('  "suggested_stage": "add_on_strength|probe_entry|focus|watch|stand_aside|reject",')
         lines.append('  "confidence": 0.0,')
         lines.append('  "reasoning": "关键判断理由",')
         lines.append('  "risk_flags": ["风险标记1", "风险标记2"],')
@@ -122,7 +122,7 @@ class AiReviewProtocol:
         lines.append("}")
         lines.append("```")
         lines.append("")
-        lines.append("suggested_stage 取值范围: probe_entry, focus, watch, stand_aside, reject")
+        lines.append("suggested_stage 取值范围: add_on_strength, probe_entry, focus, watch, stand_aside, reject")
         lines.append("environment_ok: 你对当前市场环境是否适合操作的独立判断（bool）")
         lines.append("theme_alignment: 该股票是否与当前主流题材一致（bool）")
         lines.append("entry_quality: 买点质量评估（low/medium/high）")

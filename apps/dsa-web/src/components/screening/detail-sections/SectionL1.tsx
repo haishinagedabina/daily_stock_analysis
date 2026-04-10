@@ -19,6 +19,9 @@ export const SectionL1: React.FC<{ candidate: ScreeningCandidateDetail }> = ({ c
           </Badge>
         )}
       </div>
+      {candidate.marketMessage && (
+        <p className="mt-2 text-xs leading-relaxed text-secondary-text">{candidate.marketMessage}</p>
+      )}
     </Card>
   );
 };

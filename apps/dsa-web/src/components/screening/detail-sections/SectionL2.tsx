@@ -20,6 +20,15 @@ export const SectionL2: React.FC<{
             <LabeledBadge value={candidate.themePosition} labelMap={THEME_POSITION_LABELS} colorMap={THEME_POSITION_COLORS} />
           </div>
         )}
+        {candidate.themeTag && (
+          <InfoRow label="主叙事题材">{candidate.themeTag}</InfoRow>
+        )}
+        {candidate.themeScore != null && (
+          <InfoRow label="题材评分">{candidate.themeScore.toFixed(1)}</InfoRow>
+        )}
+        {candidate.themeDuration && (
+          <InfoRow label="题材阶段">{candidate.themeDuration}</InfoRow>
+        )}
         {factorSnapshot.primary_theme && (
           <InfoRow label="主题">{factorSnapshot.primary_theme}</InfoRow>
         )}
@@ -31,6 +40,9 @@ export const SectionL2: React.FC<{
         )}
         {factorSnapshot.extreme_strength_score != null && (
           <InfoRow label="极端强势分">{factorSnapshot.extreme_strength_score.toFixed(1)}</InfoRow>
+        )}
+        {candidate.leaderStocks && candidate.leaderStocks.length > 0 && (
+          <InfoRow label="龙头股">{candidate.leaderStocks.join(' / ')}</InfoRow>
         )}
       </div>
     </Card>

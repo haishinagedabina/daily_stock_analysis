@@ -376,7 +376,7 @@ export const CandidateDetailDrawer: React.FC = () => {
 
               {selectedCandidate.matchedStrategies && selectedCandidate.matchedStrategies.length > 0 && (
                 <Card variant="default" padding="sm">
-                  <h4 className="mb-2 text-xs font-semibold text-foreground">匹配策略</h4>
+                  <h4 className="mb-2 text-xs font-semibold text-foreground">审计证据: 匹配策略</h4>
                   <div className="flex flex-wrap gap-1.5">
                     {selectedCandidate.matchedStrategies.map((strategy) => (
                       <Badge key={strategy} variant="info" size="sm">{strategy}</Badge>

@@ -84,6 +84,28 @@ _ADD_ON_POSITION: Dict[RiskLevel, str] = {
 _INVALIDATION_RULE = "买入后3个交易日未启动则离场"
 
 
+def _build_execution_note(setup_type: SetupType, factor_snapshot: dict) -> str:
+    ma20 = factor_snapshot.get("ma20")
+    ma100 = factor_snapshot.get("ma100")
+    close = factor_snapshot.get("close")
+    anchors = []
+    if close is not None:
+        anchors.append(f"现价{float(close):.2f}")
+    if ma20 is not None:
+        anchors.append(f"MA20={float(ma20):.2f}")
+    if ma100 is not None:
+        anchors.append(f"MA100={float(ma100):.2f}")
+
+    anchor_note = "，".join(anchors) if anchors else "以盘中结构低点与均线支撑作为执行锚点"
+    if setup_type == SetupType.LIMITUP_STRUCTURE:
+        return f"优先观察涨停结构是否继续封板或缩量承接，{anchor_note}"
+    if setup_type == SetupType.GAP_BREAKOUT:
+        return f"重点盯缺口不回补与前高突破，{anchor_note}"
+    if setup_type in _SWING_SETUPS:
+        return f"围绕趋势延续与关键均线支撑执行，{anchor_note}"
+    return f"按结构确认和止损锚点执行，{anchor_note}"
+
+
 class TradePlanBuilder:
     """根据 L5 trade_stage 和 L4 setup_type 生成可执行交易计划。"""
 
@@ -119,4 +141,5 @@ class TradePlanBuilder:
             holding_expectation=(
                 "1~2周波段" if setup_type in _SWING_SETUPS else "3~5日短线"
             ),
+            execution_note=_build_execution_note(setup_type, factor_snapshot),
         )

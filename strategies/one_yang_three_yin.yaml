@@ -15,6 +15,7 @@ system_role: bonus_signal
 strategy_family: auxiliary
 applicable_market: [balanced, aggressive, defensive]
 applicable_theme: [main_theme, secondary_theme, follower_theme, non_theme]
+setup_type: none
 
 screening:
   filters:

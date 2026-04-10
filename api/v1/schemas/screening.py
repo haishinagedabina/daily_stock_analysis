@@ -115,8 +115,18 @@ class ScreeningCandidateItem(BaseModel):
     entry_maturity: Optional[str] = None
     risk_level: Optional[str] = None
     market_regime: Optional[str] = None
+    market_message: Optional[str] = None
     theme_position: Optional[str] = None
+    theme_tag: Optional[str] = None
+    theme_score: Optional[float] = None
+    sector_strength: Optional[float] = None
+    theme_duration: Optional[str] = None
+    trade_theme_stage: Optional[str] = None
+    leader_stocks: List[str] = Field(default_factory=list)
+    front_stocks: List[str] = Field(default_factory=list)
     candidate_pool_level: Optional[str] = None
+    setup_freshness: Optional[float] = None
+    setup_hit_reasons: List[str] = Field(default_factory=list)
     trade_plan: Optional[Dict[str, Any]] = None
     # -- AI Review Protocol (Phase 3B-1) --
     ai_trade_stage: Optional[str] = None
@@ -156,6 +166,11 @@ class ScreeningStrategyInfo(BaseModel):
     description: str
     category: str
     has_screening_rules: bool
+    system_role: Optional[str] = None
+    strategy_family: Optional[str] = None
+    applicable_market: List[str] = Field(default_factory=list)
+    applicable_theme: List[str] = Field(default_factory=list)
+    setup_type: Optional[str] = None
 
 
 class ScreeningStrategyListResponse(BaseModel):

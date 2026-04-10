@@ -16,6 +16,12 @@
 
 ## Board Cache Warmup
 
+The formal trading decision flow starts at `L1-L5`. The older screening
+service should be treated as an engineering preflight / strategy-matching
+entry, not a standalone `L0`.
+The screening runtime now always uses the unified five-layer main path, so
+there is no environment toggle for enabling or disabling that pipeline.
+
 To reduce the latency of OpenClaw hot-theme screening, the project now persists stock-to-board relationships locally:
 
 - screening reads board memberships from the local database first
@@ -45,7 +51,7 @@ The scheduled prewarm is now best treated as an optional fallback. The primary l
 
 > 🤖 基于 AI 大模型的 A股/港股/美股自选股智能分析系统，每日自动分析并推送「决策仪表盘」到企业微信/飞书/Telegram/Discord/邮箱
 
-[**功能特性**](#-功能特性) · [**快速开始**](#-快速开始) · [**推送效果**](#-推送效果) · [**完整指南**](docs/full-guide.md) · [**常见问题**](docs/FAQ.md) · [**更新日志**](docs/CHANGELOG.md)
+[**功能特性**](#-功能特性) · [**快速开始**](#-快速开始) · [**推送效果**](#-推送效果) · [**完整指南**](docs/full-guide.md) · [**常见问题**](docs/FAQ.md) · [**更新日志**](docs/CHANGELOG.md) · [**选股模块差距分析**](docs/dsa-screening-module-gap-analysis-2026-04-10.md)
 
 简体中文 | [English](docs/README_EN.md) | [繁體中文](docs/README_CHT.md)
 
@@ -81,10 +87,12 @@ The scheduled prewarm is now best treated as an optional fallback. The primary l
 
 - 选股策略默认不选中，需要手动勾选后开始筛选
 - 候选上限默认 5，AI 二次分析默认前 2 个候选
-- 运行状态面板会自动回填最近一次任务；候选结果会展示命中的策略中文名
+- 运行状态面板会自动回填最近一次任务；候选结果现在统一围绕 `trade_stage + setup_type + trade_plan` 展示，命中策略退回审计证据层
 - OpenClaw 热点题材触发的 `extreme_strength_combo` 现在会固定走策略引擎，按请求 `trade_date` 执行，并结合个股所属板块做热点题材硬门槛匹配
 - 候选详情中的 `phase_results` 已统一为正式五阶段键，并新增 `phase_explanations` 供前端直接展示阶段解释；OpenClaw `options.candidate_limit/ai_top_k` 也会在接口层做准确校验
 - OpenClaw `extreme_strength_combo` 候选详情现会把原始规则表达式转成中文展示，并将命中的技术形态单独收敛到独立板块；因子快照中的对象/数组值也会展开为可读文本，避免出现 `[object Object]`
+- 筛选结果内部与落库统一为 `CandidateDecision`，补齐 `setup_freshness`、`theme_duration/trade_theme_stage`、`trade_plan.execution_note` 等字段，API 与通知模板同步消费这套结构
+- `/api/v1/screening/strategies` 现在会返回 `system_role / strategy_family / applicable_market / applicable_theme / setup_type` 元数据，便于前端和审计面板按策略角色解释结果
 - 如果选择的日期不是交易日，系统会自动回退到最近一个交易日继续选股，并在结果中保留提示
 - 如果选择的是当日交易日，需等待北京时间 15:00 后才允许开始选股，避免使用未收盘的日线数据
 - 如果上一次选股任务因进程中断而长期停留在非终态，系统会在后续查询和重试时自动回收该幽灵任务并恢复为可重跑状态

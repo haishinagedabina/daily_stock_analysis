@@ -15,6 +15,7 @@ system_role: stock_pool
 strategy_family: momentum
 applicable_market: [balanced, aggressive]
 applicable_theme: [main_theme, secondary_theme]
+setup_type: none
 
 screening:
   filters:

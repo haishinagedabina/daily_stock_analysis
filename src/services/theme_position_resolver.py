@@ -159,6 +159,8 @@ class ThemePositionResolver:
                     theme_position=matched_theme.position,
                     leader_score=0.0,
                     sector_strength=self._sector_map.get(board_name, SectorHeatResult(board_name="")).strength_score,
+                    theme_duration=(theme_result.sector_stage_rollup if theme_result else "unknown"),
+                    trade_theme_stage=(theme_result.trade_theme_stage if theme_result else "unknown"),
                     leader_stocks=matched_theme.leader_codes,
                     front_stocks=matched_theme.front_codes,
                 )
@@ -189,6 +191,8 @@ class ThemePositionResolver:
             theme_position=position,
             leader_score=0.0,
             sector_strength=primary_sector.strength_score,
+            theme_duration=(theme_result.sector_stage_rollup if theme_result else primary_sector.sector_stage),
+            trade_theme_stage=(theme_result.trade_theme_stage if theme_result else primary_sector.sector_stage),
             leader_stocks=primary_sector.leader_codes,
             front_stocks=primary_sector.front_codes,
         )

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Screening architecture consolidation
+
+- Screening runtime/storage/API output now converges on a single `CandidateDecision` object instead of mixing flat candidate rows with scattered `trade_plan_json` / AI fields
+- The screening run no longer depends on the optional `screening_use_five_layer_pipeline` split; the five-layer pipeline is now the only main path
+- Added missing five-layer semantics including `setup_freshness`, `theme_duration`, `trade_theme_stage`, and `trade_plan.execution_note`
+- AI secondary review now follows a fixed schema and reads/writes the unified candidate decision object end-to-end
+- Strategy YAML metadata is now fully populated with `system_role / strategy_family / applicable_market / applicable_theme / setup_type`, and `/api/v1/screening/strategies` exposes those fields
+- Notification copy now prioritizes `trade_stage + setup + trade_plan` and moves matched strategies to an audit-evidence role
+
+### Screening architecture wording
+
+- Clarified that the five-layer trading system starts at `L1-L5`; the older screening entry is documented as engineering preflight / strategy matching instead of a formal `L0`
+- Removed the obsolete five-layer pipeline env toggle wording; screening now always runs through the unified five-layer main path
+
 ### Screening detail view
 
 - OpenClaw `extreme_strength_combo` detail view now translates raw rule expressions into readable Chinese labels

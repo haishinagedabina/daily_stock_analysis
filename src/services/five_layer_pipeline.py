@@ -36,6 +36,25 @@ from src.services.screener_service import ScreeningCandidateRecord, ScreenerServ
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_candidate_record(item: Any) -> ScreeningCandidateRecord:
+    if isinstance(item, ScreeningCandidateRecord):
+        return item
+    if isinstance(item, dict):
+        return ScreeningCandidateRecord(
+            code=str(item.get("code", "")),
+            name=str(item.get("name", "") or ""),
+            rank=int(item.get("rank", 0) or 0),
+            rule_score=float(item.get("rule_score", 0.0) or 0.0),
+            rule_hits=list(item.get("rule_hits", []) or []),
+            factor_snapshot=dict(item.get("factor_snapshot", {}) or {}),
+            matched_strategies=list(item.get("matched_strategies", []) or []),
+            strategy_scores=dict(item.get("strategy_scores", {}) or {}),
+            setup_type=item.get("setup_type"),
+            strategy_family=item.get("strategy_family"),
+        )
+    raise TypeError(f"Unsupported candidate type for five-layer pipeline: {type(item)!r}")
+
 # ── 五层优先级排序权重 ──────────────────────────────────────────────────────
 _STAGE_PRIORITY: Dict[str, int] = {
     "add_on_strength": 100,
@@ -194,7 +213,7 @@ class FiveLayerPipeline:
             theme_universe_df,
             prefiltered_rules=prefiltered_rules,
         )
-        selected = evaluation.selected[:candidate_limit]
+        selected = [_normalize_candidate_record(item) for item in evaluation.selected[:candidate_limit]]
         stats["selected_before_l345"] = len(selected)
 
         if not selected:
@@ -211,6 +230,7 @@ class FiveLayerPipeline:
         from src.services.candidate_pool_classifier import CandidatePoolClassifier
         from src.services.setup_resolver import SetupResolver
         from src.services.entry_maturity_assessor import EntryMaturityAssessor
+        from src.services.setup_freshness_assessor import SetupFreshnessAssessor
         from src.services.trade_stage_judge import TradeStageJudge
         from src.services.strategy_dispatcher import StrategyDispatcher
         from src.services.trade_plan_builder import TradePlanBuilder
@@ -220,6 +240,7 @@ class FiveLayerPipeline:
 
         pool_classifier = CandidatePoolClassifier()
         maturity_assessor = EntryMaturityAssessor()
+        freshness_assessor = SetupFreshnessAssessor()
         stage_judge = TradeStageJudge()
         plan_builder = TradePlanBuilder()
 
@@ -253,6 +274,7 @@ class FiveLayerPipeline:
                     strategy_scores=candidate.strategy_scores or {},
                     market_regime=market_env.regime,
                     theme_position=tp,
+                    factor_snapshot=fs,
                 )
                 st = resolution.setup_type
                 candidate.setup_type = st.value if st != SetupType.NONE else None
@@ -266,8 +288,34 @@ class FiveLayerPipeline:
                 except ValueError:
                     st = SetupType.NONE
 
+            if st == SetupType.NONE and not (candidate.matched_strategies or []):
+                entry_mat = maturity_assessor.assess(st, fs)
+                setup_freshness = 0.0
+                pool_level = CandidatePoolLevel.WATCHLIST
+                trade_stage = TradeStage.WATCH
+                trade_plan = None
+                candidate.trade_stage = trade_stage.value
+                candidate.market_regime = market_env.regime.value
+                candidate.entry_maturity = entry_mat.value
+                candidate.setup_freshness = setup_freshness
+                candidate.candidate_pool_level = pool_level.value
+                candidate.theme_position = tp.value
+                candidate.risk_level = market_env.risk_level.value
+                candidate.theme_tag = theme_decision.theme_tag
+                candidate.theme_score = theme_decision.theme_score
+                candidate.leader_score = theme_decision.leader_score
+                candidate.sector_strength = theme_decision.sector_strength
+                candidate.theme_duration = theme_decision.theme_duration
+                candidate.trade_theme_stage = getattr(theme_decision, "trade_theme_stage", "unknown")
+                candidate.leader_stocks = list(theme_decision.leader_stocks)
+                candidate.front_stocks = list(theme_decision.front_stocks)
+                candidate.setup_hit_reasons = []
+                kept.append(candidate)
+                continue
+
             # L4: 买点成熟度
             entry_mat = maturity_assessor.assess(st, fs)
+            setup_freshness = freshness_assessor.assess(st, fs)
 
             # L3: 候选池分级
             leader_score = float(fs.get("leader_score", 0.0))
@@ -304,9 +352,19 @@ class FiveLayerPipeline:
             candidate.trade_stage = trade_stage.value
             candidate.market_regime = market_env.regime.value
             candidate.entry_maturity = entry_mat.value
+            candidate.setup_freshness = setup_freshness
             candidate.candidate_pool_level = pool_level.value
             candidate.theme_position = tp.value
             candidate.risk_level = market_env.risk_level.value
+            candidate.theme_tag = theme_decision.theme_tag
+            candidate.theme_score = theme_decision.theme_score
+            candidate.leader_score = theme_decision.leader_score
+            candidate.sector_strength = theme_decision.sector_strength
+            candidate.theme_duration = theme_decision.theme_duration
+            candidate.trade_theme_stage = getattr(theme_decision, "trade_theme_stage", "unknown")
+            candidate.leader_stocks = list(theme_decision.leader_stocks)
+            candidate.front_stocks = list(theme_decision.front_stocks)
+            candidate.setup_hit_reasons = list(getattr(resolution, "contributing_strategies", []) if dispatcher is not None and setup_resolver is not None else [])
             if trade_plan is not None:
                 candidate.trade_plan_json = json.dumps(
                     {
@@ -317,6 +375,7 @@ class FiveLayerPipeline:
                         "invalidation_rule": trade_plan.invalidation_rule,
                         "risk_level": trade_plan.risk_level.value,
                         "holding_expectation": trade_plan.holding_expectation,
+                        "execution_note": trade_plan.execution_note,
                     },
                     ensure_ascii=False,
                 )

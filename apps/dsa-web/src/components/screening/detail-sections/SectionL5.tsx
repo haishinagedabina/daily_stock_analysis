@@ -48,6 +48,9 @@ export const SectionL5: React.FC<{ candidate: ScreeningCandidateDetail }> = ({ c
             {tradePlan.holdingExpectation && (
               <InfoRow label="持仓期望">{tradePlan.holdingExpectation}</InfoRow>
             )}
+            {tradePlan.executionNote && (
+              <InfoRow label="执行备注">{tradePlan.executionNote}</InfoRow>
+            )}
           </div>
         )}
       </div>

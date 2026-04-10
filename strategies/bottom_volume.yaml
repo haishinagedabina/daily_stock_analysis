@@ -15,6 +15,7 @@ system_role: observation
 strategy_family: reversal
 applicable_market: [balanced, aggressive, defensive]
 applicable_theme: [main_theme, secondary_theme, follower_theme, non_theme]
+setup_type: none
 
 screening:
   filters:

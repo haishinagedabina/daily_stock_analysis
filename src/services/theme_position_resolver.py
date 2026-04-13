@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from src.services.theme_mapping_registry import ThemeMappingRegistry
 
 logger = logging.getLogger(__name__)
+MAX_FALLBACK_THEMES = 10
 
 
 @dataclass
@@ -86,7 +87,11 @@ class ThemePositionResolver:
                 raw_themes.append((board_name, position, sector))
 
         if not raw_themes:
-            return []
+            # 运行证据表明，部分交易日盘面只有 warm+expand 的强势板块，
+            # 若此时直接返回空题材，会让 L2 完全丢失热点梳理能力。
+            raw_themes = self._build_warm_expand_fallback_themes()
+            if not raw_themes:
+                return []
 
         # 有 registry 时按 canonical_tag 合并
         if self._registry is not None:
@@ -134,12 +139,29 @@ class ThemePositionResolver:
         themes.sort(key=lambda t: t.score, reverse=True)
         return themes
 
+    def _build_warm_expand_fallback_themes(self) -> List[tuple]:
+        """当日没有 hot 主/次线时，允许 warm+expand/launch 作为次线兜底。"""
+        fallback: List[tuple] = []
+        for board_name, sector in self._sector_map.items():
+            if sector.sector_status != "warm":
+                continue
+            if sector.sector_stage not in ("expand", "launch"):
+                continue
+            fallback.append((board_name, ThemePosition.SECONDARY_THEME, sector))
+        fallback.sort(key=lambda item: item[2].sector_hot_score, reverse=True)
+        return fallback[:MAX_FALLBACK_THEMES]
+
     def get_main_theme_boards(self) -> Set[str]:
         """返回所有主线/次线题材涉及的板块名集合（用于 L2 Universe 缩小）。"""
         boards: Set[str] = set()
         for theme in self._identified_themes:
             boards.update(theme.member_boards)
         return boards
+
+    @property
+    def identified_themes(self) -> List[IdentifiedTheme]:
+        """公开已识别题材，供上游做统计与日志，不暴露可变内部引用。"""
+        return list(self._identified_themes)
 
     def resolve(self, stock_boards: List[str]) -> ThemeDecision:
         if not stock_boards:

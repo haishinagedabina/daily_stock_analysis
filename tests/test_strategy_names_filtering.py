@@ -53,7 +53,6 @@ class TestStrategyNamesFiltering:
             breakout_lookback_days=20,
             min_list_days=120,
             min_volume_ratio=1.2,
-            min_avg_amount=50_000_000,
         )
 
         screener = service._build_runtime_screener_service(

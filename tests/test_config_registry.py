@@ -67,6 +67,6 @@ def test_screening_fields_appear_in_schema_response():
     assert "SCREENING_AI_TOP_K" in keys
     assert "SCREENING_MIN_LIST_DAYS" in keys
     assert "SCREENING_MIN_VOLUME_RATIO" in keys
-    assert "SCREENING_MIN_AVG_AMOUNT" in keys
+    assert "SCREENING_MIN_AVG_AMOUNT" not in keys
     assert "SCREENING_BREAKOUT_LOOKBACK_DAYS" in keys
     assert "SCREENING_FACTOR_LOOKBACK_DAYS" in keys

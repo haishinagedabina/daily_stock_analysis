@@ -72,6 +72,9 @@ export interface ScreeningRun {
   notificationError?: string;
   strategyNames?: string[];
   decisionContext?: DecisionContext;
+  localThemePipeline?: LocalThemePipelineSnapshot;
+  externalThemePipeline?: ExternalThemePipelineSnapshot;
+  fusedThemePipeline?: FusedThemePipelineSnapshot;
 }
 
 export interface ScreeningRunListResponse {
@@ -106,6 +109,19 @@ export interface TradePlan {
   executionNote?: string;
 }
 
+export interface AiReviewDecision {
+  aiQueryId?: string;
+  aiSummary?: string;
+  aiOperationAdvice?: string;
+  aiTradeStage?: string;
+  aiReasoning?: string;
+  aiConfidence?: number;
+  aiEnvironmentOk?: boolean;
+  aiThemeAlignment?: boolean;
+  aiEntryQuality?: string;
+  stageConflict?: boolean;
+}
+
 export interface MarketEnvironmentSnapshot {
   marketRegime?: MarketRegime;
   riskLevel?: string;
@@ -135,6 +151,61 @@ export interface DecisionContext {
   warmThemeCount: number;
 }
 
+export interface ThemePipelineThemeItem {
+  name: string;
+  normalizedName?: string;
+  rawName?: string;
+  rawNames?: string[];
+  source?: string;
+  prioritySource?: string;
+  matchedSources?: string[];
+  heatScore?: number;
+  confidence?: number;
+  sourceBoard?: string;
+  sectorStatus?: string;
+  sectorStage?: string;
+  stockCount?: number;
+  upCount?: number;
+  limitUpCount?: number;
+  catalystSummary?: string;
+  keywordCount?: number;
+  keywords?: string[];
+  normalizationStatus?: string;
+  normalizationConfidence?: number;
+  normalizationMatchReasons?: string[];
+  normalizationMatchedBoards?: string[];
+}
+
+export interface LocalThemePipelineSnapshot {
+  source: string;
+  tradeDate?: string;
+  market?: string;
+  hotThemeCount: number;
+  warmThemeCount: number;
+  selectedThemeNames: string[];
+  themes: ThemePipelineThemeItem[];
+}
+
+export interface ExternalThemePipelineSnapshot {
+  source: string;
+  tradeDate?: string;
+  market?: string;
+  acceptedThemeCount: number;
+  hotThemeCount: number;
+  focusThemeCount: number;
+  topThemeNames: string[];
+  themes: ThemePipelineThemeItem[];
+}
+
+export interface FusedThemePipelineSnapshot {
+  tradeDate?: string;
+  market?: string;
+  activeSources: string[];
+  selectedThemeNames: string[];
+  mergedThemeCount: number;
+  mergedThemes: ThemePipelineThemeItem[];
+}
+
 // ============ 候选 ============
 
 export interface ScreeningCandidate {
@@ -143,9 +214,13 @@ export interface ScreeningCandidate {
   rank: number;
   ruleScore: number;
   selectedForAi: boolean;
+  strategyScores?: Record<string, number>;
   ruleHits: string[];
   factorSnapshot: ScreeningFactorSnapshot;
   marketMessage?: string;
+  environmentOk?: boolean;
+  indexPrice?: number;
+  indexMa100?: number;
   themeTag?: string;
   themeScore?: number;
   sectorStrength?: number;
@@ -153,6 +228,9 @@ export interface ScreeningCandidate {
   tradeThemeStage?: string;
   leaderStocks?: string[];
   frontStocks?: string[];
+  leaderScore?: number;
+  relativeStrengthMarket?: number;
+  relativeStrengthSector?: number;
   aiQueryId?: string;
   aiSummary?: string;
   aiOperationAdvice?: string;
@@ -167,6 +245,7 @@ export interface ScreeningCandidate {
   // 五层决策系统字段
   tradeStage?: TradeStage;
   setupType?: SetupType;
+  strategyFamily?: string;
   entryMaturity?: EntryMaturity;
   riskLevel?: string;
   marketRegime?: MarketRegime;
@@ -175,10 +254,15 @@ export interface ScreeningCandidate {
   setupFreshness?: number;
   setupHitReasons?: string[];
   tradePlan?: TradePlan;
+  aiReview?: AiReviewDecision;
   // AI Review Protocol
   aiTradeStage?: string;
   aiReasoning?: string;
   aiConfidence?: number;
+  aiEnvironmentOk?: boolean;
+  aiThemeAlignment?: boolean;
+  aiEntryQuality?: string;
+  stageConflict?: boolean;
 }
 
 export interface ScreeningCandidateListResponse {

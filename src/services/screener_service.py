@@ -49,7 +49,6 @@ class ScreenerService:
         self,
         min_list_days: Optional[int] = None,
         min_volume_ratio: Optional[float] = None,
-        min_avg_amount: Optional[float] = None,
         breakout_lookback_days: Optional[int] = None,
         skill_manager: Optional[Any] = None,
         strategy_names: Optional[List[str]] = None,
@@ -63,7 +62,6 @@ class ScreenerService:
         self._strategy_names = strategy_names
         self.min_list_days = min_list_days if min_list_days is not None else _config_attr("screening_min_list_days", 120)
         self.min_volume_ratio = min_volume_ratio if min_volume_ratio is not None else _config_attr("screening_min_volume_ratio", 1.2)
-        self.min_avg_amount = min_avg_amount if min_avg_amount is not None else _config_attr("screening_min_avg_amount", 50_000_000)
         self.breakout_lookback_days = breakout_lookback_days if breakout_lookback_days is not None else _config_attr("screening_breakout_lookback_days", 20)
 
     def screen(
@@ -120,13 +118,20 @@ class ScreenerService:
                 strategy_names=self._strategy_names,
             )
             if not skills:
-                raise RuntimeError("No screening strategies found for strategy-engine path")
+                if self._strategy_names == []:
+                    raise RuntimeError(
+                        "No screening strategies found for strategy-engine path. Received empty strategy_names."
+                    )
+                requested = ", ".join(self._strategy_names or [])
+                detail = f" Requested strategies: {requested}." if requested else ""
+                raise RuntimeError(
+                    f"No screening strategies found for strategy-engine path.{detail}"
+                )
             rules = build_rules_from_skills(skills)
         engine = StrategyScreeningEngine()
         common = CommonFilterConfig(
             exclude_st=True,
             min_list_days=self.min_list_days,
-            min_avg_amount=self.min_avg_amount,
         )
         result = engine.evaluate(
             snapshot_df=snapshot_df,

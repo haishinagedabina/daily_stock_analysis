@@ -12,6 +12,7 @@ import pytest
 from src.config import Config
 from src.services.candidate_analysis_service import CandidateAnalysisBatchResult
 from src.services.screening_task_service import ScreeningTaskService, ScreeningTradeDateNotReadyError
+from src.services.theme_context_ingest_service import ExternalTheme, OpenClawThemeContext
 from src.services.universe_service import LocalUniverseNotReadyError
 from src.storage import DatabaseManager
 
@@ -776,7 +777,6 @@ def test_screening_task_service_uses_config_defaults_when_limits_omitted(get_con
     get_config_mock.return_value.screening_ai_top_k = 1
     get_config_mock.return_value.screening_min_list_days = 120
     get_config_mock.return_value.screening_min_volume_ratio = 1.2
-    get_config_mock.return_value.screening_min_avg_amount = 50_000_000
     get_config_mock.return_value.screening_breakout_lookback_days = 20
     get_config_mock.return_value.screening_factor_lookback_days = 80
 
@@ -802,7 +802,6 @@ def test_screening_task_service_uses_config_defaults_when_limits_omitted(get_con
     screener_service = MagicMock()
     screener_service.min_list_days = 120
     screener_service.min_volume_ratio = 1.2
-    screener_service.min_avg_amount = 50_000_000
     screener_service.breakout_lookback_days = 20
     screener_service.evaluate.return_value.selected = [
         {"code": "600519", "name": "贵州茅台", "rank": 1, "rule_score": 91.0, "rule_hits": [], "factor_snapshot": {}},
@@ -848,7 +847,6 @@ def test_screening_task_service_uses_config_defaults_when_limits_omitted(get_con
     assert create_call.kwargs["config_snapshot"]["ai_top_k"] == 1
     assert create_call.kwargs["config_snapshot"]["screening_min_list_days"] == 120
     assert create_call.kwargs["config_snapshot"]["screening_min_volume_ratio"] == 1.2
-    assert create_call.kwargs["config_snapshot"]["screening_min_avg_amount"] == 50_000_000
     assert (
         create_call.kwargs["config_snapshot"]["screening_breakout_lookback_days"]
         == 20
@@ -940,7 +938,6 @@ def test_screening_task_service_creates_new_run_without_explicit_trade_date_when
             "ai_top_k": 5,
             "screening_min_list_days": 120,
             "screening_min_volume_ratio": 1.2,
-            "screening_min_avg_amount": 50_000_000,
             "screening_breakout_lookback_days": 20,
             "screening_factor_lookback_days": 80,
             "mode": "balanced",
@@ -1292,7 +1289,6 @@ def test_screening_task_service_builds_mode_specific_services(
     get_config_mock.return_value.screening_ai_top_k = 5
     get_config_mock.return_value.screening_min_list_days = 120
     get_config_mock.return_value.screening_min_volume_ratio = 1.2
-    get_config_mock.return_value.screening_min_avg_amount = 50_000_000
     get_config_mock.return_value.screening_breakout_lookback_days = 20
     get_config_mock.return_value.screening_factor_lookback_days = 80
 
@@ -1306,7 +1302,6 @@ def test_screening_task_service_builds_mode_specific_services(
     screener_instance = MagicMock()
     screener_instance.min_list_days = 60
     screener_instance.min_volume_ratio = 1.0
-    screener_instance.min_avg_amount = 20_000_000
     screener_instance.breakout_lookback_days = 30
     screener_instance.evaluate.return_value.selected = []
     screener_instance.evaluate.return_value.rejected = []
@@ -1351,7 +1346,6 @@ def test_screening_task_service_builds_mode_specific_services(
     screener_cls.assert_called_once_with(
         min_list_days=60,
         min_volume_ratio=1.0,
-        min_avg_amount=20_000_000.0,
         breakout_lookback_days=15,
         skill_manager=None,
         strategy_names=None,
@@ -1361,9 +1355,200 @@ def test_screening_task_service_builds_mode_specific_services(
         lookback_days=60,
         breakout_lookback_days=15,
         min_list_days=60,
-        theme_context=None,
     )
     assert factor_instance.build_factor_snapshot.call_args.kwargs["persist"] is False
+
+
+@patch("src.services.screening_task_service.get_config")
+@patch("src.services.screening_task_service.FactorService")
+def test_screening_task_service_does_not_inject_theme_context_into_runtime_factor_service(
+    factor_cls,
+    get_config_mock,
+):
+    get_config_mock.return_value.screening_default_mode = "balanced"
+    get_config_mock.return_value.screening_candidate_limit = 30
+    get_config_mock.return_value.screening_ai_top_k = 5
+    get_config_mock.return_value.screening_min_list_days = 120
+    get_config_mock.return_value.screening_min_volume_ratio = 1.2
+    get_config_mock.return_value.screening_breakout_lookback_days = 20
+    get_config_mock.return_value.screening_factor_lookback_days = 80
+
+    service = ScreeningTaskService(
+        db_manager=MagicMock(),
+        universe_service=MagicMock(),
+        factor_service=None,
+        screener_service=MagicMock(),
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=MagicMock(),
+    )
+    service._theme_context = MagicMock(
+        themes=[MagicMock(name="机器人"), MagicMock(name="AI Agent")]
+    )
+
+    runtime_config = service.resolve_run_config(mode="balanced", candidate_limit=30, ai_top_k=5)
+    service._build_runtime_factor_service(runtime_config)
+
+    factor_cls.assert_called_once_with(
+        service.db,
+        lookback_days=80,
+        breakout_lookback_days=20,
+        min_list_days=120,
+    )
+
+
+def test_build_theme_pipeline_context_updates_combines_local_and_external():
+    decision_context = {
+        "sector_heat_results": [
+            {
+                "board_name": "AI芯片",
+                "canonical_theme": "AI芯片",
+                "sector_hot_score": 92.0,
+                "sector_status": "hot",
+                "sector_stage": "main_rise",
+                "stock_count": 18,
+                "up_count": 12,
+                "limit_up_count": 3,
+            },
+            {
+                "board_name": "机器人",
+                "canonical_theme": "机器人",
+                "sector_hot_score": 76.0,
+                "sector_status": "warm",
+                "sector_stage": "expand",
+                "stock_count": 20,
+                "up_count": 10,
+                "limit_up_count": 1,
+            },
+        ],
+        "hot_theme_count": 1,
+        "warm_theme_count": 1,
+    }
+    theme_context = OpenClawThemeContext(
+        source="openclaw",
+        trade_date="2026-03-27",
+        market="cn",
+        themes=[
+            ExternalTheme(
+                name="AI芯片",
+                heat_score=90.0,
+                confidence=0.9,
+                catalyst_summary="政策催化",
+                keywords=["AI", "芯片", "算力"],
+                evidence=[],
+            )
+        ],
+        accepted_at="2026-03-27T15:00:00",
+    )
+
+    updates = ScreeningTaskService._build_theme_pipeline_context_updates(
+        decision_context=decision_context,
+        trade_date=date(2026, 3, 27),
+        market="cn",
+        theme_context=theme_context,
+    )
+
+    assert updates["local_theme_pipeline"]["source"] == "local"
+    assert updates["local_theme_pipeline"]["selected_theme_names"] == ["AI芯片", "机器人概念"]
+    assert updates["external_theme_pipeline"]["source"] == "openclaw"
+    assert updates["fused_theme_pipeline"]["active_sources"] == ["local", "external"]
+    assert updates["fused_theme_pipeline"]["selected_theme_names"] == ["AI芯片", "机器人概念"]
+    assert updates["fused_theme_pipeline"]["merged_theme_count"] == 2
+    assert updates["fused_theme_pipeline"]["merged_themes"][0]["matched_sources"] == ["local", "external"]
+
+
+def test_enrich_run_payload_exposes_theme_pipeline_snapshots():
+    payload = {
+        "run_id": "run-theme-pipeline",
+        "status": "completed",
+        "config_snapshot": {
+            "local_theme_pipeline": {
+                "source": "local",
+                "selected_theme_names": ["AI芯片", "机器人概念"],
+            },
+            "external_theme_pipeline": {
+                "source": "openclaw",
+                "top_theme_names": ["AI芯片"],
+            },
+            "fused_theme_pipeline": {
+                "active_sources": ["local", "external"],
+                "selected_theme_names": ["AI芯片", "机器人概念"],
+                "merged_theme_count": 2,
+            },
+        },
+    }
+
+    enriched = ScreeningTaskService._enrich_run_payload(payload)
+
+    assert enriched["local_theme_pipeline"]["source"] == "local"
+    assert enriched["external_theme_pipeline"]["source"] == "openclaw"
+    assert enriched["fused_theme_pipeline"]["merged_theme_count"] == 2
+
+
+def test_screening_task_service_persists_decision_context_when_theme_pipeline_build_fails():
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-theme-context"
+    db.get_screening_run.return_value = {
+        "run_id": "run-theme-context",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 1,
+    }
+    db.update_screening_run_context.return_value = True
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame([{"code": "600519", "name": "贵州茅台"}])
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台", "close": 1500.0}]
+    )
+
+    screener_service = MagicMock()
+    screener_service.evaluate.return_value.selected = []
+    screener_service.evaluate.return_value.rejected = []
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.fetcher_manager.get_market_stats.return_value = {
+        "limit_up_count": 30,
+        "limit_down_count": 10,
+        "up_count": 2500,
+        "down_count": 1500,
+    }
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 1,
+        "synced": 1,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=screener_service,
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_market_guard_enabled = False
+
+    with patch.object(
+        ScreeningTaskService,
+        "_build_theme_pipeline_context_updates",
+        side_effect=RuntimeError("theme pipeline failed"),
+    ):
+        result = service.execute_run(
+            trade_date=date(2026, 3, 13),
+            candidate_limit=10,
+            ai_top_k=0,
+        )
+
+    assert result["status"] == "completed"
+    assert any(
+        "decision_context" in call.kwargs["config_snapshot_updates"]
+        for call in db.update_screening_run_context.call_args_list
+    )
 
 
 @patch("src.services.screening_task_service.get_config")
@@ -1373,7 +1558,6 @@ def test_screening_task_service_rejects_non_balanced_mode_with_custom_services(g
     get_config_mock.return_value.screening_ai_top_k = 5
     get_config_mock.return_value.screening_min_list_days = 120
     get_config_mock.return_value.screening_min_volume_ratio = 1.2
-    get_config_mock.return_value.screening_min_avg_amount = 50_000_000
     get_config_mock.return_value.screening_breakout_lookback_days = 20
     get_config_mock.return_value.screening_factor_lookback_days = 80
 
@@ -1403,7 +1587,6 @@ def test_screening_task_service_disables_shared_snapshot_persistence_for_custom_
     get_config_mock.return_value.screening_ai_top_k = 5
     get_config_mock.return_value.screening_min_list_days = 120
     get_config_mock.return_value.screening_min_volume_ratio = 1.2
-    get_config_mock.return_value.screening_min_avg_amount = 50_000_000
     get_config_mock.return_value.screening_breakout_lookback_days = 20
     get_config_mock.return_value.screening_factor_lookback_days = 80
 
@@ -1466,7 +1649,6 @@ def test_screening_task_service_persists_shared_snapshot_only_for_default_balanc
     get_config_mock.return_value.screening_ai_top_k = 5
     get_config_mock.return_value.screening_min_list_days = 120
     get_config_mock.return_value.screening_min_volume_ratio = 1.2
-    get_config_mock.return_value.screening_min_avg_amount = 50_000_000
     get_config_mock.return_value.screening_breakout_lookback_days = 20
     get_config_mock.return_value.screening_factor_lookback_days = 80
 
@@ -2506,7 +2688,6 @@ def test_execute_run_passes_strategy_names_to_screener_service(
     get_config_mock.return_value.screening_ai_top_k = 5
     get_config_mock.return_value.screening_min_list_days = 120
     get_config_mock.return_value.screening_min_volume_ratio = 1.2
-    get_config_mock.return_value.screening_min_avg_amount = 50_000_000
     get_config_mock.return_value.screening_breakout_lookback_days = 20
     get_config_mock.return_value.screening_factor_lookback_days = 80
     get_config_mock.return_value.screening_market_guard_enabled = False
@@ -2567,7 +2748,6 @@ def test_execute_run_passes_strategy_names_to_screener_service(
     screener_cls.assert_called_once_with(
         min_list_days=120,
         min_volume_ratio=1.2,
-        min_avg_amount=50_000_000.0,
         breakout_lookback_days=20,
         skill_manager=skill_manager,
         strategy_names=["pattern_123_bottom"],
@@ -2588,7 +2768,6 @@ def test_execute_run_without_strategies_passes_none(
     get_config_mock.return_value.screening_ai_top_k = 5
     get_config_mock.return_value.screening_min_list_days = 120
     get_config_mock.return_value.screening_min_volume_ratio = 1.2
-    get_config_mock.return_value.screening_min_avg_amount = 50_000_000
     get_config_mock.return_value.screening_breakout_lookback_days = 20
     get_config_mock.return_value.screening_factor_lookback_days = 80
     get_config_mock.return_value.screening_market_guard_enabled = False
@@ -2647,7 +2826,6 @@ def test_execute_run_without_strategies_passes_none(
     screener_cls.assert_called_once_with(
         min_list_days=120,
         min_volume_ratio=1.2,
-        min_avg_amount=50_000_000.0,
         breakout_lookback_days=20,
         skill_manager=None,
         strategy_names=None,

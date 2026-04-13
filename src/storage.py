@@ -1049,6 +1049,10 @@ class DatabaseManager:
         """获取单例实例"""
         if cls._instance is None:
             cls._instance = cls()
+        elif not getattr(cls._instance, "_initialized", False) or not hasattr(cls._instance, "_SessionLocal"):
+            cls._cleanup_engine(getattr(cls._instance, "_engine", None))
+            cls._instance = None
+            cls._instance = cls()
         return cls._instance
     
     @classmethod
@@ -2073,7 +2077,6 @@ class DatabaseManager:
             "ai_top_k": config_snapshot.get("ai_top_k"),
             "screening_min_list_days": config_snapshot.get("screening_min_list_days"),
             "screening_min_volume_ratio": config_snapshot.get("screening_min_volume_ratio"),
-            "screening_min_avg_amount": config_snapshot.get("screening_min_avg_amount"),
             "screening_breakout_lookback_days": config_snapshot.get("screening_breakout_lookback_days"),
             "screening_factor_lookback_days": config_snapshot.get("screening_factor_lookback_days"),
             "screening_ingest_failure_threshold": config_snapshot.get("screening_ingest_failure_threshold", 0.02),

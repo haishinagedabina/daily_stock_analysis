@@ -342,9 +342,6 @@ def openclaw_theme_run(request: OpenClawThemeRunRequest) -> OpenClawThemeRunResp
                 },
             )
 
-        # 注入题材上下文到服务
-        service._theme_context = theme_context
-
         result = service.execute_run(
             trade_date=parsed_trade_date,
             stock_codes=None,
@@ -354,6 +351,7 @@ def openclaw_theme_run(request: OpenClawThemeRunRequest) -> OpenClawThemeRunResp
             market=request.market,
             trigger_type="openclaw",
             strategy_names=["extreme_strength_combo"],
+            theme_context=theme_context,
         )
 
         return OpenClawThemeRunResponse(

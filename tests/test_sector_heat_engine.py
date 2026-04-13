@@ -54,6 +54,8 @@ def _make_snapshot_df(sector_stocks: Dict[str, List[dict]]) -> pd.DataFrame:
                 "gap_breakaway": s.get("gap_breakaway", False),
                 "above_ma100": s.get("above_ma100", True),
                 "leader_score": s.get("leader_score", 0.0),
+                "base_leader_score": s.get("base_leader_score", s.get("leader_score", 0.0)),
+                "theme_leader_score": s.get("theme_leader_score", 0.0),
                 "extreme_strength_score": s.get("extreme_strength_score", 0.0),
             })
     return pd.DataFrame(rows)
@@ -255,6 +257,40 @@ class LeadershipTestCase(_SectorHeatTestBase):
         self.assertTrue(len(r.front_codes) > 0)
         self.assertTrue(len(r.front_codes) <= 10)
 
+    def test_theme_leader_score_takes_priority_over_base_leader_score(self) -> None:
+        """L2 龙头识别应优先使用 theme_leader_score，避免继续吃基础分口径。"""
+        stocks = _hot_sector_stocks()
+        stocks[0]["leader_score"] = 20.0
+        stocks[0]["base_leader_score"] = 82.0
+        stocks[0]["theme_leader_score"] = 75.0
+        stocks[1]["leader_score"] = 80.0
+        stocks[1]["base_leader_score"] = 80.0
+        stocks[1]["theme_leader_score"] = 45.0
+
+        snapshot = _make_snapshot_df({"白酒": stocks})
+        results = self.engine.compute_all_sectors(snapshot, date(2026, 3, 28))
+
+        r = results[0]
+        self.assertIn("601000", r.leader_codes)
+        self.assertNotIn("601001", r.leader_codes)
+
+    def test_base_leader_score_is_used_when_theme_leader_scores_are_all_zero(self) -> None:
+        """若题材增强分全为 0，应回退到基础 leader 分识别龙头。"""
+        stocks = _hot_sector_stocks()
+        stocks[0]["leader_score"] = 10.0
+        stocks[0]["base_leader_score"] = 82.0
+        stocks[0]["theme_leader_score"] = 0.0
+        stocks[1]["leader_score"] = 15.0
+        stocks[1]["base_leader_score"] = 78.0
+        stocks[1]["theme_leader_score"] = 0.0
+
+        snapshot = _make_snapshot_df({"白酒": stocks})
+        results = self.engine.compute_all_sectors(snapshot, date(2026, 3, 28))
+
+        r = results[0]
+        self.assertIn("601000", r.leader_codes)
+        self.assertIn("601001", r.leader_codes)
+
 
 class SectorStatusTestCase(_SectorHeatTestBase):
     """sector_status / sector_stage 分类。"""
@@ -274,6 +310,30 @@ class SectorStatusTestCase(_SectorHeatTestBase):
 
         r = results[0]
         self.assertIn(r.sector_status, ["neutral", "cold"])
+
+    def test_expand_sector_with_strong_breadth_and_strength_is_promoted_to_warm(self) -> None:
+        """运行证据：部分热点板块 score 在 50-62，但 expand + 联动/强度足够，仍应视为 warm。"""
+        result = SectorHeatResult(
+            board_name="固态电池",
+            board_type="concept",
+            sector_hot_score=57.7,
+            sector_status="neutral",
+            sector_stage="expand",
+            breadth_score=0.51,
+            strength_score=0.76,
+            persistence_score=0.42,
+            leadership_score=0.55,
+            stock_count=208,
+            up_count=176,
+            limit_up_count=11,
+            avg_pct_chg=2.16,
+            front_codes=["000001", "000002"],
+            reason="score=57.7 status=neutral stage=expand",
+        )
+
+        promoted = self.engine._apply_expand_warm_promotion(result)
+
+        self.assertEqual(promoted.sector_status, "warm")
 
 
 class ColdStartTestCase(_SectorHeatTestBase):

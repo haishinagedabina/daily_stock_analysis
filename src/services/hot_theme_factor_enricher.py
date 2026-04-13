@@ -39,6 +39,17 @@ class HotThemeFactorEnricher:
         Enrich factor snapshot with hot theme fields.
         Returns enriched snapshot with theme-related fields.
         """
+        base_leader_score = float(snapshot.get("base_leader_score", snapshot.get("leader_score", 0.0)) or 0.0)
+        base_extreme_strength_score = float(
+            snapshot.get(
+                "base_extreme_strength_score",
+                snapshot.get("extreme_strength_score", 0.0),
+            )
+            or 0.0
+        )
+        snapshot["base_leader_score"] = base_leader_score
+        snapshot["base_extreme_strength_score"] = base_extreme_strength_score
+
         if theme_context is None or not theme_context.themes:
             # No theme context, add default values
             snapshot["is_hot_theme_stock"] = False
@@ -46,8 +57,12 @@ class HotThemeFactorEnricher:
             snapshot["theme_tags"] = []
             snapshot["theme_heat_score"] = 0.0
             snapshot["theme_match_score"] = 0.0
-            snapshot["leader_score"] = 0
-            snapshot["extreme_strength_score"] = 0.0
+            snapshot["theme_leader_score"] = 0.0
+            snapshot["theme_extreme_strength_score"] = 0.0
+            snapshot["leader_score"] = base_leader_score
+            snapshot["extreme_strength_score"] = base_extreme_strength_score
+            snapshot["leader_score_source"] = "base"
+            snapshot["extreme_strength_score_source"] = "base"
             snapshot["extreme_strength_reasons"] = []
             snapshot["entry_reason"] = None
             snapshot["core_signal"] = None
@@ -67,11 +82,11 @@ class HotThemeFactorEnricher:
                 primary_theme=None,
                 theme_match_score=0.0,
                 theme_heat_score=0.0,
-                leader_score=0,
+                leader_score=base_leader_score,
                 core_signal=None,
                 entry_reason=None,
                 risk_params=snapshot["risk_params"],
-                extreme_strength_score=0.0,
+                extreme_strength_score=base_extreme_strength_score,
             )
             return snapshot
 
@@ -124,11 +139,11 @@ class HotThemeFactorEnricher:
         is_hot = best_match_score >= self.theme_matcher.THEME_MATCH_THRESHOLD
 
         # Calculate leader score
-        leader_score = 0
+        theme_leader_score = 0.0
         if is_hot:
             circ_mv = snapshot.get("circ_mv")
             turnover_rate = snapshot.get("turnover_rate")
-            leader_score = self.leader_calculator.calculate_leader_score(
+            theme_leader_score = self.leader_calculator.calculate_leader_score(
                 theme_match_score=best_match_score,
                 circ_mv=circ_mv,
                 turnover_rate=turnover_rate,
@@ -139,7 +154,7 @@ class HotThemeFactorEnricher:
             )
 
         # Calculate extreme strength score using corrected strategy
-        extreme_strength_score = 0.0
+        theme_extreme_strength_score = 0.0
         extreme_strength_reasons = []
         entry_reason = None
         core_signal = None
@@ -160,14 +175,14 @@ class HotThemeFactorEnricher:
             )
 
             # Calculate total score using the main strategy scorer.
-            extreme_strength_score = self.strength_scorer.calculate_extreme_strength_score(
+            theme_extreme_strength_score = self.strength_scorer.calculate_extreme_strength_score(
                 above_ma100=snapshot.get("above_ma100", False),
                 gap_breakaway=snapshot.get("gap_breakaway", False),
                 pattern_123_low_trendline=snapshot.get("pattern_123_low_trendline", False),
                 is_limit_up=snapshot.get("is_limit_up", False),
                 bottom_divergence_double_breakout=snapshot.get("bottom_divergence_double_breakout", False),
                 theme_heat_score=best_theme_heat,
-                leader_score=leader_score,
+                leader_score=theme_leader_score,
                 volume_ratio=snapshot.get("volume_ratio", 0.0) or 0.0,
                 turnover_rate=snapshot.get("turnover_rate"),
                 circ_mv=snapshot.get("circ_mv"),
@@ -199,17 +214,17 @@ class HotThemeFactorEnricher:
         # Build phase results
         phase_results = self._build_phase_results(
             market_and_theme=is_hot,
-            leader_screen=is_hot and leader_score >= 50,
+            leader_screen=is_hot and theme_leader_score >= 50,
             core_signal=is_hot and core_signal is not None,
-            entry_readiness=is_hot and extreme_strength_score >= 60 and entry_reason is not None,
+            entry_readiness=is_hot and theme_extreme_strength_score >= 60 and entry_reason is not None,
             risk_controls=is_hot,
         )
 
         # Build risk params
         risk_params = {
             "stop_loss": snapshot.get("ma100", 0) * 0.95 if snapshot.get("above_ma100") else 0,
-            "position_size": "轻仓试错" if extreme_strength_score < 80 else "可加仓",
-            "take_profit_ratio": 0.15 if extreme_strength_score >= 80 else 0.10,
+            "position_size": "轻仓试错" if theme_extreme_strength_score < 80 else "可加仓",
+            "take_profit_ratio": 0.15 if theme_extreme_strength_score >= 80 else 0.10,
         }
 
         # Extract news from theme evidence
@@ -232,8 +247,20 @@ class HotThemeFactorEnricher:
         snapshot["theme_tags"] = [best_theme.name] if best_theme else []
         snapshot["theme_heat_score"] = best_theme_heat
         snapshot["theme_match_score"] = best_match_score
-        snapshot["leader_score"] = leader_score
-        snapshot["extreme_strength_score"] = extreme_strength_score
+        effective_leader_score, effective_extreme_strength_score = self._resolve_effective_scores(
+            base_leader_score=base_leader_score,
+            base_extreme_strength_score=base_extreme_strength_score,
+            theme_leader_score=theme_leader_score if is_hot else 0.0,
+            theme_extreme_strength_score=theme_extreme_strength_score if is_hot else 0.0,
+        )
+        snapshot["theme_leader_score"] = theme_leader_score
+        snapshot["theme_extreme_strength_score"] = theme_extreme_strength_score
+        snapshot["leader_score"] = effective_leader_score
+        snapshot["extreme_strength_score"] = effective_extreme_strength_score
+        snapshot["leader_score_source"] = "theme" if theme_leader_score > 0.0 and is_hot else "base"
+        snapshot["extreme_strength_score_source"] = (
+            "theme" if theme_extreme_strength_score > 0.0 and is_hot else "base"
+        )
         snapshot["extreme_strength_reasons"] = extreme_strength_reasons
         snapshot["theme_catalyst_summary"] = best_theme.catalyst_summary if best_theme else None
         snapshot["theme_catalyst_news"] = theme_catalyst_news
@@ -246,15 +273,32 @@ class HotThemeFactorEnricher:
             primary_theme=best_theme.name if best_theme else None,
             theme_match_score=best_match_score,
             theme_heat_score=best_theme_heat,
-            leader_score=leader_score,
+            leader_score=effective_leader_score,
             core_signal=core_signal,
             entry_reason=entry_reason,
             risk_params=risk_params,
-            extreme_strength_score=extreme_strength_score,
+            extreme_strength_score=effective_extreme_strength_score,
         )
         snapshot["risk_params"] = risk_params
 
         return snapshot
+
+    @staticmethod
+    def _resolve_effective_scores(
+        base_leader_score: float,
+        base_extreme_strength_score: float,
+        theme_leader_score: float,
+        theme_extreme_strength_score: float,
+    ) -> tuple[float, float]:
+        effective_leader_score = (
+            theme_leader_score if theme_leader_score > 0.0 else base_leader_score
+        )
+        effective_extreme_strength_score = (
+            theme_extreme_strength_score
+            if theme_extreme_strength_score > 0.0
+            else base_extreme_strength_score
+        )
+        return effective_leader_score, effective_extreme_strength_score
 
     @staticmethod
     def _build_phase_results(
@@ -278,7 +322,7 @@ class HotThemeFactorEnricher:
         primary_theme: Optional[str],
         theme_match_score: float,
         theme_heat_score: float,
-        leader_score: int,
+        leader_score: float,
         core_signal: Optional[str],
         entry_reason: Optional[str],
         risk_params: Dict[str, Any],

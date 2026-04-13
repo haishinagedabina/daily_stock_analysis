@@ -58,6 +58,61 @@ class DecisionContextSnapshot(BaseModel):
     warm_theme_count: int = 0
 
 
+class ThemePipelineThemeItem(BaseModel):
+    name: str
+    normalized_name: Optional[str] = None
+    raw_name: Optional[str] = None
+    raw_names: List[str] = Field(default_factory=list)
+    source: Optional[str] = None
+    priority_source: Optional[str] = None
+    matched_sources: List[str] = Field(default_factory=list)
+    heat_score: Optional[float] = None
+    confidence: Optional[float] = None
+    source_board: Optional[str] = None
+    sector_status: Optional[str] = None
+    sector_stage: Optional[str] = None
+    stock_count: Optional[int] = None
+    up_count: Optional[int] = None
+    limit_up_count: Optional[int] = None
+    catalyst_summary: Optional[str] = None
+    keyword_count: Optional[int] = None
+    keywords: List[str] = Field(default_factory=list)
+    normalization_status: Optional[str] = None
+    normalization_confidence: Optional[float] = None
+    normalization_match_reasons: List[str] = Field(default_factory=list)
+    normalization_matched_boards: List[str] = Field(default_factory=list)
+
+
+class LocalThemePipelineSnapshot(BaseModel):
+    source: str
+    trade_date: Optional[str] = None
+    market: Optional[str] = None
+    hot_theme_count: int = 0
+    warm_theme_count: int = 0
+    selected_theme_names: List[str] = Field(default_factory=list)
+    themes: List[ThemePipelineThemeItem] = Field(default_factory=list)
+
+
+class ExternalThemePipelineSnapshot(BaseModel):
+    source: str
+    trade_date: Optional[str] = None
+    market: Optional[str] = None
+    accepted_theme_count: int = 0
+    hot_theme_count: int = 0
+    focus_theme_count: int = 0
+    top_theme_names: List[str] = Field(default_factory=list)
+    themes: List[ThemePipelineThemeItem] = Field(default_factory=list)
+
+
+class FusedThemePipelineSnapshot(BaseModel):
+    trade_date: Optional[str] = None
+    market: Optional[str] = None
+    active_sources: List[str] = Field(default_factory=list)
+    selected_theme_names: List[str] = Field(default_factory=list)
+    merged_theme_count: int = 0
+    merged_themes: List[ThemePipelineThemeItem] = Field(default_factory=list)
+
+
 class ScreeningRunResponse(BaseModel):
     run_id: str
     mode: Optional[str] = None
@@ -83,6 +138,9 @@ class ScreeningRunResponse(BaseModel):
     # 五层决策上下文
     strategy_names: Optional[List[str]] = None
     decision_context: Optional[DecisionContextSnapshot] = None
+    local_theme_pipeline: Optional[LocalThemePipelineSnapshot] = None
+    external_theme_pipeline: Optional[ExternalThemePipelineSnapshot] = None
+    fused_theme_pipeline: Optional[FusedThemePipelineSnapshot] = None
 
 
 class ScreeningRunListResponse(BaseModel):
@@ -97,6 +155,7 @@ class ScreeningCandidateItem(BaseModel):
     rule_score: float
     selected_for_ai: bool
     matched_strategies: List[str] = Field(default_factory=list)
+    strategy_scores: Dict[str, float] = Field(default_factory=dict)
     rule_hits: List[str] = Field(default_factory=list)
     factor_snapshot: Dict[str, Any] = Field(default_factory=dict)
     ai_query_id: Optional[str] = None
@@ -112,10 +171,14 @@ class ScreeningCandidateItem(BaseModel):
     # -- 五层系统新增字段 (Phase 1) --
     trade_stage: Optional[str] = None
     setup_type: Optional[str] = None
+    strategy_family: Optional[str] = None
     entry_maturity: Optional[str] = None
     risk_level: Optional[str] = None
     market_regime: Optional[str] = None
     market_message: Optional[str] = None
+    environment_ok: Optional[bool] = None
+    index_price: Optional[float] = None
+    index_ma100: Optional[float] = None
     theme_position: Optional[str] = None
     theme_tag: Optional[str] = None
     theme_score: Optional[float] = None
@@ -125,9 +188,13 @@ class ScreeningCandidateItem(BaseModel):
     leader_stocks: List[str] = Field(default_factory=list)
     front_stocks: List[str] = Field(default_factory=list)
     candidate_pool_level: Optional[str] = None
+    leader_score: Optional[float] = None
+    relative_strength_market: Optional[float] = None
+    relative_strength_sector: Optional[float] = None
     setup_freshness: Optional[float] = None
     setup_hit_reasons: List[str] = Field(default_factory=list)
     trade_plan: Optional[Dict[str, Any]] = None
+    ai_review: Optional[Dict[str, Any]] = None
     # -- AI Review Protocol (Phase 3B-1) --
     ai_trade_stage: Optional[str] = None
     ai_reasoning: Optional[str] = None

@@ -20,7 +20,6 @@ def _make_runtime_config(**overrides) -> ResolvedScreeningRuntimeConfig:
         "ai_top_k": 5,
         "min_list_days": 120,
         "min_volume_ratio": 1.2,
-        "min_avg_amount": 50_000_000,
         "breakout_lookback_days": 20,
         "factor_lookback_days": 80,
     }
@@ -46,17 +45,18 @@ class TestScreeningTaskServiceStrategyIntegration:
             strategy_names=["volume_breakout", "ma_golden_cross"],
         )
 
-        assert screener._use_strategy_engine is True
         assert screener._strategy_names == ["volume_breakout", "ma_golden_cross"]
+        assert screener._skill_manager is mock_skill_mgr
 
     def test_build_runtime_screener_without_skill_manager(self):
-        """Without skill_manager, legacy mode is used."""
+        """Without skill_manager, ScreenerService should bootstrap builtin strategies."""
         mock_db = MagicMock()
         service = ScreeningTaskService(db_manager=mock_db)
         runtime_config = _make_runtime_config()
         screener = service._build_runtime_screener_service(runtime_config)
 
-        assert screener._use_strategy_engine is False
+        assert screener._strategy_names is None
+        assert screener._skill_manager is not None
 
     def test_resolve_active_strategies_default(self):
         """Default balanced mode returns all available strategies."""

@@ -283,6 +283,32 @@ class TestTradePlanBuilder(unittest.TestCase):
         )
         self.assertEqual(result.risk_level, RiskLevel.HIGH)
 
+    def test_execution_note_handles_non_numeric_anchor_values(self) -> None:
+        result = self.builder.build(
+            trade_stage=TradeStage.PROBE_ENTRY,
+            setup_type=SetupType.TREND_BREAKOUT,
+            entry_maturity=EntryMaturity.MEDIUM,
+            risk_level=RiskLevel.MEDIUM,
+            pool_level=CandidatePoolLevel.FOCUS_LIST,
+            factor_snapshot={"close": "not-a-number", "ma20": object(), "ma100": None},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertIn("执行锚点", result.execution_note)
+
+    def test_execution_note_keeps_existing_close_anchor_copy(self) -> None:
+        result = self.builder.build(
+            trade_stage=TradeStage.PROBE_ENTRY,
+            setup_type=SetupType.TREND_BREAKOUT,
+            entry_maturity=EntryMaturity.MEDIUM,
+            risk_level=RiskLevel.MEDIUM,
+            pool_level=CandidatePoolLevel.FOCUS_LIST,
+            factor_snapshot={"close": 25.5, "ma20": 24.8, "ma100": 22.0},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertIn("现价25.50", result.execution_note)
+
 
 if __name__ == "__main__":
     unittest.main()

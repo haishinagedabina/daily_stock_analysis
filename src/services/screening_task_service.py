@@ -51,7 +51,7 @@ except Exception:
 
 
 def _ai_review_fields(
-    protocol: "AiReviewProtocol",
+    protocol: Any,
     ai_payload: Dict[str, Any],
     candidate: Any,
 ) -> Dict[str, Any]:
@@ -144,6 +144,7 @@ class ScreeningTaskService:
         resume_from: Optional[str] = None,
         trigger_type: str = "manual",
         strategy_names: Optional[List[str]] = None,
+        theme_context: Optional[Any] = None,
     ) -> Dict[str, Any]:
         current_stage = "initializing"
         self._last_stage_hint = current_stage
@@ -156,6 +157,7 @@ class ScreeningTaskService:
         if runtime_config.mode != "balanced" and (self._custom_screener_service or self._custom_factor_service):
             raise ValueError("自定义注入的筛选服务不支持非 balanced mode，请改为使用默认服务构建")
         requested_trade_date = trade_date or self._get_market_today(market)
+        effective_theme_context = theme_context if theme_context is not None else self._theme_context
         resolved_trade_date = requested_trade_date
         trade_date_warning: Optional[str] = None
         if trade_date is not None:
@@ -169,7 +171,7 @@ class ScreeningTaskService:
             runtime_config=runtime_config,
             ingest_failure_threshold=float(getattr(self.config, "screening_ingest_failure_threshold", 0.20)),
             strategy_names=strategy_names,
-            theme_context=self._theme_context,
+            theme_context=effective_theme_context,
         )
         if trade_date is not None and resolved_trade_date != requested_trade_date:
             run_snapshot["resolved_trade_date"] = resolved_trade_date.isoformat()
@@ -373,8 +375,8 @@ class ScreeningTaskService:
                     market_stats = None
                     try:
                         market_stats = self.market_data_sync_service.fetcher_manager.get_market_stats()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("screening_run event=market_stats_degraded %s", exc)
                     market_env = env_engine.assess(guard_result, index_bars, market_stats)
                     regime_candidate_cap = _REGIME_CANDIDATE_CAP.get(
                         market_env.regime,
@@ -555,6 +557,9 @@ class ScreeningTaskService:
             self._last_stage_hint = current_stage
             stage_started_at = time.perf_counter()
             self._must_update_status(run_id=run_id, status="screening")
+            pipeline_stats: Dict[str, Any] = {}
+            pipeline_skipped = False
+            pipeline_skip_reason: Optional[str] = None
 
             # L1 硬开关: stand_aside → 直接输出 0 候选，跳过选股
             effective_limit = runtime_config.candidate_limit
@@ -569,6 +574,8 @@ class ScreeningTaskService:
             if effective_limit == 0:
                 # stand_aside: 环境总开关关闭，不执行选股
                 selected: List[ScreeningCandidateRecord] = []
+                pipeline_skipped = True
+                pipeline_skip_reason = "regime_cap_zero"
                 logger.info(
                     "screening_run event=stand_aside_skip reason=regime_cap_zero regime=%s",
                     market_env.regime.value if market_env else "stand_aside",
@@ -586,29 +593,57 @@ class ScreeningTaskService:
                     screener_service=runtime_screener_service,
                     candidate_limit=effective_limit,
                     db_manager=self.db,
-                    theme_context=self._theme_context,
                     skill_manager=self._skill_manager,
                 )
                 selected = pipeline_result.candidates
                 decision_context = pipeline_result.decision_context
+                pipeline_stats = pipeline_result.pipeline_stats
                 logger.info(
-                    "screening_run event=five_layer_pipeline_done candidates=%d stats=%s",
-                    len(selected), pipeline_result.pipeline_stats,
+                    "screening_run event=five_layer_pipeline_done candidates=%d selected_before_l345=%s rejected_before_l345=%s vetoed_count=%s kept_count=%s l2_filter_mode=%s",
+                    len(selected),
+                    pipeline_stats.get("selected_before_l345"),
+                    pipeline_stats.get("rejected_before_l345"),
+                    pipeline_stats.get("vetoed_count"),
+                    pipeline_stats.get("kept_count"),
+                    pipeline_stats.get("l2_filter_mode"),
                 )
             self._log_stage_completed(
                 screening_run_id=run_id,
                 stage=current_stage,
                 started_at=stage_started_at,
                 selected_count=len(selected),
-                rejected_count=0,
+                rejected_count=(
+                    None if pipeline_skipped else pipeline_stats.get("rejected_before_l345", 0)
+                ),
                 regime_cap=regime_candidate_cap,
+                allowed_rules=pipeline_stats.get("allowed_rules"),
+                selected_before_l345=pipeline_stats.get("selected_before_l345"),
+                vetoed_count=pipeline_stats.get("vetoed_count"),
+                kept_count=pipeline_stats.get("kept_count"),
+                pipeline_skipped=pipeline_skipped,
+                skip_reason=pipeline_skip_reason,
             )
 
             if decision_context is not None:
                 try:
-                    self._update_run_context(run_id, decision_context=decision_context)
+                    self._update_run_context(
+                        run_id,
+                        decision_context=decision_context,
+                    )
                 except Exception as exc:
                     logger.warning("five_layer: failed to persist decision_context: %s", exc)
+                try:
+                    self._update_run_context(
+                        run_id,
+                        **self._build_theme_pipeline_context_updates(
+                            decision_context=decision_context,
+                            trade_date=effective_trade_date,
+                            market=market,
+                            theme_context=effective_theme_context,
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning("five_layer: failed to persist theme pipeline context: %s", exc)
 
             selected = CandidateDecisionBuilder.build_initial(selected)
 
@@ -807,44 +842,29 @@ class ScreeningTaskService:
         guard_result: Any = None,
         precomputed_market_env: Any = None,
     ) -> Optional[Dict[str, Any]]:
-        """L1→L5 五层决策链路：就地修改 selected 中每个 candidate 的五层字段。
-
-        Returns decision_context dict for L1/L2 snapshot, or None on failure.
-        """
+        """兼容入口：统一委托给 FiveLayerPipeline 正式主链路。"""
         from src.core.market_guard import MarketGuardResult
-        from src.schemas.trading_types import (
-            MarketRegime,
-            SetupType,
-            ThemePosition,
-        )
+        from src.services.five_layer_pipeline import FiveLayerPipeline
         from src.services.market_environment_engine import MarketEnvironmentEngine
-        from src.services.sector_heat_engine import SectorHeatEngine
-        from src.services.theme_aggregation_service import ThemeAggregationService
-        from src.services.theme_position_resolver import ThemePositionResolver
-        from src.services.theme_mapping_registry import ThemeMappingRegistry
-        from src.services.entry_maturity_assessor import EntryMaturityAssessor
-        from src.services.candidate_pool_classifier import CandidatePoolClassifier
-        from src.services.trade_stage_judge import TradeStageJudge
-        from src.services.strategy_dispatcher import StrategyDispatcher
-        from src.services.setup_resolver import SetupResolver
-        from src.services.trade_plan_builder import TradePlanBuilder
+        from src.services.screener_service import ScreeningEvaluationResult
 
         if not selected:
-            return
+            return None
 
-        # ── L1: 市场环境 ───────────────────────────────────────────────────
-        # 优先使用 execute_run() 中已前置计算的 market_env，避免重复请求
         if precomputed_market_env is not None:
             market_env = precomputed_market_env
             if guard_result is None:
-                guard_result = MarketGuardResult(is_safe=market_env.is_safe, message=market_env.message)
+                guard_result = MarketGuardResult(
+                    is_safe=market_env.is_safe,
+                    index_price=getattr(market_env, "index_price", None),
+                    index_ma100=getattr(market_env, "index_ma100", None),
+                    message=market_env.message,
+                )
         else:
             env_engine = MarketEnvironmentEngine()
             if guard_result is None:
                 guard_result = MarketGuardResult(is_safe=True, message="guard disabled")
 
-        # 尝试获取指数日线和市场统计（容错：数据不可用时仍可降级运行）
-        if precomputed_market_env is None:
             index_bars = None
             market_stats = None
             try:
@@ -854,222 +874,35 @@ class ScreeningTaskService:
                 )
                 index_bars = guard.get_index_bars()
             except Exception as exc:
-                logger.warning("five_layer: failed to fetch index bars: %s", exc)
+                logger.warning("five_layer compat: failed to fetch index bars: %s", exc)
             try:
                 market_stats = self.market_data_sync_service.fetcher_manager.get_market_stats()
             except Exception as exc:
-                logger.warning("five_layer: failed to fetch market stats: %s", exc)
-
+                logger.warning("five_layer compat: failed to fetch market stats: %s", exc)
             market_env = env_engine.assess(guard_result, index_bars, market_stats)
-        logger.info("five_layer L1: regime=%s risk=%s", market_env.regime.value, market_env.risk_level.value)
 
-        # ── L2: 板块热度 + 题材聚合 ────────────────────────────────────────
-        sector_results = []
-        theme_results = []
-        try:
-            sector_engine = SectorHeatEngine(db_manager=self.db)
-            all_sector_results = sector_engine.compute_all_sectors(snapshot_df, effective_trade_date)
+        class _CompatScreenerService:
+            def __init__(self, candidates: List[ScreeningCandidateRecord]) -> None:
+                self._candidates = candidates
 
-            # L2 过滤：仅保留 hot/warm 板块进入题材聚合管道
-            sector_results = [
-                s for s in all_sector_results
-                if s.sector_status in ("hot", "warm")
-            ]
-            hot_count = sum(1 for s in sector_results if s.sector_status == "hot")
-            warm_count = len(sector_results) - hot_count
-            logger.info(
-                "five_layer L2: %d sectors computed, %d hot + %d warm passed filter (from %d total)",
-                len(sector_results), hot_count, warm_count, len(all_sector_results),
-            )
-        except Exception as exc:
-            logger.warning("five_layer L2 SectorHeatEngine failed (degraded): %s", exc)
+            def evaluate(self, snapshot_df: Any, prefiltered_rules: Optional[List] = None) -> ScreeningEvaluationResult:
+                return ScreeningEvaluationResult(selected=self._candidates, rejected=[])
 
-        try:
-            theme_registry = ThemeMappingRegistry()
-            if theme_registry.is_empty:
-                logger.warning("five_layer: ThemeMappingRegistry loaded 0 mappings; theme tagging degraded")
-        except Exception as exc:
-            logger.warning("five_layer ThemeMappingRegistry failed (degraded): %s", exc)
-            theme_registry = None
-
-        try:
-            agg_service = ThemeAggregationService(registry=theme_registry)
-            theme_results = agg_service.aggregate(sector_results)
-        except Exception as exc:
-            logger.warning("five_layer L2 ThemeAggregation failed (degraded): %s", exc)
-            theme_registry = None  # 保持 resolver 与 aggregation 状态一致
-
-        # ── 准备 per-stock 数据 ────────────────────────────────────────────
-        all_codes = [c.code for c in selected]
-        board_map = self.db.batch_get_instrument_board_names(all_codes)
-
-        theme_resolver = ThemePositionResolver(sector_results, theme_results, self._theme_context, registry=theme_registry)
-        maturity_assessor = EntryMaturityAssessor()
-        pool_classifier = CandidatePoolClassifier()
-        stage_judge = TradeStageJudge()
-
-        # ── Phase 2B: 策略调度器 + 买点收敛器 ──────────────────────────────
-        dispatcher: Optional[StrategyDispatcher] = None
-        setup_resolver: Optional[SetupResolver] = None
-        try:
-            strategy_rules = self._get_strategy_rules_for_dispatch()
-            if strategy_rules:
-                dispatcher = StrategyDispatcher(strategy_rules)
-                setup_resolver = SetupResolver(strategy_rules)
-        except Exception as exc:
-            logger.warning("five_layer: failed to build dispatcher/resolver (degraded): %s", exc)
-
-        # ── Phase 3A: 交易计划生成器 ──────────────────────────────────────────
-        plan_builder = TradePlanBuilder()
-
-        # ── 逐票裁决 L2→L5 ────────────────────────────────────────────────
-        for candidate in selected:
-            fs = candidate.factor_snapshot or {}
-            stock_boards = board_map.get(candidate.code, [])
-
-            # L2: 题材地位
-            theme_decision = theme_resolver.resolve(stock_boards)
-            tp = theme_decision.theme_position
-
-            # Phase 2B: 策略调度 + 买点收敛
-            if dispatcher is not None and setup_resolver is not None:
-                dispatch_result = dispatcher.filter_strategies(
-                    candidate.matched_strategies or [], market_env.regime,
-                )
-                resolution = setup_resolver.resolve(
-                    allowed_strategies=dispatch_result.allowed_strategies,
-                    strategy_scores=candidate.strategy_scores or {},
-                    market_regime=market_env.regime,
-                    theme_position=tp,
-                )
-                st = resolution.setup_type
-                candidate.setup_type = st.value if st != SetupType.NONE else None
-                candidate.strategy_family = (
-                    resolution.strategy_family.value if resolution.strategy_family else None
-                )
-                candidate.matched_strategies = dispatch_result.allowed_strategies
-            else:
-                try:
-                    st = SetupType(candidate.setup_type) if candidate.setup_type else SetupType.NONE
-                except ValueError:
-                    st = SetupType.NONE
-
-            # L4: 买点成熟度
-            entry_mat = maturity_assessor.assess(st, fs)
-
-            # L3: 候选池分级
-            leader_score = float(fs.get("leader_score", 0.0))
-            extreme_strength = float(fs.get("extreme_strength_score", 0.0))
-            has_entry_core = st != SetupType.NONE
-            pool_level = pool_classifier.classify(
-                leader_score=leader_score,
-                extreme_strength_score=extreme_strength,
-                theme_position=tp,
-                market_regime=market_env.regime,
-            )
-
-            # L5: 交易阶段裁决
-            has_stop = bool(fs.get("has_stop_loss", False))
-            trade_stage = stage_judge.judge(
-                env=market_env,
-                setup_type=st,
-                entry_maturity=entry_mat,
-                pool_level=pool_level,
-                theme_position=tp,
-                has_stop_loss=has_stop,
-            )
-
-            # Phase 3A: 交易计划生成
-            trade_plan = plan_builder.build(
-                trade_stage=trade_stage,
-                setup_type=st,
-                entry_maturity=entry_mat,
-                risk_level=market_env.risk_level,
-                pool_level=pool_level,
-                factor_snapshot=fs,
-            )
-
-            # 写回 candidate
-            candidate.trade_stage = trade_stage.value
-            candidate.market_regime = market_env.regime.value
-            candidate.entry_maturity = entry_mat.value
-            candidate.candidate_pool_level = pool_level.value
-            candidate.theme_position = tp.value
-            candidate.risk_level = market_env.risk_level.value
-            if trade_plan is not None:
-                import json as _json
-                candidate.trade_plan_json = _json.dumps(
-                    {
-                        "initial_position": trade_plan.initial_position,
-                        "add_rule": trade_plan.add_rule,
-                        "stop_loss_rule": trade_plan.stop_loss_rule,
-                        "take_profit_plan": trade_plan.take_profit_plan,
-                        "invalidation_rule": trade_plan.invalidation_rule,
-                        "risk_level": trade_plan.risk_level.value,
-                        "holding_expectation": trade_plan.holding_expectation,
-                    },
-                    ensure_ascii=False,
-                )
-
-        logger.info(
-            "five_layer: %d candidates processed, regime=%s",
-            len(selected), market_env.regime.value,
+        pipeline_result = FiveLayerPipeline().run(
+            snapshot_df=snapshot_df,
+            trade_date=effective_trade_date,
+            market_env=market_env,
+            guard_result=guard_result,
+            screener_service=_CompatScreenerService(selected),
+            candidate_limit=len(selected),
+            db_manager=self.db,
+            skill_manager=getattr(self, "_skill_manager", None),
         )
 
-        # ── 五层决策后重排序：trade_stage 权重 + rule_score 综合排名 ─────────
-        _STAGE_WEIGHT: Dict[str, int] = {
-            "add_on_strength": 50,
-            "probe_entry": 40,
-            "focus": 20,
-            "watch": 5,
-            "stand_aside": 0,
-            "reject": -10,
-        }
-        _POOL_WEIGHT: Dict[str, int] = {
-            "leader_pool": 30,
-            "focus_list": 15,
-            "watchlist": 0,
-        }
-        for candidate in selected:
-            stage_w = _STAGE_WEIGHT.get(candidate.trade_stage or "", 0)
-            pool_w = _POOL_WEIGHT.get(candidate.candidate_pool_level or "", 0)
-            candidate.rule_score = candidate.rule_score + stage_w + pool_w
-        selected.sort(key=lambda c: c.rule_score, reverse=True)
-        for i, candidate in enumerate(selected, 1):
-            candidate.rank = i
-        logger.info(
-            "five_layer rerank: top3 = %s",
-            [(c.code, c.rule_score, c.trade_stage, c.theme_position) for c in selected[:3]],
-        )
-
-        # ── 构建 decision_context 快照（供前端 L1/L2 展示） ──────────────────
-        decision_context: Dict[str, Any] = {
-            "market_environment": {
-                "market_regime": market_env.regime.value,
-                "risk_level": market_env.risk_level.value,
-                "index_price": getattr(market_env, "index_price", None),
-                "index_ma100": getattr(market_env, "index_ma100", None),
-                "is_safe": guard_result.is_safe if guard_result else None,
-                "message": guard_result.message if guard_result else None,
-            },
-            "sector_heat_results": [
-                {
-                    "board_name": s.board_name,
-                    "board_type": s.board_type,
-                    "sector_hot_score": s.sector_hot_score,
-                    "sector_status": s.sector_status,
-                    "sector_stage": s.sector_stage,
-                    "canonical_theme": theme_registry.resolve_tag(s.board_name) if theme_registry else s.board_name,
-                    "stock_count": s.stock_count,
-                    "up_count": s.up_count,
-                    "limit_up_count": getattr(s, "limit_up_count", 0),
-                }
-                for s in sector_results
-            ],
-            "hot_theme_count": sum(1 for s in sector_results if s.sector_status == "hot"),
-            "warm_theme_count": sum(1 for s in sector_results if s.sector_status == "warm"),
-        }
-        return decision_context
+        # 保持兼容：调用方持有的 candidate 对象已在 pipeline 中被原地更新。
+        # 对列表本身则同步为正式主链路的输出结果与排序。
+        selected[:] = pipeline_result.candidates
+        return pipeline_result.decision_context
 
     @staticmethod
     def _build_five_layer_contexts(
@@ -1125,10 +958,6 @@ class ScreeningTaskService:
         if not skills:
             return []
         return build_rules_from_skills(skills)
-
-    def _should_use_five_layer_pipeline(self) -> bool:
-        """五层前置管线已成为唯一主路径。"""
-        return True
 
     @staticmethod
     def _check_deadline(deadline: float, stage: str) -> None:
@@ -1300,6 +1129,40 @@ class ScreeningTaskService:
         return results
 
     @staticmethod
+    def _build_theme_pipeline_context_updates(
+        decision_context: Dict[str, Any],
+        trade_date: date,
+        market: str,
+        theme_context: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        from src.services.external_theme_pipeline_service import ExternalThemePipelineService
+        from src.services.local_theme_pipeline_service import LocalThemePipelineService
+        from src.services.theme_pipeline_fusion_service import ThemePipelineFusionService
+
+        local_theme_pipeline = LocalThemePipelineService().build_summary(
+            trade_date=trade_date.isoformat(),
+            market=market,
+            decision_context=decision_context,
+        )
+        external_theme_pipeline = (
+            ExternalThemePipelineService().build_summary(theme_context)
+            if theme_context is not None
+            else None
+        )
+        fused_theme_pipeline = ThemePipelineFusionService().merge(
+            local_pipeline=local_theme_pipeline,
+            external_pipeline=external_theme_pipeline,
+        )
+
+        updates: Dict[str, Any] = {
+            "local_theme_pipeline": local_theme_pipeline,
+            "fused_theme_pipeline": fused_theme_pipeline,
+        }
+        if external_theme_pipeline is not None:
+            updates["external_theme_pipeline"] = external_theme_pipeline
+        return updates
+
+    @staticmethod
     def _validate_resume_stage(existing_run: Dict[str, Any], resume_stage: Optional[str]) -> None:
         if resume_stage != "factorizing":
             return
@@ -1350,7 +1213,6 @@ class ScreeningTaskService:
         return ScreenerService(
             min_list_days=runtime_config.min_list_days,
             min_volume_ratio=runtime_config.min_volume_ratio,
-            min_avg_amount=runtime_config.min_avg_amount,
             breakout_lookback_days=runtime_config.breakout_lookback_days,
             skill_manager=self._skill_manager,
             strategy_names=strategy_names,
@@ -1380,7 +1242,6 @@ class ScreeningTaskService:
             lookback_days=runtime_config.factor_lookback_days,
             breakout_lookback_days=runtime_config.breakout_lookback_days,
             min_list_days=runtime_config.min_list_days,
-            theme_context=getattr(self, '_theme_context', None),
         )
 
     def _should_persist_shared_factor_snapshot(
@@ -1642,6 +1503,9 @@ class ScreeningTaskService:
         enriched["strategy_names"] = snapshot.get("strategy_names")
         # 五层决策上下文快照（L1/L2）
         enriched["decision_context"] = snapshot.get("decision_context")
+        enriched["local_theme_pipeline"] = snapshot.get("local_theme_pipeline")
+        enriched["external_theme_pipeline"] = snapshot.get("external_theme_pipeline")
+        enriched["fused_theme_pipeline"] = snapshot.get("fused_theme_pipeline")
         return enriched
 
     @staticmethod

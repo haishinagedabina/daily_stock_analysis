@@ -252,7 +252,6 @@ class TestValidateStructuredScreening:
             "SCREENING_AI_TOP_K": "8",
             "SCREENING_MIN_LIST_DAYS": "180",
             "SCREENING_MIN_VOLUME_RATIO": "1.6",
-            "SCREENING_MIN_AVG_AMOUNT": "80000000",
             "SCREENING_BREAKOUT_LOOKBACK_DAYS": "30",
             "SCREENING_FACTOR_LOOKBACK_DAYS": "120",
             "SCREENING_INGEST_FAILURE_THRESHOLD": "0.15",
@@ -268,10 +267,10 @@ class TestValidateStructuredScreening:
         assert cfg.screening_ai_top_k == 8
         assert cfg.screening_min_list_days == 180
         assert cfg.screening_min_volume_ratio == 1.6
-        assert cfg.screening_min_avg_amount == 80_000_000
         assert cfg.screening_breakout_lookback_days == 30
         assert cfg.screening_factor_lookback_days == 120
         assert cfg.screening_ingest_failure_threshold == 0.15
+        assert not hasattr(cfg, "screening_min_avg_amount")
 
     @patch.dict(
         "os.environ",

@@ -132,6 +132,73 @@ class ThemePositionResolverBasicTestCase(unittest.TestCase):
 
         self.assertEqual(decision.theme_position, ThemePosition.FOLLOWER_THEME)
 
+    def test_warm_expand_sectors_become_identifiable_secondary_themes_when_no_hot_exists(self) -> None:
+        """当日无 hot 但有 warm+expand 强板块时，L2 仍应梳理出可用题材。"""
+        sectors = [
+            SectorHeatResult(
+                board_name="电池",
+                board_type="concept",
+                sector_hot_score=64.2,
+                sector_status="warm",
+                sector_stage="expand",
+                breadth_score=0.32,
+                strength_score=0.88,
+                stock_count=92,
+                up_count=92,
+                avg_pct_chg=3.86,
+                front_codes=["000001", "000002"],
+            ),
+            SectorHeatResult(
+                board_name="锂电池",
+                board_type="concept",
+                sector_hot_score=63.5,
+                sector_status="warm",
+                sector_stage="expand",
+                breadth_score=0.31,
+                strength_score=0.87,
+                stock_count=110,
+                up_count=110,
+                avg_pct_chg=2.5,
+                front_codes=["000001", "000003"],
+            ),
+        ]
+        themes = ThemeAggregationService().aggregate(sectors)
+
+        resolver = ThemePositionResolver(sector_results=sectors, theme_results=themes)
+
+        self.assertTrue(resolver.identified_themes)
+        self.assertEqual(
+            resolver.identified_themes[0].position,
+            ThemePosition.SECONDARY_THEME,
+        )
+        self.assertIn("电池", resolver.get_main_theme_boards())
+
+    def test_warm_expand_fallback_caps_theme_count(self) -> None:
+        """fallback 模式不能把所有 warm+expand 板块都收进来，避免 L2 过宽。"""
+        sectors = []
+        for idx in range(15):
+            sectors.append(
+                SectorHeatResult(
+                    board_name=f"题材{idx:02d}",
+                    board_type="concept",
+                    sector_hot_score=68.0 - idx,
+                    sector_status="warm",
+                    sector_stage="expand",
+                    breadth_score=0.55,
+                    strength_score=0.75,
+                    stock_count=30,
+                    up_count=24,
+                    avg_pct_chg=2.5,
+                    front_codes=["000001", "000002"],
+                )
+            )
+        themes = ThemeAggregationService().aggregate(sectors)
+
+        resolver = ThemePositionResolver(sector_results=sectors, theme_results=themes)
+
+        self.assertLessEqual(len(resolver.identified_themes), 10)
+        self.assertEqual(resolver.identified_themes[0].name, "题材00")
+
     def test_cold_sector_gives_non_theme(self) -> None:
         """stock 归属 cold 板块 → NON_THEME。"""
         sectors = [_cold_sector("钢铁", 20.0)]

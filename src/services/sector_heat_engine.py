@@ -37,6 +37,9 @@ FRONT_TOP_N = 10
 HOT_MIN_BREADTH = 0.30       # hot 板块最低上涨面(breadth_score)
 HOT_MIN_PERSISTENCE = 20.0   # hot 板块最低持续性分数（连续 2 天 warm+）
 HOT_REQUIRE_LEADER = True    # hot 板块必须有 leader_code
+EXPAND_WARM_PROMOTION_SCORE = 50.0
+EXPAND_WARM_MIN_BREADTH = 0.40
+EXPAND_WARM_MIN_STRENGTH = 0.60
 
 
 @dataclass
@@ -109,11 +112,11 @@ class SectorHeatEngine:
                 trade_date=trade_date,
             )
             result = self._apply_hard_filters(result)
+            result = self._apply_expand_warm_promotion(result)
             results.append(result)
 
         # 持久化
         self._persist_results(results, trade_date)
-
         return results
 
     # ── 单板块计算 ───────────────────────────────────────────────────────────
@@ -194,6 +197,23 @@ class SectorHeatEngine:
 
         return result
 
+    @staticmethod
+    def _apply_expand_warm_promotion(result: SectorHeatResult) -> SectorHeatResult:
+        """给处于扩散期且联动/强度足够的 neutral 板块一个 warm 晋级通道。"""
+        if result.sector_status != "neutral":
+            return result
+        if result.sector_stage != "expand":
+            return result
+        if result.sector_hot_score < EXPAND_WARM_PROMOTION_SCORE:
+            return result
+        if result.breadth_score < EXPAND_WARM_MIN_BREADTH:
+            return result
+        if result.strength_score < EXPAND_WARM_MIN_STRENGTH:
+            return result
+        result.sector_status = "warm"
+        result.reason += " | promoted:expand_momentum"
+        return result
+
     # ── 四维评分 ─────────────────────────────────────────────────────────────
 
     def _calc_breadth(self, df: pd.DataFrame, pct_chg: pd.Series, n: int) -> float:
@@ -247,8 +267,9 @@ class SectorHeatEngine:
         leader_codes: List[str] = []
         front_codes: List[str] = []
 
-        if "leader_score" in df.columns:
-            leaders = df[df["leader_score"].astype(float) >= LEADER_SCORE_THRESHOLD]
+        leader_scores, _ = self._select_leader_scores(df)
+        if len(leader_scores) > 0:
+            leaders = df[leader_scores >= LEADER_SCORE_THRESHOLD]
             leader_codes = leaders.index.tolist()
 
         # front = 涨幅 top N
@@ -275,6 +296,35 @@ class SectorHeatEngine:
             + 0.20 * min(front_count / 5.0, 1.0)
         )
         return score, leader_codes, front_codes
+
+    @staticmethod
+    def _select_leader_scores(df: pd.DataFrame) -> tuple[pd.Series, str]:
+        """优先使用题材增强分，缺失或全 0 时回退到基础分。"""
+        theme_scores = (
+            df["theme_leader_score"].astype(float)
+            if "theme_leader_score" in df.columns
+            else pd.Series(dtype=float)
+        )
+        if len(theme_scores) > 0 and float(theme_scores.max()) > 0.0:
+            return theme_scores, "theme"
+
+        base_scores = (
+            df["base_leader_score"].astype(float)
+            if "base_leader_score" in df.columns
+            else pd.Series(dtype=float)
+        )
+        if len(base_scores) > 0:
+            return base_scores, "base"
+
+        compat_scores = (
+            df["leader_score"].astype(float)
+            if "leader_score" in df.columns
+            else pd.Series(dtype=float)
+        )
+        if len(compat_scores) > 0:
+            return compat_scores, "compat"
+
+        return pd.Series(dtype=float), "missing"
 
     def _calc_persistence(self, board_name: str, trade_date: date) -> tuple[float, list]:
         """返回 (persistence_score, history_rows) 以避免重复查询。"""

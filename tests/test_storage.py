@@ -2,6 +2,7 @@
 import unittest
 import sys
 import os
+from unittest.mock import MagicMock, patch
 
 # Ensure src module can be imported
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -88,6 +89,26 @@ class TestStorage(unittest.TestCase):
         )
 
         self.assertEqual({item["session_id"] for item in sessions}, {"feishu_u1", "feishu_u1:ask_600519"})
+
+        DatabaseManager.reset_instance()
+
+    def test_get_instance_recovers_after_failed_initialization(self):
+        DatabaseManager.reset_instance()
+
+        fake_config = MagicMock()
+        fake_config.get_db_url.return_value = "sqlite:///:memory:"
+
+        with patch.object(DatabaseManager, "__init__", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                DatabaseManager.get_instance()
+
+        with patch("src.storage.get_config", return_value=fake_config):
+            db = DatabaseManager.get_instance()
+
+        self.assertTrue(getattr(db, "_initialized", False))
+
+        session = db.get_session()
+        session.close()
 
         DatabaseManager.reset_instance()
 

@@ -9,12 +9,15 @@
   4. 硬规则在集成层面生效（stand_aside → watch）
 """
 
+import inspect
 import unittest
 from datetime import date, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.core.market_guard import MarketGuardResult
 from src.schemas.trading_types import (
+    CandidateDecision,
     EntryMaturity,
     MarketRegime,
     RiskLevel,
@@ -22,6 +25,7 @@ from src.schemas.trading_types import (
     TradeStage,
 )
 from src.services.screener_service import ScreeningCandidateRecord
+from src.services.five_layer_pipeline import _resolve_effective_scores
 
 
 def _make_candidate(
@@ -49,6 +53,46 @@ def _make_candidate(
         strategy_scores={"trend_breakout": 80.0},
         setup_type=setup_type,
     )
+
+
+class EffectiveScoreResolutionTestCase(unittest.TestCase):
+
+    def test_prefers_theme_scores_when_available(self):
+        leader_score, extreme_strength, source = _resolve_effective_scores({
+            "base_leader_score": 65.0,
+            "base_extreme_strength_score": 58.0,
+            "theme_leader_score": 78.0,
+            "theme_extreme_strength_score": 88.0,
+        })
+
+        self.assertEqual((leader_score, extreme_strength, source), (78.0, 88.0, "theme"))
+
+    def test_falls_back_to_base_scores_when_theme_scores_missing(self):
+        leader_score, extreme_strength, source = _resolve_effective_scores({
+            "base_leader_score": 65.0,
+            "base_extreme_strength_score": 58.0,
+            "theme_leader_score": 0.0,
+            "theme_extreme_strength_score": 0.0,
+        })
+
+        self.assertEqual((leader_score, extreme_strength, source), (65.0, 58.0, "base"))
+
+    def test_extreme_strength_can_fall_back_to_base_independently(self):
+        leader_score, extreme_strength, source = _resolve_effective_scores({
+            "base_leader_score": 65.0,
+            "base_extreme_strength_score": 58.0,
+            "theme_leader_score": 78.0,
+            "theme_extreme_strength_score": 0.0,
+        })
+
+        self.assertEqual((leader_score, extreme_strength, source), (78.0, 58.0, "theme"))
+
+    def test_five_layer_pipeline_run_signature_excludes_external_theme_context(self):
+        from src.services.five_layer_pipeline import FiveLayerPipeline
+
+        signature = inspect.signature(FiveLayerPipeline.run)
+
+        self.assertNotIn("theme_context", signature.parameters)
 
 
 class FiveLayerDecisionTestCase(unittest.TestCase):
@@ -134,18 +178,9 @@ class FiveLayerDecisionTestCase(unittest.TestCase):
             "close": np.linspace(3200, 2800, 30),
             "date": pd.date_range("2026-03-01", periods=30),
         })
-        try:
-            guard_inst = MagicMock()
-            guard_inst.get_index_bars.return_value = bars
-            with patch("src.services.screening_task_service.MarketGuard", return_value=guard_inst):
-                svc._apply_five_layer_decision(
-                    selected=[candidate],
-                    snapshot_df=snapshot_df,
-                    effective_trade_date=date(2026, 3, 31),
-                    guard_result=guard,
-                )
-        except Exception:
-            # 即使数据拉取失败也能降级运行
+        guard_inst = MagicMock()
+        guard_inst.get_index_bars.return_value = bars
+        with patch("src.services.screening_task_service.MarketGuard", return_value=guard_inst):
             svc._apply_five_layer_decision(
                 selected=[candidate],
                 snapshot_df=snapshot_df,
@@ -153,9 +188,9 @@ class FiveLayerDecisionTestCase(unittest.TestCase):
                 guard_result=guard,
             )
 
-        # stand_aside 或 defensive 环境下
+        # stand_aside 环境下，旧兼容入口也不应抬高到 focus 以上
         self.assertIn(candidate.trade_stage, [
-            TradeStage.WATCH.value, TradeStage.FOCUS.value, TradeStage.STAND_ASIDE.value,
+            TradeStage.WATCH.value, TradeStage.STAND_ASIDE.value,
         ])
 
     def test_no_guard_result_still_works(self):
@@ -385,6 +420,46 @@ class CandidateDecisionCompatibilityTestCase(unittest.TestCase):
 
         self.assertEqual(decision.setup_type, SetupType.LIMITUP_STRUCTURE)
 
+    def test_from_payload_tolerates_trade_plan_extra_fields_and_invalid_risk_level(self):
+        decision = CandidateDecision.from_payload({
+            "code": "600519",
+            "name": "贵州茅台",
+            "trade_plan": {
+                "initial_position": "1/5仓",
+                "stop_loss_rule": "跌破MA20止损",
+                "risk_level": "extreme",
+                "execution_note": "观察锚点",
+                "unexpected_field": "ignored",
+            },
+        })
+
+        self.assertIsNotNone(decision.trade_plan)
+        self.assertEqual(decision.trade_plan.initial_position, "1/5仓")
+        self.assertEqual(decision.trade_plan.risk_level, RiskLevel.MEDIUM)
+        self.assertEqual(decision.trade_plan.execution_note, "观察锚点")
+
+    def test_from_record_tolerates_trade_plan_json_extra_fields_and_invalid_risk_level(self):
+        import json
+
+        record = SimpleNamespace(
+            code="600519",
+            name="贵州茅台",
+            trade_plan_json=json.dumps({
+                "initial_position": "1/5仓",
+                "stop_loss_rule": "跌破MA20止损",
+                "risk_level": "extreme",
+                "holding_expectation": "1~2周波段",
+                "unexpected_field": "ignored",
+            }, ensure_ascii=False),
+        )
+
+        decision = CandidateDecision.from_record(record)
+
+        self.assertIsNotNone(decision.trade_plan)
+        self.assertEqual(decision.trade_plan.stop_loss_rule, "跌破MA20止损")
+        self.assertEqual(decision.trade_plan.risk_level, RiskLevel.MEDIUM)
+        self.assertEqual(decision.trade_plan.holding_expectation, "1~2周波段")
+
 
 class Phase2BDispatchTestCase(unittest.TestCase):
     """Phase 2B: 策略调度 + 买点收敛 集成测试。"""
@@ -518,6 +593,39 @@ class Phase2BDispatchTestCase(unittest.TestCase):
         self.assertIsNotNone(candidate.trade_stage)
         self.assertIsNotNone(candidate.market_regime)
 
+    def test_pipeline_stats_include_observability_counters(self):
+        """pipeline_stats 应暴露各层关键计数，便于日志排查。"""
+        svc = self._make_service()
+        candidate = ScreeningCandidateRecord(
+            code="600519", name="贵州茅台", rank=1, rule_score=80.0,
+            rule_hits=["hit"],
+            factor_snapshot={"pct_chg": 5.0, "leader_score": 75.0,
+                             "extreme_strength_score": 85.0, "has_stop_loss": True,
+                             "ma100_breakout_days": 3},
+            matched_strategies=["ma100_60min_combined", "volume_breakout"],
+            strategy_scores={"ma100_60min_combined": 60.0, "volume_breakout": 30.0},
+            setup_type="trend_breakout",
+            strategy_family="trend",
+        )
+        guard = MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0)
+
+        decision_context = svc._apply_five_layer_decision(
+            selected=[candidate],
+            snapshot_df=self._make_snapshot_df(),
+            effective_trade_date=date(2026, 3, 31),
+            guard_result=guard,
+        )
+
+        self.assertIsNotNone(decision_context)
+        stats = decision_context["pipeline_stats"]
+        self.assertIn("sector_status_counts", stats)
+        self.assertIn("allowed_rule_names", stats)
+        self.assertIn("blocked_rule_names", stats)
+        self.assertIn("screening_rejection_reason_counts", stats)
+        self.assertIn("trade_stage_counts", stats)
+        self.assertIn("theme_position_counts", stats)
+        self.assertIn("setup_type_counts", stats)
+
 
 class Phase3ATradePlanTestCase(unittest.TestCase):
     """Phase 3A: 交易计划生成 集成测试。"""
@@ -590,6 +698,33 @@ class Phase3ATradePlanTestCase(unittest.TestCase):
         self.assertIsNone(plan["add_rule"])  # probe_entry 无加仓
         self.assertIsNotNone(plan["invalidation_rule"])
 
+    def test_probe_entry_trade_plan_includes_execution_note(self):
+        """旧兼容入口也必须回到正式管线语义，带上 execution_note。"""
+        svc = self._make_service()
+        candidate = ScreeningCandidateRecord(
+            code="600519", name="贵州茅台", rank=1, rule_score=80.0,
+            rule_hits=["hit"],
+            factor_snapshot={"pct_chg": 5.0, "leader_score": 30.0,
+                             "extreme_strength_score": 40.0, "has_stop_loss": True,
+                             "ma100_breakout_days": 3, "close": 100.0, "ma20": 94.0, "ma100": 88.0},
+            matched_strategies=["ma100_60min_combined"],
+            strategy_scores={"ma100_60min_combined": 50.0},
+            setup_type="trend_breakout",
+        )
+
+        guard = MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0)
+        svc._apply_five_layer_decision(
+            selected=[candidate],
+            snapshot_df=self._make_snapshot_df(),
+            effective_trade_date=date(2026, 3, 31),
+            guard_result=guard,
+        )
+
+        import json
+        plan = json.loads(candidate.trade_plan_json)
+        self.assertIn("execution_note", plan)
+        self.assertTrue(plan["execution_note"])
+
     def test_watch_has_no_trade_plan(self):
         """watch 候选 trade_plan_json 为 None。"""
         svc = self._make_service()
@@ -612,8 +747,8 @@ class Phase3ATradePlanTestCase(unittest.TestCase):
             guard_result=guard,
         )
 
-        # Phase 4: NON_THEME + NONE setup + LOW maturity → REJECT
-        self.assertEqual(candidate.trade_stage, "reject")
+        # 正式管线下，缺少 setup 的候选保留为 watch，但不生成交易计划
+        self.assertEqual(candidate.trade_stage, "watch")
         self.assertIsNone(getattr(candidate, "trade_plan_json", None))
 
     def test_trade_plan_json_persists_to_db(self):
@@ -681,6 +816,58 @@ class Phase3ATradePlanTestCase(unittest.TestCase):
             Config.reset_instance()
             os.environ.pop("DATABASE_PATH", None)
             temp_dir.cleanup()
+
+
+class PipelineObservabilityRegressionTestCase(unittest.TestCase):
+    """验证零命中场景也保留足够的排障上下文。"""
+
+    @patch("src.services.sector_heat_engine.SectorHeatEngine.compute_all_sectors", return_value=[])
+    def test_zero_selected_still_persists_pipeline_stats(self, _mock_compute_all_sectors):
+        import pandas as pd
+
+        from src.schemas.trading_types import MarketEnvironment
+        from src.services.five_layer_pipeline import FiveLayerPipeline
+        from src.services.screener_service import ScreeningEvaluationResult
+
+        class EmptyScreenerService:
+            @staticmethod
+            def evaluate(snapshot_df, prefiltered_rules=None):
+                return ScreeningEvaluationResult(
+                    selected=[],
+                    rejected=[{
+                        "code": "600519",
+                        "rejection_reasons": ["volume_ratio_low", "avg_amount_low"],
+                    }],
+                )
+
+        result = FiveLayerPipeline().run(
+            snapshot_df=pd.DataFrame([
+                {"code": "600519", "name": "贵州茅台", "close": 100.0},
+            ]),
+            trade_date=date(2026, 3, 31),
+            market_env=MarketEnvironment(
+                regime=MarketRegime.BALANCED,
+                risk_level=RiskLevel.MEDIUM,
+                index_price=3200.0,
+                index_ma100=3100.0,
+                is_safe=True,
+                message="ok",
+            ),
+            guard_result=MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0),
+            screener_service=EmptyScreenerService(),
+            candidate_limit=20,
+            db_manager=MagicMock(),
+            skill_manager=None,
+        )
+
+        stats = result.decision_context["pipeline_stats"]
+        self.assertEqual(result.candidates, [])
+        self.assertEqual(stats["selected_before_l345"], 0)
+        self.assertEqual(stats["rejected_before_l345"], 1)
+        self.assertEqual(
+            stats["screening_rejection_reason_counts"],
+            {"avg_amount_low": 1, "volume_ratio_low": 1},
+        )
 
 
 if __name__ == "__main__":

@@ -67,7 +67,6 @@ def _default_common_filters(**overrides):
     kwargs = {
         "exclude_st": True,
         "min_list_days": 120,
-        "min_avg_amount": 50_000_000,
     }
     kwargs.update(overrides)
     return CommonFilterConfig(**kwargs)
@@ -176,11 +175,11 @@ class TestCommonFilters:
         reasons = engine.apply_common_filters(row, _default_common_filters())
         assert "listed_days_below_threshold" in reasons
 
-    def test_liquidity_filtered(self):
+    def test_liquidity_no_longer_hard_filtered(self):
         engine = StrategyScreeningEngine()
         row = _bullish_row(avg_amount=10_000_000)
         reasons = engine.apply_common_filters(row, _default_common_filters())
-        assert "liquidity_below_threshold" in reasons
+        assert "liquidity_below_threshold" not in reasons
 
     def test_passes_all(self):
         engine = StrategyScreeningEngine()
@@ -218,6 +217,30 @@ class TestMultiStrategyEvaluation:
         selected_codes = [c.code for c in result.selected]
         assert "600001" in selected_codes
         assert "600002" not in selected_codes
+
+    def test_low_liquidity_row_can_still_enter_strategy_matching(self):
+        rule = _make_rule(
+            filters=[
+                FilterCondition(field="volume_ratio", op=">=", value=2.0),
+                FilterCondition(field="breakout_ratio", op=">=", value=0.995),
+            ],
+            scoring=[
+                ScoringWeight(field="trend_score", weight=50),
+                ScoringWeight(field="volume_ratio", weight=50, cap=5.0),
+            ],
+        )
+        snapshot = _make_snapshot(
+            _bullish_row("600003", volume_ratio=2.5, breakout_ratio=1.02, avg_amount=10_000_000),
+        )
+        engine = StrategyScreeningEngine()
+        result = engine.evaluate(
+            snapshot_df=snapshot,
+            rules=[rule],
+            common_filters=_default_common_filters(),
+        )
+
+        assert [c.code for c in result.selected] == ["600003"]
+        assert result.rejected == []
 
     def test_multi_strategy_union_candidates(self):
         """Two strategies, each matching different stocks."""

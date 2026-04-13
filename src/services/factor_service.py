@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -20,9 +21,16 @@ from src.indicators.bottom_divergence_breakout_detector import (
     BottomDivergenceBreakoutDetector,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class FactorService:
-    """从本地日线数据构建筛选输入。"""
+    """从本地日线数据构建筛选输入。
+
+    注意：
+    - 本地因子快照只基于本地市场数据构建。
+    - `theme_context` 仅为兼容过渡字段，当前不会驱动题材增强或外部板块补全。
+    """
 
     def __init__(
         self,
@@ -46,6 +54,7 @@ class FactorService:
             if breakout_lookback_days is not None
             else config.screening_breakout_lookback_days
         )
+        # 保留 theme_context 仅为兼容旧调用方；主链路因子构建已与外部题材上下文解耦。
         self.theme_context = theme_context
         self.fetcher_manager = fetcher_manager
 
@@ -175,40 +184,10 @@ class FactorService:
                 }
             )
 
-        # 无条件计算 leader_score / extreme_strength_score（纯市场数据）
+        # 无条件计算基础 leader_score / extreme_strength_score（纯市场数据）
         self._enrich_base_scores(snapshots)
 
         snapshot_df = pd.DataFrame(snapshots)
-
-        # 应用热点题材因子富化（有 theme_context 时覆盖基础分数）
-        if self.theme_context and not snapshot_df.empty:
-            from src.services.hot_theme_factor_enricher import HotThemeFactorEnricher
-            from src.services.theme_normalization_service import ThemeNormalizationService
-            enricher = HotThemeFactorEnricher()
-            enriched_records = []
-            board_map = self._resolve_board_names_for_codes(snapshot_df["code"].dropna().tolist())
-
-            # Normalize themes using all known board names
-            all_board_names = sorted({b for boards in board_map.values() for b in boards})
-            normalizer = ThemeNormalizationService()
-            normalizer.set_board_vocabulary(all_board_names)
-            normalized_themes = [
-                normalizer.normalize_theme(
-                    raw_theme=theme.name,
-                    keywords=theme.keywords,
-                )
-                for theme in (self.theme_context.themes or [])
-            ]
-
-            for record in snapshot_df.to_dict("records"):
-                enriched = enricher.enrich_snapshot(
-                    snapshot=record,
-                    theme_context=self.theme_context,
-                    boards=board_map.get(str(record.get("code", "")), []),
-                    normalized_themes=normalized_themes,
-                )
-                enriched_records.append(enriched)
-            snapshot_df = pd.DataFrame(enriched_records)
 
         if persist and not snapshot_df.empty:
             self.db.replace_factor_snapshots(trade_date=trade_date, snapshots=snapshot_df.to_dict("records"))
@@ -216,10 +195,13 @@ class FactorService:
 
     @staticmethod
     def _enrich_base_scores(snapshots: List[Dict[str, Any]]) -> None:
-        """无条件计算 leader_score / extreme_strength_score（纯市场数据）。
+        """无条件计算基础 leader_score / extreme_strength_score（纯市场数据）。
 
         使用 theme_match_score=0 / theme_heat_score=0 计算基础分数。
-        若后续 HotThemeFactorEnricher 运行，会覆盖为题材增强值。
+        Phase 1 约定：
+        - `base_leader_score` / `base_extreme_strength_score` 始终代表纯市场数据基础分
+        - `leader_score` / `extreme_strength_score` 暂时保留为兼容别名，在题材增强前先指向基础分
+        - 若后续 HotThemeFactorEnricher 运行，可再生成题材增强分并切换兼容别名语义
         """
         from src.services.leader_score_calculator import LeaderScoreCalculator
         from src.services.extreme_strength_scorer import ExtremeStrengthScorer
@@ -252,8 +234,14 @@ class FactorService:
                 circ_mv=s.get("circ_mv"),
                 breakout_ratio=s.get("breakout_ratio", 0.0) or 0.0,
             )
+            s["base_leader_score"] = leader
+            s["base_extreme_strength_score"] = extreme
+            s["theme_leader_score"] = s.get("theme_leader_score", 0.0) or 0.0
+            s["theme_extreme_strength_score"] = s.get("theme_extreme_strength_score", 0.0) or 0.0
             s["leader_score"] = leader
             s["extreme_strength_score"] = extreme
+            s["leader_score_source"] = "base"
+            s["extreme_strength_score_source"] = "base"
 
     def _resolve_board_names_for_codes(self, codes: List[str]) -> Dict[str, List[str]]:
         board_map: Dict[str, List[str]] = {}

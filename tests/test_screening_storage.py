@@ -105,7 +105,6 @@ class ScreeningStorageTestCase(unittest.TestCase):
                 "ai_top_k": 5,
                 "screening_min_list_days": 120,
                 "screening_min_volume_ratio": 1.2,
-                "screening_min_avg_amount": 50_000_000,
                 "screening_breakout_lookback_days": 20,
                 "screening_factor_lookback_days": 80,
                 "screening_ingest_failure_threshold": 0.02,
@@ -133,7 +132,44 @@ class ScreeningStorageTestCase(unittest.TestCase):
                 "ai_top_k": 5,
                 "screening_min_list_days": 120,
                 "screening_min_volume_ratio": 1.2,
+                "screening_breakout_lookback_days": 20,
+                "screening_factor_lookback_days": 80,
+                "screening_ingest_failure_threshold": 0.02,
+            },
+        )
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["run_id"], run_id)
+
+    def test_find_latest_screening_run_matches_legacy_snapshot_without_removed_avg_amount_key(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={
+                "requested_trade_date": "2026-03-13",
+                "mode": "balanced",
+                "stock_codes": [],
+                "candidate_limit": 30,
+                "ai_top_k": 5,
+                "screening_min_list_days": 120,
+                "screening_min_volume_ratio": 1.2,
                 "screening_min_avg_amount": 50_000_000,
+                "screening_breakout_lookback_days": 20,
+                "screening_factor_lookback_days": 80,
+                "screening_ingest_failure_threshold": 0.02,
+            },
+        )
+
+        matched = self.db.find_latest_screening_run(
+            market="cn",
+            config_snapshot={
+                "requested_trade_date": "2026-03-13",
+                "mode": "balanced",
+                "stock_codes": [],
+                "candidate_limit": 30,
+                "ai_top_k": 5,
+                "screening_min_list_days": 120,
+                "screening_min_volume_ratio": 1.2,
                 "screening_breakout_lookback_days": 20,
                 "screening_factor_lookback_days": 80,
                 "screening_ingest_failure_threshold": 0.02,

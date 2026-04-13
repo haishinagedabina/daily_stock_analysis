@@ -80,7 +80,6 @@ class StrategyScreeningRule:
 class CommonFilterConfig:
     exclude_st: bool = True
     min_list_days: int = 120
-    min_avg_amount: float = 50_000_000
 
 
 @dataclass
@@ -162,8 +161,6 @@ class StrategyScreeningEngine:
             reasons.append("st_filtered")
         if float(row.get("days_since_listed") or 0) < config.min_list_days:
             reasons.append("listed_days_below_threshold")
-        if float(row.get("avg_amount") or 0.0) < config.min_avg_amount:
-            reasons.append("liquidity_below_threshold")
         return reasons
 
     # ── main evaluate ────────────────────────────────────────────────────

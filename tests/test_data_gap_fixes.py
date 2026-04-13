@@ -82,6 +82,11 @@ class BaseScoreComputationTestCase(unittest.TestCase):
 
         svc._enrich_base_scores(snapshots)
 
+        self.assertIn("base_leader_score", snapshots[0])
+        self.assertIn("base_extreme_strength_score", snapshots[0])
+        self.assertIn("theme_leader_score", snapshots[0])
+        self.assertIn("theme_extreme_strength_score", snapshots[0])
+        self.assertEqual(snapshots[0]["leader_score_source"], "base")
         self.assertIn("leader_score", snapshots[0])
         self.assertIn("extreme_strength_score", snapshots[0])
         self.assertGreater(snapshots[0]["leader_score"], 0)
@@ -109,6 +114,8 @@ class BaseScoreComputationTestCase(unittest.TestCase):
 
         svc._enrich_base_scores(snapshots)
 
+        self.assertEqual(snapshots[0]["base_leader_score"], 0.0)
+        self.assertEqual(snapshots[0]["leader_score_source"], "base")
         self.assertEqual(snapshots[0]["leader_score"], 0.0)
         self.assertGreaterEqual(snapshots[0]["extreme_strength_score"], 0.0)
 

@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from src.agent.skills.base import SkillManager
 from src.services.screener_service import ScreenerService
@@ -85,7 +86,6 @@ def test_screener_filters_ineligible_rows_and_sorts_by_score():
     service = ScreenerService(
         min_list_days=120,
         min_volume_ratio=1.2,
-        min_avg_amount=50_000_000,
         breakout_lookback_days=20,
         skill_manager=skill_manager,
         strategy_names=["volume_breakout"],
@@ -132,12 +132,68 @@ def test_screener_returns_rejection_reasons_for_all_rows():
 def test_screener_uses_config_thresholds_by_default(get_config_mock):
     get_config_mock.return_value.screening_min_list_days = 180
     get_config_mock.return_value.screening_min_volume_ratio = 1.6
-    get_config_mock.return_value.screening_min_avg_amount = 90_000_000
     get_config_mock.return_value.screening_breakout_lookback_days = 30
 
     service = ScreenerService()
 
     assert service.min_list_days == 180
     assert service.min_volume_ratio == 1.6
-    assert service.min_avg_amount == 90_000_000
     assert service.breakout_lookback_days == 30
+
+
+def test_screener_raises_actionable_error_when_requested_strategies_are_missing():
+    snapshot_df = pd.DataFrame(
+        [
+            {
+                "code": "600001",
+                "name": "趋势龙头",
+                "close": 10.4,
+                "ma5": 10.2,
+                "ma10": 10.0,
+                "ma20": 9.8,
+                "volume_ratio": 2.6,
+                "avg_amount": 180_000_000,
+                "is_st": False,
+                "days_since_listed": 500,
+            },
+        ]
+    )
+
+    skill_manager = SkillManager()
+    skill_manager.load_builtin_strategies()
+    service = ScreenerService(
+        skill_manager=skill_manager,
+        strategy_names=["missing_strategy"],
+    )
+
+    with pytest.raises(RuntimeError, match="missing_strategy"):
+        service.evaluate(snapshot_df)
+
+
+def test_screener_raises_actionable_error_when_strategy_list_is_empty():
+    snapshot_df = pd.DataFrame(
+        [
+            {
+                "code": "600001",
+                "name": "趋势龙头",
+                "close": 10.4,
+                "ma5": 10.2,
+                "ma10": 10.0,
+                "ma20": 9.8,
+                "volume_ratio": 2.6,
+                "avg_amount": 180_000_000,
+                "is_st": False,
+                "days_since_listed": 500,
+            },
+        ]
+    )
+
+    skill_manager = SkillManager()
+    skill_manager.load_builtin_strategies()
+    service = ScreenerService(
+        skill_manager=skill_manager,
+        strategy_names=[],
+    )
+
+    with pytest.raises(RuntimeError, match="empty strategy_names"):
+        service.evaluate(snapshot_df)

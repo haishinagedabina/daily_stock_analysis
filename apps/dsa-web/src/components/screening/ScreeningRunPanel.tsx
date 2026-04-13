@@ -22,6 +22,11 @@ function formatDatetime(iso?: string) {
   }
 }
 
+function formatThemeSummary(names: string[] | undefined): string {
+  if (!names || names.length === 0) return '—';
+  return names.slice(0, 3).join('、');
+}
+
 function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'info' {
   if (status === 'completed') return 'success';
   if (status === 'completed_with_ai_degraded') return 'warning';
@@ -141,6 +146,19 @@ export const ScreeningRunPanel: React.FC = () => {
                 </p>
               </div>
             </div>
+            {currentRun.fusedThemePipeline && (
+              <div className="rounded-lg border border-purple/20 bg-purple/5 px-3 py-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-foreground">题材管道</span>
+                  <span className="text-secondary-text">
+                    {currentRun.fusedThemePipeline.mergedThemeCount} 个融合题材
+                  </span>
+                </div>
+                <div className="mt-1 text-secondary-text">
+                  {formatThemeSummary(currentRun.fusedThemePipeline.selectedThemeNames)}
+                </div>
+              </div>
+            )}
             {currentRun.errorSummary && (
               <div className="rounded-lg border border-danger/20 bg-danger/5 px-3 py-2 text-xs text-danger">
                 {currentRun.errorSummary}

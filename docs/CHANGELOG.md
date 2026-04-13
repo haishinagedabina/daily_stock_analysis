@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Screening behavior
+
+- 首筛公共过滤已移除 `avg_amount < min_avg_amount` 的硬拒绝逻辑，当前会先放行可用股票进入策略匹配，再交给后续五层链路继续收敛
+
 ### Screening architecture consolidation
 
 - Screening runtime/storage/API output now converges on a single `CandidateDecision` object instead of mixing flat candidate rows with scattered `trade_plan_json` / AI fields
@@ -17,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - AI secondary review now follows a fixed schema and reads/writes the unified candidate decision object end-to-end
 - Strategy YAML metadata is now fully populated with `system_role / strategy_family / applicable_market / applicable_theme / setup_type`, and `/api/v1/screening/strategies` exposes those fields
 - Notification copy now prioritizes `trade_stage + setup + trade_plan` and moves matched strategies to an audit-evidence role
+- Screening run responses now expose `local_theme_pipeline / external_theme_pipeline / fused_theme_pipeline` as first-class fields, so clients no longer need to inspect `config_snapshot` for hot-theme pipeline details
+- Local/OpenClaw theme summaries now reuse `ThemeNormalizationService`, emit `normalized_name/raw_name`, and fuse by normalized topic with `raw_names / matched_sources / priority_source`
+- Screening run persistence now writes `decision_context` independently from theme-pipeline snapshots, so theme-fusion failures no longer block the original five-layer context snapshot
 
 ### Screening architecture wording
 
@@ -72,6 +79,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - 选股策略改为默认不选中，候选上限默认 5，AI 分析默认前 2 个
 - 运行状态面板会在进入页面后自动回填最近一次任务，并在任务未结束时继续轮询
 - 候选结果新增所用策略展示，前端显示为策略中文名
+- 运行状态面板新增融合题材摘要展示，直接显示当前任务的 `fused_theme_pipeline` 结果
+- 运行详情区域新增完整题材管道面板，支持查看融合后的最终题材集合，并折叠展开本地/外部题材链路的逐项明细
 - 选择非交易日时会自动回退到最近一个交易日继续选股，并在任务告警中保留提示
 - 选择当日交易日时，前后端都会在北京时间 15:00 前阻止启动选股，避免同步和筛选使用未收盘的日线数据
 - 因进程中断遗留的选股幽灵任务会在列表查询、详情轮询和后续重试时自动回收，避免页面长期卡在旧任务上

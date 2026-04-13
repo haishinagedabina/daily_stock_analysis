@@ -364,7 +364,7 @@ class CandidateDecision:
             setup_hit_reasons=list(payload.get("setup_hit_reasons", []) or []),
             matched_strategies=list(payload.get("matched_strategies", []) or []),
             trade_stage=cls._coerce_enum(TradeStage, payload.get("trade_stage"), TradeStage.WATCH),
-            trade_plan=TradePlan(**trade_plan_payload) if isinstance(trade_plan_payload, dict) else None,
+            trade_plan=cls._build_trade_plan(trade_plan_payload),
             ai_review=(
                 AiReviewDecision(
                     ai_query_id=ai_review_payload.get("ai_query_id"),
@@ -415,10 +415,24 @@ class CandidateDecision:
             return None
 
     @staticmethod
+    def _build_trade_plan(payload: Any) -> Optional[TradePlan]:
+        if not isinstance(payload, dict):
+            return None
+        normalized: Dict[str, Any] = {}
+        for field_name in TradePlan.__dataclass_fields__.keys():
+            if field_name not in payload:
+                continue
+            value = payload.get(field_name)
+            if field_name == "risk_level":
+                value = CandidateDecision._coerce_enum(RiskLevel, value, RiskLevel.MEDIUM)
+            normalized[field_name] = value
+        return TradePlan(**normalized)
+
+    @staticmethod
     def _coerce_trade_plan(record: Any) -> Optional[TradePlan]:
         raw = getattr(record, "trade_plan", None)
         if isinstance(raw, dict):
-            return TradePlan(**raw)
+            return CandidateDecision._build_trade_plan(raw)
         trade_plan_json = getattr(record, "trade_plan_json", None)
         if not trade_plan_json:
             return None
@@ -428,7 +442,7 @@ class CandidateDecision:
             return None
         if not isinstance(payload, dict):
             return None
-        return TradePlan(**payload)
+        return CandidateDecision._build_trade_plan(payload)
 
 
 def _serialize_value(value: Any) -> Any:

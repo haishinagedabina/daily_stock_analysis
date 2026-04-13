@@ -84,17 +84,27 @@ _ADD_ON_POSITION: Dict[RiskLevel, str] = {
 _INVALIDATION_RULE = "买入后3个交易日未启动则离场"
 
 
+def _format_anchor_value(label: str, value: object) -> Optional[str]:
+    try:
+        if label == "现价":
+            return f"{label}{float(value):.2f}"
+        return f"{label}={float(value):.2f}"
+    except (TypeError, ValueError):
+        return None
+
+
 def _build_execution_note(setup_type: SetupType, factor_snapshot: dict) -> str:
     ma20 = factor_snapshot.get("ma20")
     ma100 = factor_snapshot.get("ma100")
     close = factor_snapshot.get("close")
     anchors = []
-    if close is not None:
-        anchors.append(f"现价{float(close):.2f}")
-    if ma20 is not None:
-        anchors.append(f"MA20={float(ma20):.2f}")
-    if ma100 is not None:
-        anchors.append(f"MA100={float(ma100):.2f}")
+    for anchor in (
+        _format_anchor_value("现价", close),
+        _format_anchor_value("MA20", ma20),
+        _format_anchor_value("MA100", ma100),
+    ):
+        if anchor:
+            anchors.append(anchor)
 
     anchor_note = "，".join(anchors) if anchors else "以盘中结构低点与均线支撑作为执行锚点"
     if setup_type == SetupType.LIMITUP_STRUCTURE:

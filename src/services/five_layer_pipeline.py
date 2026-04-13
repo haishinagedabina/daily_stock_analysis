@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Dict, List, Optional, Set
@@ -35,6 +36,51 @@ from src.schemas.trading_types import (
 from src.services.screener_service import ScreeningCandidateRecord, ScreenerService
 
 logger = logging.getLogger(__name__)
+
+
+def _counter_to_dict(values: List[str]) -> Dict[str, int]:
+    counter = Counter(value for value in values if value)
+    return dict(sorted(counter.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _rejection_reason_counts(rejected: List[Dict[str, Any]]) -> Dict[str, int]:
+    counter: Counter[str] = Counter()
+    for item in rejected:
+        for reason in item.get("rejection_reasons", []) or []:
+            if reason:
+                counter[str(reason)] += 1
+    return dict(sorted(counter.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _top_items(summary: Dict[str, int], limit: int = 8) -> Dict[str, int]:
+    items = list(summary.items())[:limit]
+    return dict(items)
+
+
+def _limit_list(values: List[str], limit: int = 12) -> List[str]:
+    return values[:limit]
+
+
+def _resolve_effective_scores(factor_snapshot: Dict[str, Any]) -> tuple[float, float, str]:
+    theme_leader_score = float(factor_snapshot.get("theme_leader_score", 0.0) or 0.0)
+    base_leader_score = float(
+        factor_snapshot.get("base_leader_score", factor_snapshot.get("leader_score", 0.0)) or 0.0
+    )
+    theme_extreme_strength = float(factor_snapshot.get("theme_extreme_strength_score", 0.0) or 0.0)
+    base_extreme_strength = float(
+        factor_snapshot.get(
+            "base_extreme_strength_score",
+            factor_snapshot.get("extreme_strength_score", 0.0),
+        )
+        or 0.0
+    )
+
+    effective_leader_score = theme_leader_score if theme_leader_score > 0.0 else base_leader_score
+    effective_extreme_strength = (
+        theme_extreme_strength if theme_extreme_strength > 0.0 else base_extreme_strength
+    )
+    score_source = "theme" if theme_leader_score > 0.0 else "base"
+    return effective_leader_score, effective_extreme_strength, score_source
 
 
 def _normalize_candidate_record(item: Any) -> ScreeningCandidateRecord:
@@ -104,13 +150,31 @@ class FiveLayerPipeline:
         screener_service: ScreenerService,
         candidate_limit: int,
         db_manager: Any,
-        theme_context: Optional[Any] = None,
         skill_manager: Optional[Any] = None,
     ) -> PipelineResult:
         stats: Dict[str, Any] = {
             "universe_before": len(snapshot_df),
         }
+        run_id = getattr(getattr(screener_service, "_context", None), "run_id", None)
+        if not run_id:
+            run_id = f"{trade_date.isoformat()}-{market_env.regime.value}"
 
+        hot_theme_stock_count = 0
+        theme_match_passed_count = 0
+        leader_score_source_counts: Dict[str, int] = {}
+        if snapshot_df is not None and not snapshot_df.empty:
+            if "is_hot_theme_stock" in snapshot_df.columns:
+                hot_theme_stock_count = int(snapshot_df["is_hot_theme_stock"].fillna(False).sum())
+            if "theme_match_score" in snapshot_df.columns:
+                theme_match_passed_count = int(
+                    (snapshot_df["theme_match_score"].fillna(0.0).astype(float) >= 0.8).sum()
+                )
+            if "leader_score_source" in snapshot_df.columns:
+                source_values = snapshot_df["leader_score_source"].fillna("missing").astype(str).tolist()
+                leader_score_source_counts = {
+                    source: source_values.count(source)
+                    for source in sorted(set(source_values))
+                }
         # ── L2: 板块热度计算 ──────────────────────────────────────────
         from src.services.sector_heat_engine import SectorHeatEngine
         from src.services.theme_aggregation_service import ThemeAggregationService
@@ -131,7 +195,15 @@ class FiveLayerPipeline:
 
         stats["total_sectors"] = len(all_sector_results)
         stats["hot_warm_sectors"] = len(sector_results)
-
+        stats["sector_status_counts"] = _counter_to_dict(
+            [str(s.sector_status) for s in all_sector_results]
+        )
+        logger.info(
+            "pipeline L2 sectors: total=%d hot_warm=%d status_counts=%s",
+            len(all_sector_results),
+            len(sector_results),
+            stats["sector_status_counts"],
+        )
         # ── L2: 题材聚合 + 主线识别 ──────────────────────────────────
         theme_registry = None
         try:
@@ -149,41 +221,71 @@ class FiveLayerPipeline:
             logger.warning("pipeline L2 ThemeAggregation failed: %s", exc)
             theme_registry = None
 
-        theme_ctx_dict = None
-        if theme_context is not None:
-            theme_ctx_dict = self._serialize_theme_context(theme_context)
-
         theme_resolver = ThemePositionResolver(
-            sector_results, theme_results, theme_ctx_dict, registry=theme_registry,
+            sector_results, theme_results, None, registry=theme_registry,
         )
+        identified_theme_positions = _counter_to_dict(
+            [theme.position.value for theme in theme_resolver.identified_themes]
+        )
+        stats["theme_result_count"] = len(theme_results)
+        stats["identified_theme_position_counts"] = identified_theme_positions
 
         # ── L2: Universe 缩小（仅主线/次线板块的成员） ────────────────
         main_theme_boards = theme_resolver.get_main_theme_boards()
+        stats["main_theme_board_count"] = len(main_theme_boards)
         theme_universe_df = snapshot_df
+        l2_filter_mode = "full_universe"
+        theme_member_candidate_count = 0
 
         if main_theme_boards:
             member_codes = self._get_theme_member_codes(db_manager, main_theme_boards)
             if member_codes:
                 mask = snapshot_df["code"].isin(member_codes)
                 theme_filtered = snapshot_df[mask].copy()
+                theme_member_candidate_count = len(theme_filtered)
 
                 if len(theme_filtered) >= MIN_THEME_CANDIDATES:
                     theme_universe_df = theme_filtered
+                    l2_filter_mode = "theme_shrink"
                     logger.info(
                         "pipeline L2 universe shrink: %d → %d (boards=%d)",
                         len(snapshot_df), len(theme_universe_df), len(main_theme_boards),
                     )
                 else:
+                    l2_filter_mode = "theme_fallback_insufficient_candidates"
                     logger.info(
                         "pipeline L2: theme candidates=%d < min=%d, using full universe",
                         len(theme_filtered), MIN_THEME_CANDIDATES,
                     )
+            else:
+                l2_filter_mode = "theme_fallback_no_members"
 
         stats["universe_after_l2"] = len(theme_universe_df)
+        stats["l2_filter_mode"] = l2_filter_mode
+        stats["theme_member_candidate_count"] = theme_member_candidate_count
+        logger.info(
+            "pipeline L2 themes: aggregated=%d identified=%s main_theme_boards=%d",
+            len(theme_results),
+            identified_theme_positions,
+            len(main_theme_boards),
+        )
+        logger.info(
+            "pipeline L2 universe: before=%d after=%d mode=%s theme_member_candidates=%d",
+            len(snapshot_df),
+            len(theme_universe_df),
+            l2_filter_mode,
+            theme_member_candidate_count,
+        )
 
         # ── 策略前置过滤 (D5) ─────────────────────────────────────────
         prefiltered_rules = None
         all_rules = None
+        allowed_rule_names: List[str] = []
+        blocked_rule_names: List[str] = []
+        stats["total_rules"] = 0
+        stats["allowed_rules"] = 0
+        stats["allowed_rule_names"] = []
+        stats["blocked_rule_names"] = []
 
         if skill_manager is not None:
             try:
@@ -199,15 +301,27 @@ class FiveLayerPipeline:
                     )
                     stats["total_rules"] = len(all_rules)
                     stats["allowed_rules"] = len(prefiltered_rules)
+                    allowed_rule_names = [rule.strategy_name for rule in prefiltered_rules]
+                    allowed_name_set = set(allowed_rule_names)
+                    blocked_rule_names = [
+                        rule.strategy_name for rule in all_rules
+                        if rule.strategy_name not in allowed_name_set
+                    ]
+                    stats["allowed_rule_names"] = allowed_rule_names
+                    stats["blocked_rule_names"] = blocked_rule_names
                     logger.info(
-                        "pipeline D5: regime=%s total_rules=%d allowed=%d",
+                        "pipeline D5: regime=%s total_rules=%d allowed=%d blocked=%d allowed_names=%s blocked_names=%s",
                         market_env.regime.value,
                         len(all_rules),
                         len(prefiltered_rules),
+                        len(blocked_rule_names),
+                        _limit_list(allowed_rule_names),
+                        _limit_list(blocked_rule_names),
                     )
             except Exception as exc:
                 logger.warning("pipeline D5 strategy pre-filter failed: %s", exc)
-
+        else:
+            logger.info("pipeline D5: skipped pre-filter because skill_manager is unavailable")
         # ── 选股（在缩小的 universe + 过滤后的策略上执行）─────────────
         evaluation = screener_service.evaluate(
             theme_universe_df,
@@ -215,13 +329,30 @@ class FiveLayerPipeline:
         )
         selected = [_normalize_candidate_record(item) for item in evaluation.selected[:candidate_limit]]
         stats["selected_before_l345"] = len(selected)
-
+        stats["rejected_before_l345"] = len(evaluation.rejected)
+        stats["screening_rejection_reason_counts"] = _rejection_reason_counts(evaluation.rejected)
+        logger.info(
+            "pipeline screening: universe=%d selected=%d rejected=%d top_reasons=%s",
+            len(theme_universe_df),
+            len(selected),
+            len(evaluation.rejected),
+            _top_items(stats["screening_rejection_reason_counts"]),
+        )
         if not selected:
+            stats.setdefault("vetoed_count", 0)
+            stats.setdefault("kept_count", 0)
+            decision_context = self._build_decision_context(
+                market_env, guard_result, sector_results, theme_registry,
+            )
+            stats.setdefault("trade_stage_counts", {})
+            stats.setdefault("theme_position_counts", {})
+            stats.setdefault("setup_type_counts", {})
+            stats.setdefault("candidate_pool_level_counts", {})
+            stats.setdefault("vetoed_stage_counts", {})
+            decision_context["pipeline_stats"] = stats
             return PipelineResult(
                 candidates=[],
-                decision_context=self._build_decision_context(
-                    market_env, guard_result, sector_results, theme_registry,
-                ),
+                decision_context=decision_context,
                 market_env=market_env,
                 pipeline_stats=stats,
             )
@@ -294,6 +425,10 @@ class FiveLayerPipeline:
                 pool_level = CandidatePoolLevel.WATCHLIST
                 trade_stage = TradeStage.WATCH
                 trade_plan = None
+                effective_leader_score, effective_extreme_strength, effective_source = _resolve_effective_scores(fs)
+                fs["effective_leader_score"] = effective_leader_score
+                fs["effective_extreme_strength_score"] = effective_extreme_strength
+                fs["effective_leader_score_source"] = effective_source
                 candidate.trade_stage = trade_stage.value
                 candidate.market_regime = market_env.regime.value
                 candidate.entry_maturity = entry_mat.value
@@ -303,7 +438,7 @@ class FiveLayerPipeline:
                 candidate.risk_level = market_env.risk_level.value
                 candidate.theme_tag = theme_decision.theme_tag
                 candidate.theme_score = theme_decision.theme_score
-                candidate.leader_score = theme_decision.leader_score
+                candidate.leader_score = effective_leader_score
                 candidate.sector_strength = theme_decision.sector_strength
                 candidate.theme_duration = theme_decision.theme_duration
                 candidate.trade_theme_stage = getattr(theme_decision, "trade_theme_stage", "unknown")
@@ -318,8 +453,7 @@ class FiveLayerPipeline:
             setup_freshness = freshness_assessor.assess(st, fs)
 
             # L3: 候选池分级
-            leader_score = float(fs.get("leader_score", 0.0))
-            extreme_strength = float(fs.get("extreme_strength_score", 0.0))
+            leader_score, extreme_strength, leader_score_source = _resolve_effective_scores(fs)
             pool_level = pool_classifier.classify(
                 leader_score=leader_score,
                 extreme_strength_score=extreme_strength,
@@ -358,13 +492,16 @@ class FiveLayerPipeline:
             candidate.risk_level = market_env.risk_level.value
             candidate.theme_tag = theme_decision.theme_tag
             candidate.theme_score = theme_decision.theme_score
-            candidate.leader_score = theme_decision.leader_score
+            candidate.leader_score = leader_score
             candidate.sector_strength = theme_decision.sector_strength
             candidate.theme_duration = theme_decision.theme_duration
             candidate.trade_theme_stage = getattr(theme_decision, "trade_theme_stage", "unknown")
             candidate.leader_stocks = list(theme_decision.leader_stocks)
             candidate.front_stocks = list(theme_decision.front_stocks)
             candidate.setup_hit_reasons = list(getattr(resolution, "contributing_strategies", []) if dispatcher is not None and setup_resolver is not None else [])
+            fs["effective_leader_score"] = leader_score
+            fs["effective_extreme_strength_score"] = extreme_strength
+            fs["effective_leader_score_source"] = leader_score_source
             if trade_plan is not None:
                 candidate.trade_plan_json = json.dumps(
                     {
@@ -388,11 +525,30 @@ class FiveLayerPipeline:
 
         stats["vetoed_count"] = len(vetoed)
         stats["kept_count"] = len(kept)
-        logger.info(
-            "pipeline L3-L5: %d kept, %d vetoed (reject/stand_aside)",
-            len(kept), len(vetoed),
+        stage_counts = _counter_to_dict([str(c.trade_stage or "") for c in [*kept, *vetoed]])
+        theme_position_counts = _counter_to_dict([str(c.theme_position or "") for c in [*kept, *vetoed]])
+        setup_type_counts = _counter_to_dict(
+            [str(c.setup_type or "none") for c in [*kept, *vetoed]]
         )
-
+        pool_level_counts = _counter_to_dict(
+            [str(c.candidate_pool_level or "") for c in [*kept, *vetoed]]
+        )
+        vetoed_stage_counts = _counter_to_dict([str(c.trade_stage or "") for c in vetoed])
+        stats["trade_stage_counts"] = stage_counts
+        stats["theme_position_counts"] = theme_position_counts
+        stats["setup_type_counts"] = setup_type_counts
+        stats["candidate_pool_level_counts"] = pool_level_counts
+        stats["vetoed_stage_counts"] = vetoed_stage_counts
+        logger.info(
+            "pipeline L3-L5: kept=%d vetoed=%d trade_stages=%s themes=%s setups=%s pools=%s vetoed_stages=%s",
+            len(kept),
+            len(vetoed),
+            stage_counts,
+            theme_position_counts,
+            setup_type_counts,
+            pool_level_counts,
+            vetoed_stage_counts,
+        )
         # ── 五层优先级排序 (D6) ───────────────────────────────────────
         for c in kept:
             stage_p = _STAGE_PRIORITY.get(c.trade_stage or "", 0)
@@ -474,13 +630,3 @@ class FiveLayerPipeline:
             "warm_theme_count": sum(1 for s in sector_results if s.sector_status == "warm"),
         }
 
-    @staticmethod
-    def _serialize_theme_context(theme_context: Any) -> Dict[str, Any]:
-        themes = []
-        for theme in getattr(theme_context, "themes", []) or []:
-            themes.append({
-                "name": getattr(theme, "name", None),
-                "heat_score": getattr(theme, "heat_score", 0.0),
-                "confidence": getattr(theme, "confidence", 0.0),
-            })
-        return {"themes": themes}

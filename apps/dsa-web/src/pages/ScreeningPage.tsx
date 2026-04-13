@@ -4,6 +4,7 @@ import { AppPage, PageHeader } from '../components/common';
 import { ScreeningControlBar } from '../components/screening/ScreeningControlBar';
 import { ScreeningRunPanel } from '../components/screening/ScreeningRunPanel';
 import { DecisionContextSection } from '../components/screening/DecisionContextSection';
+import { ThemePipelineSection } from '../components/screening/ThemePipelineSection';
 import { ScreeningCandidateTable } from '../components/screening/ScreeningCandidateTable';
 import { CandidateDetailDrawer } from '../components/screening/CandidateDetailDrawer';
 import { useScreeningStore } from '../stores/screeningStore';
@@ -22,6 +23,12 @@ const ScreeningPage: React.FC = () => {
     currentRun != null &&
     isTerminalStatus(currentRun.status) &&
     (currentRun.decisionContext != null || candidates.length > 0);
+  const showThemePipeline =
+    currentRun != null &&
+    isTerminalStatus(currentRun.status) &&
+    (currentRun.fusedThemePipeline != null ||
+      currentRun.localThemePipeline != null ||
+      currentRun.externalThemePipeline != null);
 
   return (
     <AppPage>
@@ -33,6 +40,7 @@ const ScreeningPage: React.FC = () => {
         />
         <ScreeningControlBar />
         <ScreeningRunPanel />
+        {showThemePipeline && <ThemePipelineSection run={currentRun} />}
         {showContext && (
           <DecisionContextSection
             context={currentRun.decisionContext}

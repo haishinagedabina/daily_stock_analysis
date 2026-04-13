@@ -42,8 +42,10 @@ class StrategyDispatcher:
 
     Dispatch rules:
     - ``stand_aside`` → only observation-role strategies
-    - ``defensive/balanced/aggressive`` → strategies whose
-      ``applicable_market`` includes the regime value
+    - ``defensive`` → 保留 defensive 标记策略，同时放行非动量类 entry_core，
+      通过后续池分级 / trade_stage 继续降级
+    - ``balanced/aggressive`` → strategies whose ``applicable_market``
+      includes the regime value
     """
 
     def __init__(self, strategy_rules: List[Any]) -> None:
@@ -156,6 +158,16 @@ class StrategyDispatcher:
         # Hard rule: stand_aside allows ONLY observation strategies
         if regime == MarketRegime.STAND_ASIDE:
             return meta.system_role == "observation"
+
+        # defensive 不是停手环境，应保留 reversal / trend 的核心买点，
+        # 再交给后续 L3/L4/L5 做更严格的降级与封顶。
+        if regime == MarketRegime.DEFENSIVE:
+            if regime.value in meta.applicable_market:
+                return True
+            return (
+                meta.system_role == "entry_core"
+                and meta.strategy_family in {"reversal", "trend"}
+            )
 
         # For other regimes, use the YAML applicable_market list
         return regime.value in meta.applicable_market

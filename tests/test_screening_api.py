@@ -210,8 +210,9 @@ class ScreeningApiTestCase(unittest.TestCase):
         service_cls.assert_called_once_with(skill_manager=skill_manager)
         self.assertEqual(service.execute_run.call_args.kwargs["trade_date"], date(2026, 3, 27))
         self.assertEqual(service.execute_run.call_args.kwargs["strategy_names"], ["extreme_strength_combo"])
-        self.assertEqual(service._theme_context.trade_date, "2026-03-27")
-        self.assertEqual(service._theme_context.themes[0].name, "AI芯片")
+        self.assertEqual(service.execute_run.call_args.kwargs["theme_context"].trade_date, "2026-03-27")
+        self.assertEqual(service.execute_run.call_args.kwargs["theme_context"].themes[0].name, "AI芯片")
+        service._update_run_context.assert_not_called()
 
     def test_openclaw_theme_run_rejects_ai_top_k_greater_than_candidate_limit(self) -> None:
         response = self.client.post(

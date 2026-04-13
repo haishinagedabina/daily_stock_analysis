@@ -85,7 +85,7 @@ instructions: |
 | `bottom_divergence_pattern_code` | 底背离形态编码（六种形态） | 底背离双突破 |
 | `amplitude` | 振幅（%） | - |
 | `candle_pattern` | K线形态标识 | 一阳夹三阴 |
-| `avg_amount` | 5日均成交额 | 流动性过滤 |
+| `avg_amount` | 5日均成交额 | 策略级流动性约束/评分，不再作为全局首筛硬过滤 |
 | `days_since_listed` | 上市天数 | 新股过滤 |
 | `is_st` | 是否ST | ST过滤 |
 

@@ -6,8 +6,10 @@ from typing import Any, List, Optional
 
 import pytest
 
+from src.agent.skills.base import SkillManager
 from src.schemas.trading_types import MarketRegime
-from src.services.strategy_dispatcher import DispatchResult, StrategyDispatcher
+from src.services.strategy_dispatcher import StrategyDispatcher
+from src.services.strategy_screening_engine import build_rules_from_skills
 
 
 # ── Lightweight stub for StrategyScreeningRule ──────────────────────────────
@@ -65,6 +67,20 @@ class TestStandAside:
 
 
 class TestDefensive:
+    def test_defensive_keeps_non_momentum_entry_core_strategies(
+        self, dispatcher: StrategyDispatcher
+    ):
+        matched = [r.strategy_name for r in _make_rules()]
+        result = dispatcher.filter_strategies(matched, MarketRegime.DEFENSIVE)
+
+        # defensive 应通过后续池分级 / trade_stage 降级，而不是在 D5 提前清空
+        assert "bottom_divergence_double_breakout" in result.allowed_strategies
+        assert "ma100_60min_combined" in result.allowed_strategies
+        assert "ma100_low123_combined" in result.allowed_strategies
+        assert "shrink_pullback" in result.allowed_strategies
+        # momentum 型 entry_core 仍应继续受限
+        assert "gap_limitup_breakout" in result.blocked_strategies
+
     def test_uses_applicable_market(self, dispatcher: StrategyDispatcher):
         matched = [r.strategy_name for r in _make_rules()]
         result = dispatcher.filter_strategies(matched, MarketRegime.DEFENSIVE)
@@ -73,19 +89,39 @@ class TestDefensive:
         assert "bull_trend" in result.allowed_strategies
         assert "one_yang_three_yin" in result.allowed_strategies
         assert "volume_breakout" in result.allowed_strategies
+        assert "bottom_divergence_double_breakout" in result.allowed_strategies
+        assert "ma100_60min_combined" in result.allowed_strategies
+        assert "ma100_low123_combined" in result.allowed_strategies
+        assert "shrink_pullback" in result.allowed_strategies
 
-        # These don't have "defensive" in applicable_market
-        assert "bottom_divergence_double_breakout" in result.blocked_strategies
+        # defensive 下仍应继续限制纯动量/非核心辅助
         assert "extreme_strength_combo" in result.blocked_strategies
         assert "gap_limitup_breakout" in result.blocked_strategies
-        assert "ma100_60min_combined" in result.blocked_strategies
+        assert "dragon_head" in result.blocked_strategies
+        assert "trendline_breakout" in result.blocked_strategies
 
-    def test_defensive_allows_4_blocks_8(self, dispatcher: StrategyDispatcher):
+    def test_defensive_allows_8_blocks_4(self, dispatcher: StrategyDispatcher):
         matched = [r.strategy_name for r in _make_rules()]
         result = dispatcher.filter_strategies(matched, MarketRegime.DEFENSIVE)
 
-        assert len(result.allowed_strategies) == 4
-        assert len(result.blocked_strategies) == 8
+        assert len(result.allowed_strategies) == 8
+        assert len(result.blocked_strategies) == 4
+
+    def test_defensive_real_rules_keep_core_entry_strategies(self):
+        skill_manager = SkillManager()
+        skill_manager.load_builtin_strategies()
+        rules = build_rules_from_skills(skill_manager.get_screening_rules())
+
+        allowed_names = [
+            rule.strategy_name
+            for rule in StrategyDispatcher(rules).get_allowed_rules(rules, MarketRegime.DEFENSIVE)
+        ]
+
+        assert "bottom_divergence_double_breakout" in allowed_names
+        assert "ma100_60min_combined" in allowed_names
+        assert "ma100_low123_combined" in allowed_names
+        assert "shrink_pullback" in allowed_names
+        assert "gap_limitup_breakout" not in allowed_names
 
 
 class TestBalanced:

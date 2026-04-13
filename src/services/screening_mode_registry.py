@@ -12,7 +12,6 @@ _SCREENING_MODE_PRESETS: Dict[str, Dict[str, Any]] = {
         "ai_top_k": 8,
         "min_list_days": 60,
         "min_volume_ratio": 1.0,
-        "min_avg_amount": 20_000_000,
         "breakout_lookback_days": 15,
         "factor_lookback_days": 60,
     },
@@ -21,7 +20,6 @@ _SCREENING_MODE_PRESETS: Dict[str, Dict[str, Any]] = {
         "ai_top_k": 3,
         "min_list_days": 180,
         "min_volume_ratio": 1.5,
-        "min_avg_amount": 100_000_000,
         "breakout_lookback_days": 30,
         "factor_lookback_days": 120,
     },
@@ -35,7 +33,6 @@ class ResolvedScreeningRuntimeConfig:
     ai_top_k: int
     min_list_days: int
     min_volume_ratio: float
-    min_avg_amount: float
     breakout_lookback_days: int
     factor_lookback_days: int
 
@@ -46,7 +43,6 @@ class ResolvedScreeningRuntimeConfig:
             "ai_top_k": self.ai_top_k,
             "screening_min_list_days": self.min_list_days,
             "screening_min_volume_ratio": self.min_volume_ratio,
-            "screening_min_avg_amount": self.min_avg_amount,
             "screening_breakout_lookback_days": self.breakout_lookback_days,
             "screening_factor_lookback_days": self.factor_lookback_days,
         }
@@ -72,7 +68,6 @@ def resolve_screening_runtime_config(
     base_ai_top_k = int(getattr(config, "screening_ai_top_k"))
     base_min_list_days = int(getattr(config, "screening_min_list_days"))
     base_min_volume_ratio = float(getattr(config, "screening_min_volume_ratio"))
-    base_min_avg_amount = float(getattr(config, "screening_min_avg_amount"))
     base_breakout_lookback_days = int(getattr(config, "screening_breakout_lookback_days"))
     base_factor_lookback_days = int(getattr(config, "screening_factor_lookback_days"))
 
@@ -103,7 +98,6 @@ def resolve_screening_runtime_config(
         ai_top_k=resolved_ai_top_k,
         min_list_days=int(_resolve_directional_value(base_min_list_days, "min_list_days", prefer_higher=False)),
         min_volume_ratio=float(_resolve_directional_value(base_min_volume_ratio, "min_volume_ratio", prefer_higher=False)),
-        min_avg_amount=float(_resolve_directional_value(base_min_avg_amount, "min_avg_amount", prefer_higher=False)),
         breakout_lookback_days=int(
             _resolve_directional_value(base_breakout_lookback_days, "breakout_lookback_days", prefer_higher=False)
         ),

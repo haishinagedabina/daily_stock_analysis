@@ -65,6 +65,22 @@ describe('ScreeningRunPanel', () => {
     expect(screen.getByText('timeout error')).toBeInTheDocument();
   });
 
+  it('shows fused theme pipeline summary when present', () => {
+    defaultStore.currentRun = {
+      ...baseRun,
+      fusedThemePipeline: {
+        activeSources: ['local', 'external'],
+        selectedThemeNames: ['AI芯片', '机器人概念'],
+        mergedThemeCount: 2,
+        mergedThemes: [],
+      },
+    };
+    render(<ScreeningRunPanel />);
+    expect(screen.getByText('题材管道')).toBeInTheDocument();
+    expect(screen.getByText('AI芯片、机器人概念')).toBeInTheDocument();
+    expect(screen.getByText('2 个融合题材')).toBeInTheDocument();
+  });
+
   it('shows history list', () => {
     defaultStore.runHistory = [baseRun];
     render(<ScreeningRunPanel />);

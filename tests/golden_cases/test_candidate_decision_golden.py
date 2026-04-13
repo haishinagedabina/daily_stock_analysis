@@ -1,17 +1,26 @@
 import unittest
+from datetime import date
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
 
 from src.schemas.trading_types import (
     AiReviewDecision,
     CandidateDecision,
     CandidatePoolLevel,
     EntryMaturity,
+    MarketEnvironment,
     MarketRegime,
     RiskLevel,
     SetupType,
+    ThemeDecision,
     ThemePosition,
     TradePlan,
     TradeStage,
 )
+from src.services.candidate_decision_builder import CandidateDecisionBuilder
+from src.services.five_layer_pipeline import FiveLayerPipeline
+from src.services.screener_service import ScreeningCandidateRecord, ScreeningEvaluationResult
 from src.services.ai_review_protocol import AiReviewProtocol
 from src.services.setup_freshness_assessor import SetupFreshnessAssessor
 from src.services.trade_plan_builder import TradePlanBuilder
@@ -108,4 +117,108 @@ class CandidateDecisionGoldenCase(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertIn("MA20=24.80", plan.execution_note)
         self.assertIn("MA100=22.00", plan.execution_note)
+
+    def test_pipeline_golden_case_builds_complete_candidate_decision(self) -> None:
+        snapshot_df = pd.DataFrame([
+            {
+                "code": "600519",
+                "name": "贵州茅台",
+                "close": 100.0,
+                "pct_chg": 5.0,
+                "ma5": 99.0,
+                "ma10": 97.0,
+                "ma20": 94.0,
+                "ma60": 90.0,
+                "ma100": 88.0,
+                "volume_ratio": 1.8,
+                "turnover_rate": 2.2,
+                "above_ma100": True,
+                "gap_breakaway": False,
+            }
+        ])
+        selected = [
+            ScreeningCandidateRecord(
+                code="600519",
+                name="贵州茅台",
+                rank=1,
+                rule_score=91.0,
+                rule_hits=["trend_aligned", "volume_expanding"],
+                factor_snapshot={
+                    "close": 100.0,
+                    "ma20": 94.0,
+                    "ma100": 88.0,
+                    "ma100_breakout_days": 2,
+                    "leader_score": 85.0,
+                    "extreme_strength_score": 62.0,
+                    "has_stop_loss": True,
+                },
+                matched_strategies=["ma100_60min_combined"],
+                strategy_scores={"ma100_60min_combined": 91.0},
+                setup_type="trend_breakout",
+                strategy_family="trend",
+            )
+        ]
+
+        class _StubScreenerService:
+            def evaluate(self, snapshot_df, prefiltered_rules=None):
+                return ScreeningEvaluationResult(selected=selected, rejected=[])
+
+        class _FakeThemeResolver:
+            def __init__(self, *args, **kwargs):
+                self.identified_themes = []
+
+            def get_main_theme_boards(self):
+                return set()
+
+            def resolve(self, stock_boards):
+                return ThemeDecision(
+                    theme_tag="白酒",
+                    theme_score=88.0,
+                    theme_position=ThemePosition.MAIN_THEME,
+                    leader_score=86.0,
+                    sector_strength=81.0,
+                    theme_duration="3d",
+                    trade_theme_stage="expand",
+                    leader_stocks=["600519"],
+                    front_stocks=["600519"],
+                )
+
+        db_mock = MagicMock()
+        db_mock.batch_get_instrument_board_names.return_value = {"600519": ["白酒"]}
+
+        market_env = MarketEnvironment(
+            regime=MarketRegime.BALANCED,
+            risk_level=RiskLevel.MEDIUM,
+            index_price=3200.0,
+            index_ma100=3100.0,
+            is_safe=True,
+            message="环境中性偏强",
+        )
+        guard_result = MagicMock(is_safe=True, index_price=3200.0, index_ma100=3100.0, message="guard ok")
+
+        with patch("src.services.theme_position_resolver.ThemePositionResolver", _FakeThemeResolver):
+            result = FiveLayerPipeline().run(
+                snapshot_df=snapshot_df,
+                trade_date=date(2026, 3, 31),
+                market_env=market_env,
+                guard_result=guard_result,
+                screener_service=_StubScreenerService(),
+                candidate_limit=1,
+                db_manager=db_mock,
+                skill_manager=None,
+            )
+
+        decision = CandidateDecisionBuilder.build_initial(result.candidates)[0]
+        payload = decision.to_payload()
+
+        self.assertEqual(payload["market_regime"], "balanced")
+        self.assertTrue(payload["environment_ok"])
+        self.assertEqual(payload["theme_tag"], "白酒")
+        self.assertEqual(payload["theme_position"], "main_theme")
+        self.assertEqual(payload["candidate_pool_level"], "leader_pool")
+        self.assertEqual(payload["trade_stage"], "add_on_strength")
+        self.assertEqual(payload["setup_freshness"], 0.9)
+        self.assertEqual(payload["strategy_scores"], {"ma100_60min_combined": 91.0})
+        self.assertEqual(payload["trade_plan"]["execution_note"], "围绕趋势延续与关键均线支撑执行，现价100.00，MA20=94.00，MA100=88.00")
+        self.assertEqual(result.decision_context["market_environment"]["index_price"], 3200.0)
 

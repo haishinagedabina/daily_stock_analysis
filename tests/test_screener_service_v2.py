@@ -58,7 +58,6 @@ class TestScreenerServiceLegacyMode:
         service = ScreenerService(
             min_list_days=120,
             min_volume_ratio=1.2,
-            min_avg_amount=50_000_000,
         )
         result = service.evaluate(snapshot)
         assert isinstance(result, ScreeningEvaluationResult)
@@ -70,7 +69,6 @@ class TestScreenerServiceLegacyMode:
         service = ScreenerService(
             min_list_days=120,
             min_volume_ratio=1.2,
-            min_avg_amount=50_000_000,
         )
         candidates = service.screen(snapshot, candidate_limit=10)
         assert all(isinstance(c, ScreeningCandidateRecord) for c in candidates)
@@ -124,7 +122,6 @@ instructions: |
             skill_manager=skill_manager_with_breakout,
             strategy_names=["test_breakout"],
             min_list_days=120,
-            min_avg_amount=50_000_000,
         )
         result = service.evaluate(snapshot)
 

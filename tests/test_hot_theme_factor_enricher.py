@@ -21,6 +21,8 @@ class HotThemeFactorEnricherTestCase(unittest.TestCase):
             "name": "机器人",
             "close": 10.5,
             "above_ma100": True,
+            "base_leader_score": 18.0,
+            "base_extreme_strength_score": 22.0,
         }
 
         enriched = self.enricher.enrich_snapshot(snapshot, theme_context=None)
@@ -28,8 +30,10 @@ class HotThemeFactorEnricherTestCase(unittest.TestCase):
         self.assertFalse(enriched["is_hot_theme_stock"])
         self.assertIsNone(enriched["primary_theme"])
         self.assertEqual(enriched["theme_match_score"], 0.0)
-        self.assertEqual(enriched["leader_score"], 0)
-        self.assertEqual(enriched["extreme_strength_score"], 0.0)
+        self.assertEqual(enriched["theme_leader_score"], 0.0)
+        self.assertEqual(enriched["leader_score"], 18.0)
+        self.assertEqual(enriched["extreme_strength_score"], 22.0)
+        self.assertEqual(enriched["leader_score_source"], "base")
 
     def test_enrich_snapshot_with_matching_theme(self) -> None:
         """Test enriching snapshot with matching theme."""
@@ -75,8 +79,10 @@ class HotThemeFactorEnricherTestCase(unittest.TestCase):
         self.assertTrue(enriched["is_hot_theme_stock"])
         self.assertEqual(enriched["primary_theme"], "机器人")
         self.assertGreater(enriched["theme_match_score"], 0.8)
+        self.assertGreater(enriched["theme_leader_score"], 50)
         self.assertGreater(enriched["leader_score"], 50)
         self.assertGreater(enriched["extreme_strength_score"], 70)
+        self.assertEqual(enriched["leader_score_source"], "theme")
         self.assertIn("MA100之上", enriched["extreme_strength_reasons"])
         self.assertIn("跳空突破", enriched["extreme_strength_reasons"])
         self.assertIn("涨停", enriched["extreme_strength_reasons"])
@@ -126,6 +132,8 @@ class HotThemeFactorEnricherTestCase(unittest.TestCase):
         self.assertIsNone(enriched["primary_theme"])
         self.assertEqual(enriched["leader_score"], 0)
         self.assertEqual(enriched["extreme_strength_score"], 0.0)
+        self.assertEqual(enriched["theme_leader_score"], 0.0)
+        self.assertEqual(enriched["leader_score_source"], "base")
 
     def test_enrich_snapshot_multiple_themes(self) -> None:
         """Test enriching snapshot with multiple themes (picks best match)."""
@@ -244,7 +252,19 @@ class HotThemeFactorEnricherTestCase(unittest.TestCase):
             boards=["机器人"],
         )
 
+        self.assertEqual(enriched["theme_leader_score"], 70)
         self.assertEqual(enriched["leader_score"], 70)
+
+    def test_resolve_effective_scores_falls_back_to_base_when_theme_scores_zero(self) -> None:
+        """有效分选择应支持题材分为 0 时回退基础分。"""
+        leader_score, extreme_strength_score = self.enricher._resolve_effective_scores(
+            base_leader_score=48.0,
+            base_extreme_strength_score=61.0,
+            theme_leader_score=0.0,
+            theme_extreme_strength_score=0.0,
+        )
+
+        self.assertEqual((leader_score, extreme_strength_score), (48.0, 61.0))
 
     def test_enrich_snapshot_without_intraday_minutes_falls_back_to_ma100_reason(self) -> None:
         """Missing intraday timing should not auto-claim early limit-up."""

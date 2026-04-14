@@ -2,6 +2,12 @@
 """
 Backtest tools — read-only tools exposing backtest summaries to the agent.
 
+.. deprecated::
+    This module is part of the legacy advice-based backtest system.
+    It is FROZEN and must not receive new features.
+    New agent tools should use ``src.backtest`` (five-layer backtest system).
+    Will be removed after the five-layer backtest completes Phase 4 validation.
+
 Tools:
 - get_strategy_backtest_summary: overall strategy performance stats
 - get_stock_backtest_summary: backtest results for a specific stock

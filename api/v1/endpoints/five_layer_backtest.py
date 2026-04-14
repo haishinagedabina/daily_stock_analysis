@@ -44,6 +44,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _internal_error(message: str) -> HTTPException:
+    return HTTPException(
+        status_code=500,
+        detail={"error": "internal_error", "message": message},
+    )
+
+
 def _parse_date(value: str, field_name: str) -> date:
     try:
         return date.fromisoformat(value)
@@ -110,10 +117,7 @@ def run_five_layer_backtest(
         raise
     except Exception as exc:
         logger.error("五层回测执行失败: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": f"五层回测执行失败: {exc}"},
-        )
+        raise _internal_error("五层回测执行失败")
 
 
 # ── GET /runs/{backtest_run_id} ────────────────────────────────────────────
@@ -145,10 +149,7 @@ def get_run_detail(
         raise
     except Exception as exc:
         logger.error("查询运行详情失败: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": f"查询运行详情失败: {exc}"},
-        )
+        raise _internal_error("查询运行详情失败")
 
 
 # ── GET /runs/{backtest_run_id}/evaluations ────────────────────────────────
@@ -198,10 +199,7 @@ def get_evaluations(
         raise
     except Exception as exc:
         logger.error("查询评估结果失败: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": f"查询评估结果失败: {exc}"},
-        )
+        raise _internal_error("查询评估结果失败")
 
 
 # ── GET /runs/{backtest_run_id}/summaries ──────────────────────────────────
@@ -238,10 +236,7 @@ def get_summaries(
         raise
     except Exception as exc:
         logger.error("查询汇总失败: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": f"查询汇总失败: {exc}"},
-        )
+        raise _internal_error("查询汇总失败")
 
 
 # ── GET /runs/{backtest_run_id}/calibration ────────────────────────────────
@@ -277,10 +272,7 @@ def get_calibration(
         raise
     except Exception as exc:
         logger.error("查询校准结果失败: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": f"查询校准结果失败: {exc}"},
-        )
+        raise _internal_error("查询校准结果失败")
 
 
 # ── GET /runs/{backtest_run_id}/recommendations ───────────────────────────
@@ -319,10 +311,7 @@ def get_recommendations(
         raise
     except Exception as exc:
         logger.error("查询建议失败: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": f"查询建议失败: {exc}"},
-        )
+        raise _internal_error("查询建议失败")
 
 
 # ── POST /calibration ─────────────────────────────────────────────────────
@@ -373,7 +362,4 @@ def run_calibration(
         raise
     except Exception as exc:
         logger.error("校准对比失败: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": f"校准对比失败: {exc}"},
-        )
+        raise _internal_error("校准对比失败")

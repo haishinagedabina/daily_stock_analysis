@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 """Backtest repository.
 
+.. deprecated::
+    This module is part of the legacy advice-based backtest system.
+    It is FROZEN and must not receive new features.
+    New development should use ``src.backtest.repositories``
+    (five-layer backtest system).
+    Will be removed after the five-layer backtest completes Phase 4 validation.
+
 Provides database access helpers for backtest tables.
 """
 

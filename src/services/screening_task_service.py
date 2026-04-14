@@ -870,10 +870,15 @@ class ScreeningTaskService:
         ai_results: Dict[str, Dict[str, Any]],
         ai_top_k: int,
     ) -> List[Dict[str, Any]]:
-        normalized = [
-            candidate if hasattr(candidate, "to_payload") else CandidateDecisionBuilder.build_initial([candidate])[0]
-            for candidate in selected
-        ]
+        normalized: List[Any] = []
+        raw_candidates: List[Any | None] = []
+        for candidate in selected:
+            if hasattr(candidate, "to_payload"):
+                normalized.append(candidate)
+                raw_candidates.append(None)
+            else:
+                normalized.append(CandidateDecisionBuilder.build_initial([candidate])[0])
+                raw_candidates.append(candidate)
         for candidate in normalized:
             ai_payload = ai_results.get(candidate.code, {})
             if not ai_payload:
@@ -898,12 +903,29 @@ class ScreeningTaskService:
             )
         decisions = CandidateDecisionBuilder.attach_ai_reviews(normalized, ai_results, ai_top_k)
         payloads: List[Dict[str, Any]] = []
-        for candidate in decisions:
+        optional_five_layer_fields = (
+            "trade_stage",
+            "market_regime",
+            "entry_maturity",
+            "candidate_pool_level",
+            "theme_position",
+            "risk_level",
+            "setup_type",
+            "strategy_family",
+        )
+        for candidate, raw_candidate in zip(decisions, raw_candidates):
             ai_payload = ai_results.get(candidate.code, {})
             if ai_payload:
                 candidate.ai_review = CandidateDecisionBuilder._build_ai_review(ai_payload)
                 candidate.has_ai_analysis = bool(candidate.ai_review and candidate.ai_review.result_source == "rules_plus_ai")
-            payloads.append(candidate.to_payload())
+            payload = candidate.to_payload()
+            if raw_candidate is not None:
+                for field_name in optional_five_layer_fields:
+                    if getattr(raw_candidate, field_name, None) in (None, ""):
+                        payload[field_name] = None
+                if getattr(raw_candidate, "trade_plan_json", None) in (None, "") and getattr(raw_candidate, "trade_plan", None) is None:
+                    payload["trade_plan"] = None
+            payloads.append(payload)
         return payloads
 
     def _apply_five_layer_decision(
@@ -971,9 +993,9 @@ class ScreeningTaskService:
             skill_manager=getattr(self, "_skill_manager", None),
         )
 
-        # 保持兼容：调用方持有的 candidate 对象已在 pipeline 中被原地更新。
-        # 对列表本身则同步为正式主链路的输出结果与排序。
-        selected[:] = pipeline_result.candidates
+        if all(hasattr(candidate, "to_payload") for candidate in selected):
+            selected[:] = pipeline_result.candidates
+            return pipeline_result.decision_context
         return pipeline_result.decision_context
 
     @staticmethod

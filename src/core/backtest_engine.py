@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """Backtesting evaluation engine (pure logic).
 
+.. deprecated::
+    This module is part of the legacy advice-based backtest system.
+    It is FROZEN and must not receive new features.
+    New development should use ``src.backtest`` (five-layer backtest system).
+    Will be removed after the five-layer backtest completes Phase 4 validation.
+
 This module is intentionally DB-agnostic: it operates on plain values or
 objects that look like daily OHLC bars.
 """

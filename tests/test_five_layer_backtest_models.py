@@ -182,6 +182,34 @@ class TestFiveLayerBacktestModels(unittest.TestCase):
             self.assertEqual(summary.group_type, "signal_family")
             self.assertEqual(summary.sample_count, 50)
 
+    def test_group_summary_to_dict_includes_aggregated_metrics(self):
+        """Group summary serialization should expose all API-facing metrics."""
+        from src.backtest.models.backtest_models import FiveLayerBacktestGroupSummary
+
+        summary = FiveLayerBacktestGroupSummary(
+            backtest_run_id="run-004",
+            group_type="overall",
+            group_key="all",
+            sample_count=50,
+            top_k_hit_rate=0.7,
+            excess_return_pct=1.0,
+            ranking_consistency=0.8,
+            p25_return_pct=-0.5,
+            p75_return_pct=3.0,
+            extreme_sample_ratio=0.05,
+            time_bucket_stability=0.1,
+        )
+
+        payload = summary.to_dict()
+
+        self.assertEqual(payload["top_k_hit_rate"], 0.7)
+        self.assertEqual(payload["excess_return_pct"], 1.0)
+        self.assertEqual(payload["ranking_consistency"], 0.8)
+        self.assertEqual(payload["p25_return_pct"], -0.5)
+        self.assertEqual(payload["p75_return_pct"], 3.0)
+        self.assertEqual(payload["extreme_sample_ratio"], 0.05)
+        self.assertEqual(payload["time_bucket_stability"], 0.1)
+
     def test_create_calibration_output(self):
         """Should persist calibration output with JSON fields."""
         from src.backtest.models.backtest_models import (

@@ -1043,6 +1043,12 @@ class DatabaseManager:
             autoflush=False,
         )
 
+        # Register backtest ORM models so their tables are included in create_all
+        try:
+            import src.backtest.models.backtest_models  # noqa: F401
+        except ImportError:
+            pass
+
         # Create tables first, then apply lightweight inline schema migrations
         # for backward-compatible upgrades on existing SQLite databases.
         Base.metadata.create_all(self._engine)

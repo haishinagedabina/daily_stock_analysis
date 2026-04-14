@@ -281,6 +281,13 @@ class FiveLayerBacktestGroupSummary(Base):
             "avg_mae": self.avg_mae,
             "avg_mfe": self.avg_mfe,
             "avg_drawdown": self.avg_drawdown,
+            "top_k_hit_rate": self.top_k_hit_rate,
+            "excess_return_pct": self.excess_return_pct,
+            "ranking_consistency": self.ranking_consistency,
+            "p25_return_pct": self.p25_return_pct,
+            "p75_return_pct": self.p75_return_pct,
+            "extreme_sample_ratio": self.extreme_sample_ratio,
+            "time_bucket_stability": self.time_bucket_stability,
             "metrics_json": self.metrics_json,
         }
 

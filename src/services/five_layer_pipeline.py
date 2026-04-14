@@ -491,35 +491,6 @@ class FiveLayerPipeline:
                 except ValueError:
                     st = SetupType.NONE
 
-            if st == SetupType.NONE and not (candidate.matched_strategies or []):
-                entry_mat = maturity_assessor.assess(st, fs)
-                setup_freshness = 0.0
-                pool_level = CandidatePoolLevel.WATCHLIST
-                trade_stage = TradeStage.WATCH
-                trade_plan = None
-                effective_leader_score, effective_extreme_strength, effective_source = _resolve_effective_scores(fs)
-                fs["effective_leader_score"] = effective_leader_score
-                fs["effective_extreme_strength_score"] = effective_extreme_strength
-                fs["effective_leader_score_source"] = effective_source
-                candidate.trade_stage = trade_stage.value
-                candidate.market_regime = market_env.regime.value
-                candidate.entry_maturity = entry_mat.value
-                candidate.setup_freshness = setup_freshness
-                candidate.candidate_pool_level = pool_level.value
-                candidate.theme_position = tp.value
-                candidate.risk_level = market_env.risk_level.value
-                candidate.theme_tag = theme_decision.theme_tag
-                candidate.theme_score = theme_decision.theme_score
-                candidate.leader_score = effective_leader_score
-                candidate.sector_strength = theme_decision.sector_strength
-                candidate.theme_duration = theme_decision.theme_duration
-                candidate.trade_theme_stage = getattr(theme_decision, "trade_theme_stage", "unknown")
-                candidate.leader_stocks = list(theme_decision.leader_stocks)
-                candidate.front_stocks = list(theme_decision.front_stocks)
-                candidate.setup_hit_reasons = []
-                kept.append(candidate)
-                continue
-
             # L4: 买点成熟度
             entry_mat = maturity_assessor.assess(st, fs)
             setup_freshness = freshness_assessor.assess(st, fs)

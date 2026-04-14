@@ -130,6 +130,13 @@ def _mock_summary(group_type="overall", group_key="all"):
         "avg_mae": -3.0,
         "avg_mfe": 5.0,
         "avg_drawdown": -2.0,
+        "top_k_hit_rate": 0.7,
+        "excess_return_pct": 1.0,
+        "ranking_consistency": 0.8,
+        "p25_return_pct": -0.5,
+        "p75_return_pct": 3.0,
+        "extreme_sample_ratio": 0.05,
+        "time_bucket_stability": 0.1,
     })
     return s
 
@@ -226,6 +233,7 @@ class TestGetSummaries:
         data = resp.json()
         assert len(data["items"]) == 1
         assert data["items"][0]["group_type"] == "overall"
+        assert data["items"][0]["top_k_hit_rate"] == 0.7
 
 
 class TestGetCalibration:
@@ -284,6 +292,7 @@ class TestRunBacktest:
         data = resp.json()
         assert data["run"]["backtest_run_id"] == "flbt-test123456"
         assert len(data["summaries"]) == 1
+        assert data["summaries"][0]["ranking_consistency"] == 0.8
         assert len(data["recommendations"]) == 1
 
     @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
@@ -301,6 +310,21 @@ class TestRunBacktest:
             "trade_date_to": "2026-03-31",
         })
         assert resp.status_code == 400
+
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_run_internal_error_hides_exception_details(self, MockService, client):
+        svc = MockService.return_value
+        svc.run_full_pipeline.side_effect = RuntimeError("sqlalchemy failed: secret details")
+
+        resp = client.post("/five-layer-backtest/run", json={
+            "trade_date_from": "2026-03-01",
+            "trade_date_to": "2026-03-31",
+        })
+
+        assert resp.status_code == 500
+        data = resp.json()["detail"]
+        assert data["error"] == "internal_error"
+        assert data["message"] == "五层回测执行失败"
 
 
 class TestRunCalibration:

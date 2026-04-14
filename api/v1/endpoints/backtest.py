@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Backtest endpoints."""
+"""Backtest endpoints.
+
+.. deprecated::
+    This module is part of the legacy advice-based backtest system.
+    It is FROZEN and must not receive new features.
+    New endpoints should use the five-layer backtest system (``src.backtest``).
+    Will be removed after the five-layer backtest completes Phase 4 validation.
+"""
 
 from __future__ import annotations
 

@@ -1,5 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Backtest orchestration service."""
+"""Backtest orchestration service.
+
+.. deprecated::
+    This module is part of the legacy advice-based backtest system.
+    It is FROZEN and must not receive new features.
+    New development should use ``src.backtest.services.backtest_service``
+    (five-layer backtest system).
+    Will be removed after the five-layer backtest completes Phase 4 validation.
+"""
 
 from __future__ import annotations
 

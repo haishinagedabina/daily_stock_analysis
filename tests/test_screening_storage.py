@@ -297,7 +297,7 @@ class ScreeningStorageTestCase(unittest.TestCase):
         items = self.db.list_screening_candidates(run_id, limit=1)
 
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["code"], "300750")
+        self.assertEqual(items[0]["code"], "600519")
         self.assertEqual(items[0]["final_rank"], 1)
 
     def test_list_screening_candidates_does_not_mix_unbound_recent_news_into_snapshot(self) -> None:
@@ -434,7 +434,79 @@ class ScreeningStorageTestCase(unittest.TestCase):
         item = self.db.get_screening_candidate_detail(run_id=run_id, code="600519")
 
         self.assertIsNotNone(item)
-        self.assertEqual(item["final_rank"], 2)
+        self.assertEqual(item["final_rank"], 1)
+
+    def test_list_screening_candidates_keeps_rule_order_when_ai_review_exists(self) -> None:
+        run_id = self.db.create_screening_run(
+            trade_date=date(2026, 3, 13),
+            market="cn",
+            config_snapshot={"candidate_limit": 30, "ai_top_k": 5},
+        )
+        self.assertTrue(self.db.update_screening_run_status(run_id=run_id, status="screening"))
+        self.db.save_screening_candidates(
+            run_id=run_id,
+            candidates=[
+                {
+                    "code": "600519",
+                    "name": "璐靛窞鑼呭彴",
+                    "rank": 1,
+                    "rule_score": 80.0,
+                    "selected_for_ai": False,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {},
+                },
+                {
+                    "code": "300750",
+                    "name": "瀹佸痉鏃朵唬",
+                    "rank": 2,
+                    "rule_score": 79.0,
+                    "selected_for_ai": True,
+                    "rule_hits": ["trend_aligned"],
+                    "factor_snapshot": {},
+                    "ai_summary": "寮鸿秼鍔裤€?",
+                    "ai_operation_advice": "涔板叆",
+                    "ai_trade_stage": "probe_entry",
+                    "result_source": "rules_plus_ai",
+                    "ai_query_id": "query-order-1",
+                },
+            ],
+        )
+        self.db.save_news_intel(
+            code="300750",
+            name="瀹佸痉鏃朵唬",
+            dimension="latest_news",
+            query="瀹佸痉鏃朵唬 300750 鑲＄エ 鏈€鏂版秷鎭?",
+            response=SearchResponse(
+                query="瀹佸痉鏃朵唬 300750 鑲＄エ 鏈€鏂版秷鎭?",
+                provider="stub",
+                success=True,
+                results=[
+                    SearchResult(
+                        title="瀹佸痉鏃朵唬鏂伴椈 1",
+                        snippet="杩欐槸涓€鏉℃柊闂汇€?",
+                        url="https://example.com/news-order-1",
+                        source="stub",
+                    ),
+                    SearchResult(
+                        title="瀹佸痉鏃朵唬鏂伴椈 2",
+                        snippet="杩欐槸绗簩鏉℃柊闂汇€?",
+                        url="https://example.com/news-order-2",
+                        source="stub",
+                    ),
+                ],
+            ),
+            query_context={"query_id": "query-order-1"},
+        )
+
+        items = self.db.list_screening_candidates(run_id)
+
+        self.assertEqual([item["code"] for item in items], ["600519", "300750"])
+        self.assertEqual(items[0]["final_rank"], 1)
+        self.assertEqual(items[1]["final_rank"], 2)
+        self.assertEqual(items[0]["final_score"], 80.0)
+        self.assertEqual(items[1]["final_score"], 79.0)
+        self.assertEqual(items[1]["recommendation_source"], "rules_plus_ai")
+        self.assertEqual(items[1]["news_count"], 2)
 
     def test_get_screening_candidate_detail_does_not_link_history_from_other_code_with_same_query_id(self) -> None:
         run_id = self.db.create_screening_run(

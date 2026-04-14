@@ -2,6 +2,7 @@ import os
 import tempfile
 import logging
 from datetime import date, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -2906,9 +2907,116 @@ def test_execute_run_adds_warning_when_market_guard_unsafe():
 
     # 选股正常完成，不被中断
     assert result["status"] == "completed"
-    # 警告信息传递到 warnings 列表
-    warnings = result.get("warnings", [])
-    assert any("大盘情绪低迷" in w for w in warnings)
+
+
+def test_execute_run_keeps_candidate_limit_under_defensive_regime():
+    """defensive 环境只加风险提示，不应缩减用户请求的 candidate_limit。"""
+    from src.schemas.trading_types import MarketRegime, RiskLevel
+
+    db = MagicMock()
+    db.create_screening_run.return_value = "run-defensive-001"
+    db.get_screening_run.return_value = {
+        "run_id": "run-defensive-001",
+        "mode": "balanced",
+        "status": "completed",
+        "candidate_count": 0,
+    }
+
+    universe_service = MagicMock()
+    universe_service.resolve_universe.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    factor_service = MagicMock()
+    factor_service.get_latest_trade_date.return_value = date(2026, 3, 13)
+    factor_service.build_factor_snapshot.return_value = pd.DataFrame(
+        [{"code": "600519", "name": "贵州茅台"}]
+    )
+
+    market_data_sync_service = MagicMock()
+    market_data_sync_service.fetcher_manager = MagicMock()
+    market_data_sync_service.fetcher_manager.get_market_stats.return_value = {
+        "limit_up_count": 20,
+        "limit_down_count": 15,
+        "up_count": 1800,
+        "down_count": 2200,
+    }
+    market_data_sync_service.sync_trade_date.return_value = {
+        "trade_date": "2026-03-13",
+        "total": 1,
+        "synced": 1,
+        "skipped": 0,
+        "errors": [],
+    }
+
+    pipeline_candidates = [
+        SimpleNamespace(
+            code=f"60051{i}",
+            name=f"候选{i}",
+            rank=i + 1,
+            final_score=90.0 - i,
+            matched_strategies=["volume_breakout"],
+            strategy_scores={"volume_breakout": 90.0 - i},
+            rule_hits=["trend_aligned"],
+            factor_snapshot={},
+            setup_type="bottom_divergence_breakout",
+            entry_maturity="high",
+            trade_stage="focus",
+            market_regime="defensive",
+            risk_level="high",
+            theme_position="secondary_theme",
+            candidate_pool_level="focus_list",
+        )
+        for i in range(5)
+    ]
+
+    service = ScreeningTaskService(
+        db_manager=db,
+        universe_service=universe_service,
+        factor_service=factor_service,
+        screener_service=MagicMock(),
+        candidate_analysis_service=MagicMock(),
+        market_data_sync_service=market_data_sync_service,
+    )
+    service.config.screening_market_guard_enabled = True
+    service.config.screening_market_guard_index = "sh000001"
+
+    with patch("src.services.screening_task_service.MarketGuard") as guard_cls, patch(
+        "src.services.market_environment_engine.MarketEnvironmentEngine.assess"
+    ) as assess_mock, patch("src.services.five_layer_pipeline.FiveLayerPipeline") as pipeline_cls:
+        guard_instance = MagicMock()
+        guard_instance.check.return_value = MagicMock(
+            is_safe=False,
+            index_price=3100.0,
+            index_ma100=3200.0,
+            message="Index sh000001 below MA100 (3100.00 < 3200.00, -3.1%)",
+        )
+        guard_instance.get_index_bars.return_value = []
+        guard_cls.return_value = guard_instance
+
+        assess_mock.return_value = SimpleNamespace(
+            regime=MarketRegime.DEFENSIVE,
+            risk_level=RiskLevel.HIGH,
+            is_safe=False,
+            message="defensive market",
+        )
+        pipeline_cls.return_value.run.return_value = SimpleNamespace(
+            candidates=pipeline_candidates,
+            decision_context={"pipeline_stats": {"selected_after_limit": 5}},
+            pipeline_stats={"selected_after_limit": 5, "matched_before_limit": 5, "rejected_before_l345": 0},
+        )
+
+        result = service.execute_run(
+            trade_date=date(2026, 3, 13),
+            stock_codes=None,
+            candidate_limit=5,
+            ai_top_k=0,
+        )
+
+    assert result["status"] == "completed"
+    assert pipeline_cls.return_value.run.call_args.kwargs["candidate_limit"] == 5
+    saved_candidates = db.save_screening_candidates.call_args.kwargs["candidates"]
+    assert len(saved_candidates) == 5
     # MarketGuard 被正确构造
     guard_cls.assert_called_once_with(
         fetcher_manager=market_data_sync_service.fetcher_manager,

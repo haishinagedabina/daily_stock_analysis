@@ -1,0 +1,449 @@
+# -*- coding: utf-8 -*-
+"""Tests for Phase 4: API endpoints and agent tools for five-layer backtest."""
+from __future__ import annotations
+
+import json
+from datetime import date, datetime
+from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from api.v1.endpoints.five_layer_backtest import router
+from api.v1.schemas.five_layer_backtest import (
+    FiveLayerBacktestRunRequest,
+    FiveLayerCalibrationRequest,
+    FiveLayerRunResponse,
+    FiveLayerEvaluationsResponse,
+    FiveLayerSummariesResponse,
+    FiveLayerCalibrationResponse,
+    FiveLayerRecommendationsResponse,
+    FiveLayerFullPipelineResponse,
+)
+
+
+# ── Fixtures ───────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def app():
+    _app = FastAPI()
+    _app.include_router(router, prefix="/five-layer-backtest")
+    return _app
+
+
+@pytest.fixture
+def client(app):
+    return TestClient(app)
+
+
+def _mock_run(run_id="flbt-test123456"):
+    run = MagicMock()
+    run.backtest_run_id = run_id
+    run.evaluation_mode = "historical_snapshot"
+    run.execution_model = "conservative"
+    run.trade_date_from = date(2026, 3, 1)
+    run.trade_date_to = date(2026, 3, 31)
+    run.market = "cn"
+    run.status = "completed"
+    run.sample_count = 50
+    run.completed_count = 48
+    run.error_count = 2
+    run.data_version = None
+    run.market_data_version = None
+    run.theme_mapping_version = None
+    run.candidate_snapshot_version = None
+    run.rules_version = None
+    run.created_at = datetime(2026, 4, 1, 10, 0, 0)
+    run.started_at = datetime(2026, 4, 1, 10, 0, 1)
+    run.completed_at = datetime(2026, 4, 1, 10, 5, 0)
+    run.to_dict = MagicMock(return_value={
+        "id": 1,
+        "backtest_run_id": run_id,
+        "evaluation_mode": "historical_snapshot",
+        "execution_model": "conservative",
+        "trade_date_from": "2026-03-01",
+        "trade_date_to": "2026-03-31",
+        "market": "cn",
+        "status": "completed",
+        "sample_count": 50,
+        "completed_count": 48,
+        "error_count": 2,
+        "data_version": None,
+        "market_data_version": None,
+        "theme_mapping_version": None,
+        "candidate_snapshot_version": None,
+        "rules_version": None,
+        "created_at": "2026-04-01T10:00:00",
+        "started_at": "2026-04-01T10:00:01",
+        "completed_at": "2026-04-01T10:05:00",
+    })
+    return run
+
+
+def _mock_evaluation(code="600519"):
+    e = MagicMock()
+    e.code = code
+    e.to_dict = MagicMock(return_value={
+        "id": 1,
+        "backtest_run_id": "flbt-test123456",
+        "trade_date": "2026-03-15",
+        "code": code,
+        "name": "贵州茅台",
+        "signal_family": "entry",
+        "evaluator_type": "entry",
+        "execution_model": "conservative",
+        "entry_fill_status": "filled",
+        "entry_fill_price": 1800.0,
+        "forward_return_5d": 2.5,
+        "outcome": "win",
+        "eval_status": "evaluated",
+    })
+    return e
+
+
+def _mock_summary(group_type="overall", group_key="all"):
+    s = MagicMock()
+    s.group_type = group_type
+    s.group_key = group_key
+    s.sample_count = 50
+    s.avg_return_pct = 1.5
+    s.median_return_pct = 1.2
+    s.win_rate_pct = 60.0
+    s.avg_mae = -3.0
+    s.avg_mfe = 5.0
+    s.avg_drawdown = -2.0
+    s.top_k_hit_rate = 0.7
+    s.excess_return_pct = 1.0
+    s.ranking_consistency = 0.8
+    s.p25_return_pct = -0.5
+    s.p75_return_pct = 3.0
+    s.extreme_sample_ratio = 0.05
+    s.time_bucket_stability = 0.1
+    s.to_dict = MagicMock(return_value={
+        "group_type": group_type,
+        "group_key": group_key,
+        "sample_count": 50,
+        "avg_return_pct": 1.5,
+        "median_return_pct": 1.2,
+        "win_rate_pct": 60.0,
+        "avg_mae": -3.0,
+        "avg_mfe": 5.0,
+        "avg_drawdown": -2.0,
+    })
+    return s
+
+
+def _mock_recommendation():
+    r = MagicMock()
+    r.recommendation_type = "weight_increase"
+    r.target_scope = "setup_type"
+    r.target_key = "trend_breakout"
+    r.recommendation_level = "hypothesis"
+    r.suggested_change = "increase weight by 10%"
+    r.sample_count = 30
+    r.confidence = 0.75
+    r.validation_status = "pending"
+    r.to_dict = MagicMock(return_value={
+        "recommendation_type": "weight_increase",
+        "target_scope": "setup_type",
+        "target_key": "trend_breakout",
+        "recommendation_level": "hypothesis",
+        "suggested_change": "increase weight by 10%",
+        "sample_count": 30,
+        "confidence": 0.75,
+        "validation_status": "pending",
+    })
+    return r
+
+
+def _mock_calibration():
+    c = MagicMock()
+    c.to_dict = MagicMock(return_value={
+        "calibration_name": "test_cal",
+        "decision": "accept",
+        "confidence": 0.85,
+    })
+    return c
+
+
+# ── API Tests ──────────────────────────────────────────────────────────────
+
+class TestGetRunDetail:
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_run_ok(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["backtest_run_id"] == "flbt-test123456"
+        assert data["status"] == "completed"
+
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_run_not_found(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = None
+
+        resp = client.get("/five-layer-backtest/runs/flbt-nonexist")
+        assert resp.status_code == 404
+
+
+class TestGetEvaluations:
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_evaluations_ok(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.eval_repo.get_by_run.return_value = [_mock_evaluation()]
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/evaluations")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["items"][0]["code"] == "600519"
+
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_evaluations_with_filter(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.eval_repo.get_by_run.return_value = [_mock_evaluation()]
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/evaluations?signal_family=entry")
+        assert resp.status_code == 200
+        svc.eval_repo.get_by_run.assert_called_once_with("flbt-test123456", signal_family="entry")
+
+
+class TestGetSummaries:
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_summaries_ok(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.summary_repo.get_by_run.return_value = [_mock_summary()]
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/summaries")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 1
+        assert data["items"][0]["group_type"] == "overall"
+
+
+class TestGetCalibration:
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_calibration_ok(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.calibration_repo.get_by_run.return_value = [_mock_calibration()]
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/calibration")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 1
+        assert data["items"][0]["decision"] == "accept"
+
+
+class TestGetRecommendations:
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_recommendations_ok(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.recommendation_repo.get_by_run.return_value = [_mock_recommendation()]
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/recommendations")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 1
+        assert data["items"][0]["recommendation_level"] == "hypothesis"
+
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_recommendations_with_level_filter(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.recommendation_repo.get_by_run.return_value = []
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/recommendations?recommendation_level=actionable")
+        assert resp.status_code == 200
+        svc.recommendation_repo.get_by_run.assert_called_once_with("flbt-test123456", recommendation_level="actionable")
+
+
+class TestRunBacktest:
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_run_ok(self, MockService, client):
+        svc = MockService.return_value
+        svc.run_full_pipeline.return_value = {
+            "run": _mock_run(),
+            "summaries": [_mock_summary()],
+            "recommendations": [_mock_recommendation()],
+        }
+
+        resp = client.post("/five-layer-backtest/run", json={
+            "trade_date_from": "2026-03-01",
+            "trade_date_to": "2026-03-31",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["run"]["backtest_run_id"] == "flbt-test123456"
+        assert len(data["summaries"]) == 1
+        assert len(data["recommendations"]) == 1
+
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_run_bad_date(self, MockService, client):
+        resp = client.post("/five-layer-backtest/run", json={
+            "trade_date_from": "2026-03-31",
+            "trade_date_to": "2026-03-01",
+        })
+        assert resp.status_code == 400
+
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_run_invalid_date_format(self, MockService, client):
+        resp = client.post("/five-layer-backtest/run", json={
+            "trade_date_from": "not-a-date",
+            "trade_date_to": "2026-03-31",
+        })
+        assert resp.status_code == 400
+
+
+class TestRunCalibration:
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_calibration_ok(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.run_calibration_comparison.return_value = _mock_calibration()
+
+        resp = client.post("/five-layer-backtest/calibration", json={
+            "baseline_run_id": "flbt-base1",
+            "candidate_run_id": "flbt-cand1",
+            "calibration_name": "test_cal",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["decision"] == "accept"
+
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_calibration_run_not_found(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = None
+
+        resp = client.post("/five-layer-backtest/calibration", json={
+            "baseline_run_id": "flbt-missing",
+            "candidate_run_id": "flbt-cand1",
+            "calibration_name": "test_cal",
+        })
+        assert resp.status_code == 404
+
+
+# ── Agent Tool Tests ───────────────────────────────────────────────────────
+
+class TestAgentTools:
+    @patch("src.agent.tools.five_layer_backtest_tools._get_service")
+    def test_get_run_summary_ok(self, mock_get_svc):
+        from src.agent.tools.five_layer_backtest_tools import _handle_get_run_summary
+
+        svc = MagicMock()
+        mock_get_svc.return_value = svc
+        svc.get_run.return_value = _mock_run()
+        svc.summary_repo.get_by_run.return_value = [_mock_summary()]
+
+        result = _handle_get_run_summary("flbt-test123456")
+        assert result["backtest_run_id"] == "flbt-test123456"
+        assert "overall_summary" in result
+
+    @patch("src.agent.tools.five_layer_backtest_tools._get_service")
+    def test_get_run_summary_not_found(self, mock_get_svc):
+        from src.agent.tools.five_layer_backtest_tools import _handle_get_run_summary
+
+        svc = MagicMock()
+        mock_get_svc.return_value = svc
+        svc.get_run.return_value = None
+
+        result = _handle_get_run_summary("flbt-missing")
+        assert "info" in result
+
+    @patch("src.agent.tools.five_layer_backtest_tools._get_service")
+    def test_get_group_summary_ok(self, mock_get_svc):
+        from src.agent.tools.five_layer_backtest_tools import _handle_get_group_summary
+
+        svc = MagicMock()
+        mock_get_svc.return_value = svc
+        svc.get_run.return_value = _mock_run()
+        svc.summary_repo.get_by_run.return_value = [_mock_summary("signal_family", "entry")]
+
+        result = _handle_get_group_summary("flbt-test123456", "signal_family")
+        assert "summaries" in result
+        assert len(result["summaries"]) == 1
+
+    @patch("src.agent.tools.five_layer_backtest_tools._get_service")
+    def test_get_recommendations_ok(self, mock_get_svc):
+        from src.agent.tools.five_layer_backtest_tools import _handle_get_recommendations
+
+        svc = MagicMock()
+        mock_get_svc.return_value = svc
+        svc.get_run.return_value = _mock_run()
+        svc.recommendation_repo.get_by_run.return_value = [_mock_recommendation()]
+
+        result = _handle_get_recommendations("flbt-test123456")
+        assert len(result["recommendations"]) == 1
+        assert result["recommendations"][0]["recommendation_level"] == "hypothesis"
+
+    @patch("src.agent.tools.five_layer_backtest_tools._get_service")
+    def test_get_candidate_detail_ok(self, mock_get_svc):
+        from src.agent.tools.five_layer_backtest_tools import _handle_get_candidate_detail
+
+        svc = MagicMock()
+        mock_get_svc.return_value = svc
+        svc.get_run.return_value = _mock_run()
+        svc.eval_repo.get_by_run.return_value = [_mock_evaluation("600519")]
+
+        result = _handle_get_candidate_detail("flbt-test123456", "600519")
+        assert len(result["evaluations"]) == 1
+        assert result["code"] == "600519"
+
+    @patch("src.agent.tools.five_layer_backtest_tools._get_service")
+    def test_get_candidate_detail_not_found(self, mock_get_svc):
+        from src.agent.tools.five_layer_backtest_tools import _handle_get_candidate_detail
+
+        svc = MagicMock()
+        mock_get_svc.return_value = svc
+        svc.get_run.return_value = _mock_run()
+        svc.eval_repo.get_by_run.return_value = [_mock_evaluation("600519")]
+
+        result = _handle_get_candidate_detail("flbt-test123456", "000001")
+        assert "info" in result
+
+
+# ── Schema Tests ───────────────────────────────────────────────────────────
+
+class TestSchemas:
+    def test_run_request_defaults(self):
+        req = FiveLayerBacktestRunRequest(
+            trade_date_from="2026-03-01",
+            trade_date_to="2026-03-31",
+        )
+        assert req.evaluation_mode == "historical_snapshot"
+        assert req.execution_model == "conservative"
+        assert req.market == "cn"
+        assert req.eval_window_days == 10
+        assert req.generate_recommendations is True
+
+    def test_calibration_request(self):
+        req = FiveLayerCalibrationRequest(
+            baseline_run_id="flbt-base1",
+            candidate_run_id="flbt-cand1",
+            calibration_name="test",
+        )
+        assert req.baseline_config is None
+
+    def test_tool_definitions(self):
+        from src.agent.tools.five_layer_backtest_tools import ALL_FIVE_LAYER_BACKTEST_TOOLS
+        assert len(ALL_FIVE_LAYER_BACKTEST_TOOLS) == 4
+        names = {t.name for t in ALL_FIVE_LAYER_BACKTEST_TOOLS}
+        assert "get_five_layer_backtest_run_summary" in names
+        assert "get_five_layer_group_summary" in names
+        assert "get_five_layer_recommendations" in names
+        assert "get_five_layer_candidate_detail" in names
+
+    def test_tool_to_openai(self):
+        from src.agent.tools.five_layer_backtest_tools import ALL_FIVE_LAYER_BACKTEST_TOOLS
+        for t in ALL_FIVE_LAYER_BACKTEST_TOOLS:
+            schema = t.to_openai_tool()
+            assert schema["type"] == "function"
+            assert "parameters" in schema["function"]

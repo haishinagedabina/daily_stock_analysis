@@ -2313,12 +2313,7 @@ class DatabaseManager:
                 or ("rules_plus_ai" if structured_ai_present and ai_review.get("ai_trade_stage") else "rules_only")
             )
             has_ai_analysis = recommendation_source == "rules_plus_ai"
-            final_score = round(
-                float(item.get("rule_score", 0.0))
-                + self._screening_ai_bonus(ai_review.get("ai_trade_stage"), recommendation_source)
-                + min(news_count, 3),
-                2,
-            )
+            final_score = round(float(item.get("rule_score", 0.0)), 2)
 
             reason_parts = [f"规则得分 {float(item.get('rule_score', 0.0)):.1f}"]
             if has_ai_analysis:
@@ -2369,7 +2364,7 @@ class DatabaseManager:
 
         ordered = sorted(
             enriched,
-            key=lambda item: (-float(item["final_score"]), -float(item["rule_score"]), int(item["rank"])),
+            key=lambda item: (int(item["rank"]), -float(item["rule_score"])),
         )
         for index, item in enumerate(ordered, start=1):
             item["final_rank"] = index

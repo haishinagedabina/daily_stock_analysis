@@ -35,15 +35,14 @@ _CN_MARKET_CLOSE_TIME = dt_time(hour=15, minute=0)
 
 # ── L1 硬开关：市场环境 → 候选上限映射 ───────────────────────────────────────
 # stand_aside → 0 候选（总开关关闭）
-# defensive  → 原上限减半（至少 2 个）
-# balanced / aggressive → 不限制
+# defensive / balanced / aggressive → 不额外缩减候选上限
 def _make_regime_candidate_cap() -> dict:
     from src.schemas.trading_types import MarketRegime
     return {
         MarketRegime.STAND_ASIDE: 0,
-        MarketRegime.DEFENSIVE: None,   # 占位，运行时按 max(2, limit//2) 计算
-        MarketRegime.BALANCED: None,    # 不限制
-        MarketRegime.AGGRESSIVE: None,  # 不限制
+        MarketRegime.DEFENSIVE: None,
+        MarketRegime.BALANCED: None,
+        MarketRegime.AGGRESSIVE: None,
     }
 
 try:
@@ -383,9 +382,6 @@ class ScreeningTaskService:
                     regime_candidate_cap = _REGIME_CANDIDATE_CAP.get(
                         market_env.regime,
                     )
-                    # defensive → 减半 (至少 2)
-                    if regime_candidate_cap is None and market_env.regime.value == "defensive":
-                        regime_candidate_cap = max(2, runtime_config.candidate_limit // 2)
                     # stand_aside → 0（已在字典中配置）
                     logger.info(
                         "screening_run event=l1_regime_gate regime=%s cap=%s original_limit=%d",

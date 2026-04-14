@@ -19,13 +19,17 @@ export const SectionAI: React.FC<{ candidate: ScreeningCandidateDetail }> = ({ c
   const aiThemeAlignment = candidate.aiThemeAlignment ?? candidate.aiReview?.aiThemeAlignment;
   const aiEntryQuality = candidate.aiEntryQuality ?? candidate.aiReview?.aiEntryQuality;
   const stageConflict = candidate.stageConflict ?? candidate.aiReview?.stageConflict;
+  const resultSource = candidate.resultSource ?? candidate.aiReview?.resultSource;
+  const fallbackReason = candidate.fallbackReason ?? candidate.aiReview?.fallbackReason;
+  const downgradeReasons = candidate.downgradeReasons ?? candidate.aiReview?.downgradeReasons;
   const hasAiReview = aiTradeStage != null;
   const hasAiSummary = aiSummary != null;
   const hasStructuredAudit =
     stageConflict != null ||
     aiEnvironmentOk != null ||
     aiThemeAlignment != null ||
-    aiEntryQuality != null;
+    aiEntryQuality != null ||
+    resultSource != null;
 
   if (!hasAiReview && !hasAiSummary && !hasStructuredAudit) return null;
 
@@ -64,6 +68,16 @@ export const SectionAI: React.FC<{ candidate: ScreeningCandidateDetail }> = ({ c
           <p className="text-xs leading-relaxed text-secondary-text">
             {aiSummary}
           </p>
+        )}
+
+        {resultSource && (
+          <div className="rounded-lg border border-border/20 bg-background/40 px-3 py-2 text-xs text-secondary-text">
+            <div>来源: {resultSource}</div>
+            {fallbackReason && <div className="mt-1">回退原因: {fallbackReason}</div>}
+            {downgradeReasons && downgradeReasons.length > 0 && (
+              <div className="mt-1">降级原因: {downgradeReasons.join(', ')}</div>
+            )}
+          </div>
         )}
 
         {hasStructuredAudit && (

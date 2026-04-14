@@ -162,6 +162,18 @@ class AiReviewDecision:
     ai_theme_alignment: Optional[bool] = None
     ai_entry_quality: Optional[str] = None
     stage_conflict: bool = False
+    result_source: Optional[str] = None
+    is_fallback: bool = False
+    fallback_reason: Optional[str] = None
+    downgrade_reasons: List[str] = field(default_factory=list)
+    initial_position: Optional[str] = None
+    stop_loss_rule: Optional[str] = None
+    take_profit_plan: Optional[str] = None
+    invalidation_rule: Optional[str] = None
+    prompt_version: Optional[str] = None
+    model_name: Optional[str] = None
+    parse_status: Optional[str] = None
+    retry_count: int = 0
 
 
 @dataclass
@@ -294,6 +306,18 @@ class CandidateDecision:
         payload.setdefault("ai_theme_alignment", None)
         payload.setdefault("ai_entry_quality", None)
         payload.setdefault("stage_conflict", None)
+        payload.setdefault("result_source", None)
+        payload.setdefault("is_fallback", False)
+        payload.setdefault("fallback_reason", None)
+        payload.setdefault("downgrade_reasons", [])
+        payload.setdefault("initial_position", None)
+        payload.setdefault("stop_loss_rule", None)
+        payload.setdefault("take_profit_plan", None)
+        payload.setdefault("invalidation_rule", None)
+        payload.setdefault("prompt_version", None)
+        payload.setdefault("model_name", None)
+        payload.setdefault("parse_status", None)
+        payload.setdefault("retry_count", 0)
         ai_review = payload.get("ai_review")
         if isinstance(ai_review, dict):
             payload["ai_query_id"] = ai_review.get("ai_query_id")
@@ -306,6 +330,18 @@ class CandidateDecision:
             payload["ai_theme_alignment"] = ai_review.get("ai_theme_alignment")
             payload["ai_entry_quality"] = ai_review.get("ai_entry_quality")
             payload["stage_conflict"] = ai_review.get("stage_conflict")
+            payload["result_source"] = ai_review.get("result_source")
+            payload["is_fallback"] = ai_review.get("is_fallback", False)
+            payload["fallback_reason"] = ai_review.get("fallback_reason")
+            payload["downgrade_reasons"] = ai_review.get("downgrade_reasons", [])
+            payload["initial_position"] = ai_review.get("initial_position")
+            payload["stop_loss_rule"] = ai_review.get("stop_loss_rule")
+            payload["take_profit_plan"] = ai_review.get("take_profit_plan")
+            payload["invalidation_rule"] = ai_review.get("invalidation_rule")
+            payload["prompt_version"] = ai_review.get("prompt_version")
+            payload["model_name"] = ai_review.get("model_name")
+            payload["parse_status"] = ai_review.get("parse_status")
+            payload["retry_count"] = ai_review.get("retry_count", 0)
         return payload
 
     @classmethod
@@ -324,6 +360,18 @@ class CandidateDecision:
                 "ai_theme_alignment": payload.get("ai_theme_alignment"),
                 "ai_entry_quality": payload.get("ai_entry_quality"),
                 "stage_conflict": payload.get("stage_conflict"),
+                "result_source": payload.get("result_source"),
+                "is_fallback": payload.get("is_fallback"),
+                "fallback_reason": payload.get("fallback_reason"),
+                "downgrade_reasons": payload.get("downgrade_reasons"),
+                "initial_position": payload.get("initial_position"),
+                "stop_loss_rule": payload.get("stop_loss_rule"),
+                "take_profit_plan": payload.get("take_profit_plan"),
+                "invalidation_rule": payload.get("invalidation_rule"),
+                "prompt_version": payload.get("prompt_version"),
+                "model_name": payload.get("model_name"),
+                "parse_status": payload.get("parse_status"),
+                "retry_count": payload.get("retry_count"),
             }
             if any(value is not None and value != "" for value in flat_ai_values.values()):
                 ai_review_payload = flat_ai_values
@@ -377,6 +425,18 @@ class CandidateDecision:
                     ai_theme_alignment=ai_review_payload.get("ai_theme_alignment"),
                     ai_entry_quality=ai_review_payload.get("ai_entry_quality"),
                     stage_conflict=bool(ai_review_payload.get("stage_conflict", False)),
+                    result_source=ai_review_payload.get("result_source"),
+                    is_fallback=bool(ai_review_payload.get("is_fallback", False)),
+                    fallback_reason=ai_review_payload.get("fallback_reason"),
+                    downgrade_reasons=list(ai_review_payload.get("downgrade_reasons", []) or []),
+                    initial_position=ai_review_payload.get("initial_position"),
+                    stop_loss_rule=ai_review_payload.get("stop_loss_rule"),
+                    take_profit_plan=ai_review_payload.get("take_profit_plan"),
+                    invalidation_rule=ai_review_payload.get("invalidation_rule"),
+                    prompt_version=ai_review_payload.get("prompt_version"),
+                    model_name=ai_review_payload.get("model_name"),
+                    parse_status=ai_review_payload.get("parse_status"),
+                    retry_count=int(ai_review_payload.get("retry_count", 0) or 0),
                 )
                 if isinstance(ai_review_payload, dict) else None
             ),

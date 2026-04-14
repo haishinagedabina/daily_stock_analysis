@@ -120,6 +120,18 @@ export interface AiReviewDecision {
   aiThemeAlignment?: boolean;
   aiEntryQuality?: string;
   stageConflict?: boolean;
+  resultSource?: string;
+  isFallback?: boolean;
+  fallbackReason?: string;
+  downgradeReasons?: string[];
+  initialPosition?: string;
+  stopLossRule?: string;
+  takeProfitPlan?: string;
+  invalidationRule?: string;
+  promptVersion?: string;
+  modelName?: string;
+  parseStatus?: string;
+  retryCount?: number;
 }
 
 export interface MarketEnvironmentSnapshot {
@@ -263,6 +275,18 @@ export interface ScreeningCandidate {
   aiThemeAlignment?: boolean;
   aiEntryQuality?: string;
   stageConflict?: boolean;
+  resultSource?: string;
+  isFallback?: boolean;
+  fallbackReason?: string;
+  downgradeReasons?: string[];
+  initialPosition?: string;
+  stopLossRule?: string;
+  takeProfitPlan?: string;
+  invalidationRule?: string;
+  promptVersion?: string;
+  modelName?: string;
+  parseStatus?: string;
+  retryCount?: number;
 }
 
 export interface ScreeningCandidateListResponse {

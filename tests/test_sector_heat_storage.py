@@ -57,6 +57,8 @@ class DailySectorHeatModelTestCase(unittest.TestCase):
             "sector_status", "sector_stage",
             "stock_count", "up_count", "limit_up_count", "avg_pct_chg",
             "leader_codes_json", "front_codes_json",
+            "board_strength_score", "board_strength_rank", "board_strength_percentile",
+            "leader_candidate_count", "quality_flags_json",
             "reason", "created_at",
         }
         for col in expected_columns:
@@ -82,6 +84,11 @@ class DailySectorHeatModelTestCase(unittest.TestCase):
                 "avg_pct_chg": 3.5,
                 "leader_codes_json": json.dumps(["600519", "000858"]),
                 "front_codes_json": json.dumps(["600519", "000858", "002304"]),
+                "board_strength_score": 84.0,
+                "board_strength_rank": 1,
+                "board_strength_percentile": 0.99,
+                "leader_candidate_count": 2,
+                "quality_flags_json": json.dumps({"has_leader_candidate": True}),
                 "reason": "板块涨幅居前，龙头贵州茅台涨停",
             },
         ]
@@ -96,6 +103,8 @@ class DailySectorHeatModelTestCase(unittest.TestCase):
         self.assertEqual(len(history), 1)
         self.assertAlmostEqual(history[0]["sector_hot_score"], 66.5, places=1)
         self.assertEqual(history[0]["sector_status"], "hot")
+        self.assertAlmostEqual(history[0]["board_strength_score"], 84.0, places=1)
+        self.assertEqual(history[0]["board_strength_rank"], 1)
 
     def test_unique_constraint_trade_date_board_name(self) -> None:
         """同一 (trade_date, board_name) 写入两次应覆盖，不报错。"""
@@ -394,6 +403,11 @@ class ListSectorHeatHistoryTestCase(unittest.TestCase):
                     "avg_pct_chg": 3.5,
                     "leader_codes_json": json.dumps(["600519"]),
                     "front_codes_json": json.dumps(["600519", "000858"]),
+                    "board_strength_score": 84.0,
+                    "board_strength_rank": 1,
+                    "board_strength_percentile": 0.99,
+                    "leader_candidate_count": 1,
+                    "quality_flags_json": json.dumps({"has_leader_candidate": True}),
                     "reason": "test reason",
                 },
             ],
@@ -405,7 +419,10 @@ class ListSectorHeatHistoryTestCase(unittest.TestCase):
             "breadth_score", "strength_score", "persistence_score", "leadership_score",
             "sector_hot_score", "sector_status", "sector_stage",
             "stock_count", "up_count", "limit_up_count", "avg_pct_chg",
-            "leader_codes_json", "front_codes_json", "reason",
+            "leader_codes_json", "front_codes_json",
+            "board_strength_score", "board_strength_rank", "board_strength_percentile",
+            "leader_candidate_count", "quality_flags_json",
+            "reason",
         }
         for key in expected_keys:
             self.assertIn(key, record, f"返回字典缺少键: {key}")

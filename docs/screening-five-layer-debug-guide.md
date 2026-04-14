@@ -89,6 +89,14 @@
 
 ## L2：板块热度、题材聚合与缩圈
 
+> 2026-04-13 更新：L2 的 `hot/warm` 已改为排名驱动，不再看旧的绝对 `HOT_THRESHOLD/WARM_THRESHOLD`。
+> 调试时优先观察：
+> - `board_strength_score`
+> - `board_strength_rank`
+> - `board_strength_percentile`
+> - `quality_flags`
+> - `top_hot_boards / top_warm_boards / board_strength_rank_preview`
+
 ### Debug 位置（文件 + 行号）
 
 - `src/services/five_layer_pipeline.py:144-166`
@@ -316,8 +324,9 @@
 
 判断方式：
 
-- `selected_before_l345 == 0`：问题主要在 `L2/D5/首筛`
-- `selected_before_l345 > 0` 但 `kept == 0`：问题主要在 `L3/L4/L5`
+- `matched_before_limit == 0`：问题主要在 `L2/D5/首筛`
+- `matched_before_limit > 0` 但 `selected_after_limit == 0`：问题主要在候选上限或首筛截断逻辑
+- `selected_after_limit > 0` 但 `kept == 0`：问题主要在 `L3/L4/L5`
 - `kept > 0` 但几乎全是 `watch`：问题不是“无候选”，而是“质量不足进入执行态”
 
 ## 排查模板
@@ -354,7 +363,8 @@
 - 被误杀的关键策略:
 
 ### 首筛
-- selected_before_l345:
+- matched_before_limit:
+- selected_after_limit:
 - rejected_before_l345:
 - top rejection reasons:
 - 被错误拒绝的样本:
@@ -378,7 +388,7 @@
 - 第一轮只看总量和分布，不要一开始就盯一只股票
 - 第二轮只抽 3-5 只“你认为应该入选但没入选”的股票做单票追踪
 - 每次只验证一个假设，例如“L2 热度阈值过严”或“D5 defensive 过严”，不要同时改多个判断
-- 如果问题表现为 `0 candidates`，优先看 `effective_limit`、`allowed_rules`、`selected_before_l345`
+- 如果问题表现为 `0 candidates`，优先看 `effective_limit`、`allowed_rules`、`matched_before_limit`、`selected_after_limit`
 
 ## 与现有日志配合
 

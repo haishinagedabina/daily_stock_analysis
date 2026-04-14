@@ -26,6 +26,8 @@ from src.schemas.trading_types import (
 )
 from src.services.screener_service import ScreeningCandidateRecord
 from src.services.five_layer_pipeline import _resolve_effective_scores
+from src.services.sector_heat_engine import SectorHeatResult
+from src.services.theme_position_resolver import ThemePositionResolver
 
 
 def _make_candidate(
@@ -93,6 +95,38 @@ class EffectiveScoreResolutionTestCase(unittest.TestCase):
         signature = inspect.signature(FiveLayerPipeline.run)
 
         self.assertNotIn("theme_context", signature.parameters)
+
+
+class ThemePositionResolverRefactorTestCase(unittest.TestCase):
+
+    def test_hot_launch_board_is_promoted_to_main_theme_before_warm_expand_fallback(self):
+        resolver = ThemePositionResolver(
+            sector_results=[
+                SectorHeatResult(
+                    board_name="算力",
+                    sector_status="hot",
+                    sector_stage="launch",
+                    sector_hot_score=66.0,
+                    strength_score=0.82,
+                    leader_codes=[],
+                    front_codes=["603000", "603001"],
+                ),
+                SectorHeatResult(
+                    board_name="机器人",
+                    sector_status="warm",
+                    sector_stage="expand",
+                    sector_hot_score=63.0,
+                    strength_score=0.76,
+                    leader_codes=["300001"],
+                    front_codes=["300001", "300002"],
+                ),
+            ],
+            theme_results=[],
+        )
+
+        positions = {theme.name: theme.position for theme in resolver.identified_themes}
+        self.assertEqual(positions["算力"], ThemePosition.MAIN_THEME)
+        self.assertNotEqual(positions.get("机器人"), ThemePosition.MAIN_THEME)
 
 
 class FiveLayerDecisionTestCase(unittest.TestCase):
@@ -862,12 +896,65 @@ class PipelineObservabilityRegressionTestCase(unittest.TestCase):
 
         stats = result.decision_context["pipeline_stats"]
         self.assertEqual(result.candidates, [])
-        self.assertEqual(stats["selected_before_l345"], 0)
+        self.assertEqual(stats["matched_before_limit"], 0)
+        self.assertEqual(stats["selected_after_limit"], 0)
         self.assertEqual(stats["rejected_before_l345"], 1)
         self.assertEqual(
             stats["screening_rejection_reason_counts"],
             {"avg_amount_low": 1, "volume_ratio_low": 1},
         )
+
+    @patch("src.services.sector_heat_engine.SectorHeatEngine.compute_all_sectors", return_value=[])
+    def test_pipeline_stats_split_matched_and_selected_after_limit(self, _mock_compute_all_sectors):
+        import pandas as pd
+
+        from src.schemas.trading_types import MarketEnvironment
+        from src.services.five_layer_pipeline import FiveLayerPipeline
+        from src.services.screener_service import ScreeningCandidateRecord, ScreeningEvaluationResult
+
+        class LimitedScreenerService:
+            @staticmethod
+            def evaluate(snapshot_df, prefiltered_rules=None):
+                selected = [
+                    ScreeningCandidateRecord(
+                        code=f"30000{i}",
+                        name=f"样本{i}",
+                        rank=i,
+                        rule_score=90.0 - i,
+                        rule_hits=["strategy:test"],
+                        factor_snapshot={"code": f"30000{i}", "close": 10.0 + i},
+                        matched_strategies=["test_strategy"],
+                    )
+                    for i in range(1, 4)
+                ]
+                return ScreeningEvaluationResult(selected=selected, rejected=[])
+
+        result = FiveLayerPipeline().run(
+            snapshot_df=pd.DataFrame([
+                {"code": "300001", "name": "样本1", "close": 11.0},
+                {"code": "300002", "name": "样本2", "close": 12.0},
+                {"code": "300003", "name": "样本3", "close": 13.0},
+            ]),
+            trade_date=date(2026, 3, 31),
+            market_env=MarketEnvironment(
+                regime=MarketRegime.BALANCED,
+                risk_level=RiskLevel.MEDIUM,
+                index_price=3200.0,
+                index_ma100=3100.0,
+                is_safe=True,
+                message="ok",
+            ),
+            guard_result=MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0),
+            screener_service=LimitedScreenerService(),
+            candidate_limit=2,
+            db_manager=MagicMock(),
+            skill_manager=None,
+        )
+
+        stats = result.decision_context["pipeline_stats"]
+        self.assertEqual(stats["matched_before_limit"], 3)
+        self.assertEqual(stats["selected_after_limit"], 2)
+        self.assertEqual(result.candidates, [])
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ class IdentifiedTheme:
     leader_codes: List[str] = field(default_factory=list)
     front_codes: List[str] = field(default_factory=list)
     member_boards: List[str] = field(default_factory=list)
+    quality_flags: Dict[str, object] = field(default_factory=dict)
 
 
 class ThemePositionResolver:
@@ -119,8 +120,9 @@ class ThemePositionResolver:
                     leader_codes=list(set(all_leaders)),
                     front_codes=list(set(all_fronts)),
                     member_boards=all_boards,
+                    quality_flags=dict(best_sector.quality_flags or {}),
                 ))
-            themes.sort(key=lambda t: t.score, reverse=True)
+            themes.sort(key=self._theme_sort_key, reverse=True)
             return themes
 
         # 无 registry: 每个板块独立为一个 theme
@@ -133,10 +135,11 @@ class ThemePositionResolver:
                 leader_codes=list(sector.leader_codes),
                 front_codes=list(sector.front_codes),
                 member_boards=[board_name],
+                quality_flags=dict(sector.quality_flags or {}),
             )
             for board_name, position, sector in raw_themes
         ]
-        themes.sort(key=lambda t: t.score, reverse=True)
+        themes.sort(key=self._theme_sort_key, reverse=True)
         return themes
 
     def _build_warm_expand_fallback_themes(self) -> List[tuple]:
@@ -148,7 +151,13 @@ class ThemePositionResolver:
             if sector.sector_stage not in ("expand", "launch"):
                 continue
             fallback.append((board_name, ThemePosition.SECONDARY_THEME, sector))
-        fallback.sort(key=lambda item: item[2].sector_hot_score, reverse=True)
+        fallback.sort(
+            key=lambda item: (
+                -float(item[2].board_strength_score or item[2].sector_hot_score),
+                -float(item[2].sector_hot_score),
+                item[0],
+            )
+        )
         return fallback[:MAX_FALLBACK_THEMES]
 
     def get_main_theme_boards(self) -> Set[str]:
@@ -243,19 +252,32 @@ class ThemePositionResolver:
         status = sector.sector_status
         stage = sector.sector_stage
 
-        if status == "hot" and stage in ("ferment", "expand"):
+        if status == "hot" and stage in ("launch", "expand"):
             return ThemePosition.MAIN_THEME
-        if status == "hot" and stage == "launch":
+        if status == "hot" and stage == "climax":
             return ThemePosition.SECONDARY_THEME
         if status == "warm":
+            if stage == "expand":
+                return ThemePosition.SECONDARY_THEME
             if stage in ("climax", "fade"):
                 return ThemePosition.FADING_THEME
-            if stage in ("ferment", "launch"):
+            if stage == "launch":
                 return ThemePosition.FOLLOWER_THEME
             return ThemePosition.FOLLOWER_THEME
-        if status == "hot" and stage in ("climax", "fade"):
+        if status == "hot" and stage == "fade":
             return ThemePosition.FADING_THEME
         return ThemePosition.NON_THEME
+
+    @staticmethod
+    def _theme_sort_key(theme: IdentifiedTheme) -> tuple:
+        flags = theme.quality_flags or {}
+        return (
+            1 if theme.position == ThemePosition.MAIN_THEME else 0,
+            1 if flags.get("has_leader_candidate") else 0,
+            1 if flags.get("limit_up_cluster") else 0,
+            1 if flags.get("persistence_ok") else 0,
+            float(theme.score),
+        )
 
     def _adjust_with_external_context(
         self, base_position: ThemePosition, primary_board: str,

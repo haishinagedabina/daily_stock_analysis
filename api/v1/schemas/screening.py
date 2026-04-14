@@ -203,6 +203,18 @@ class ScreeningCandidateItem(BaseModel):
     ai_theme_alignment: Optional[bool] = None
     ai_entry_quality: Optional[str] = None
     stage_conflict: Optional[bool] = None
+    result_source: Optional[str] = None
+    is_fallback: Optional[bool] = None
+    fallback_reason: Optional[str] = None
+    downgrade_reasons: List[str] = Field(default_factory=list)
+    initial_position: Optional[str] = None
+    stop_loss_rule: Optional[str] = None
+    take_profit_plan: Optional[str] = None
+    invalidation_rule: Optional[str] = None
+    prompt_version: Optional[str] = None
+    model_name: Optional[str] = None
+    parse_status: Optional[str] = None
+    retry_count: Optional[int] = None
 
 
 class ScreeningAnalysisHistoryRef(BaseModel):

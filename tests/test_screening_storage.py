@@ -55,6 +55,12 @@ class ScreeningStorageTestCase(unittest.TestCase):
                     "factor_snapshot": {"close": 1500.0, "ma20": 1480.0},
                     "ai_summary": "趋势完好，等待回踩确认。",
                     "ai_operation_advice": "关注",
+                    "ai_trade_stage": "focus",
+                    "result_source": "rules_plus_ai",
+                    "ai_trade_stage": "focus",
+                    "result_source": "rules_plus_ai",
+                    "ai_trade_stage": "focus",
+                    "result_source": "rules_plus_ai",
                     "ai_query_id": "query-1",
                 },
                 {
@@ -235,11 +241,11 @@ class ScreeningStorageTestCase(unittest.TestCase):
 
         items = self.db.list_screening_candidates(run_id)
 
-        self.assertEqual(items[0]["recommendation_source"], "rules_plus_ai")
+        self.assertEqual(items[0]["recommendation_source"], "rules_only")
         self.assertEqual(items[0]["news_count"], 1)
         self.assertIn("贵州茅台新品上市", items[0]["news_summary"])
         self.assertIn("规则得分", items[0]["recommendation_reason"])
-        self.assertIn("AI", items[0]["recommendation_reason"])
+        self.assertNotIn("AI 二筛", items[0]["recommendation_reason"])
         self.assertEqual(items[0]["final_rank"], 1)
         self.assertEqual(items[1]["recommendation_source"], "rules_only")
 
@@ -281,6 +287,8 @@ class ScreeningStorageTestCase(unittest.TestCase):
                     "factor_snapshot": {},
                     "ai_summary": "强趋势。",
                     "ai_operation_advice": "买入",
+                    "ai_trade_stage": "probe_entry",
+                    "result_source": "rules_plus_ai",
                     "ai_query_id": "query-300750",
                 },
             ],
@@ -416,6 +424,8 @@ class ScreeningStorageTestCase(unittest.TestCase):
                     "factor_snapshot": {},
                     "ai_summary": "强趋势。",
                     "ai_operation_advice": "买入",
+                    "ai_trade_stage": "probe_entry",
+                    "result_source": "rules_plus_ai",
                     "ai_query_id": "query-rank-1",
                 },
             ],

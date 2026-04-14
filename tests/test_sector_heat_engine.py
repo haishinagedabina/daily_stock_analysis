@@ -51,6 +51,7 @@ def _make_snapshot_df(sector_stocks: Dict[str, List[dict]]) -> pd.DataFrame:
                 "volume_ratio": s.get("volume_ratio", 1.0),
                 "turnover_rate": s.get("turnover_rate", 3.0),
                 "is_limit_up": s.get("is_limit_up", False),
+                "circ_mv": s.get("circ_mv"),
                 "gap_breakaway": s.get("gap_breakaway", False),
                 "above_ma100": s.get("above_ma100", True),
                 "leader_score": s.get("leader_score", 0.0),
@@ -97,6 +98,34 @@ def _cold_sector_stocks(n: int = 8) -> List[dict]:
             "leader_score": 10.0,
             "extreme_strength_score": 10.0,
             "above_ma100": False,
+        })
+    return stocks
+
+
+def _rankable_sector_stocks(
+    prefix: str,
+    start_code: int,
+    pct_changes: List[float],
+    leader_score: float = 0.0,
+    limit_up_indexes: List[int] | None = None,
+) -> List[dict]:
+    """生成可控强度的板块样本，用于排名驱动测试。"""
+    limit_up_indexes = limit_up_indexes or []
+    stocks: List[dict] = []
+    for idx, pct in enumerate(pct_changes):
+        stocks.append({
+            "code": f"{start_code + idx:06d}",
+            "name": f"{prefix}{idx}",
+            "close": 50.0 + pct,
+            "pct_chg": pct,
+            "ma20": 48.0,
+            "ma60": 45.0,
+            "is_limit_up": idx in limit_up_indexes,
+            "leader_score": leader_score,
+            "base_leader_score": leader_score,
+            "theme_leader_score": 0.0,
+            "extreme_strength_score": max(pct * 8, 0.0),
+            "above_ma100": pct >= 0.0,
         })
     return stocks
 
@@ -257,32 +286,23 @@ class LeadershipTestCase(_SectorHeatTestBase):
         self.assertTrue(len(r.front_codes) > 0)
         self.assertTrue(len(r.front_codes) <= 10)
 
-    def test_theme_leader_score_takes_priority_over_base_leader_score(self) -> None:
-        """L2 龙头识别应优先使用 theme_leader_score，避免继续吃基础分口径。"""
+    def test_limit_up_stocks_are_ranked_by_smallest_circ_mv(self) -> None:
+        """L2 龙头候选应由涨停股组成，并按最小流通市值排序。"""
         stocks = _hot_sector_stocks()
-        stocks[0]["leader_score"] = 20.0
-        stocks[0]["base_leader_score"] = 82.0
-        stocks[0]["theme_leader_score"] = 75.0
-        stocks[1]["leader_score"] = 80.0
-        stocks[1]["base_leader_score"] = 80.0
-        stocks[1]["theme_leader_score"] = 45.0
+        stocks[0]["circ_mv"] = 12_000_000_000
+        stocks[1]["circ_mv"] = 5_000_000_000
 
         snapshot = _make_snapshot_df({"白酒": stocks})
         results = self.engine.compute_all_sectors(snapshot, date(2026, 3, 28))
 
         r = results[0]
-        self.assertIn("601000", r.leader_codes)
-        self.assertNotIn("601001", r.leader_codes)
+        self.assertEqual(r.leader_codes[:2], ["601001", "601000"])
 
-    def test_base_leader_score_is_used_when_theme_leader_scores_are_all_zero(self) -> None:
-        """若题材增强分全为 0，应回退到基础 leader 分识别龙头。"""
+    def test_all_limit_up_stocks_become_leader_candidates_even_without_scores(self) -> None:
+        """简化规则下，涨停股都会进入 leader_codes，而不依赖旧分数。"""
         stocks = _hot_sector_stocks()
         stocks[0]["leader_score"] = 10.0
-        stocks[0]["base_leader_score"] = 82.0
-        stocks[0]["theme_leader_score"] = 0.0
         stocks[1]["leader_score"] = 15.0
-        stocks[1]["base_leader_score"] = 78.0
-        stocks[1]["theme_leader_score"] = 0.0
 
         snapshot = _make_snapshot_df({"白酒": stocks})
         results = self.engine.compute_all_sectors(snapshot, date(2026, 3, 28))
@@ -334,6 +354,61 @@ class SectorStatusTestCase(_SectorHeatTestBase):
         promoted = self.engine._apply_expand_warm_promotion(result)
 
         self.assertEqual(promoted.sector_status, "warm")
+
+    def test_rank_driven_hot_board_is_emitted_even_when_legacy_threshold_is_hard_to_reach(self) -> None:
+        """相对最强板块应能成为 hot，而不是全部被压成 warm。"""
+        extra_codes = [f"{603100 + i:06d}" for i in range(8)] + [f"{603200 + i:06d}" for i in range(8)]
+        self.db.upsert_instruments([
+            {"code": code, "name": code, "market": "cn", "listing_status": "active", "is_st": False}
+            for code in extra_codes
+        ])
+        self.db.upsert_boards([
+            {"board_name": "算力", "board_type": "concept", "market": "cn", "source": "test"},
+            {"board_name": "机器人", "board_type": "concept", "market": "cn", "source": "test"},
+        ])
+        for code in extra_codes[:8]:
+            self.db.replace_instrument_board_memberships(
+                instrument_code=code,
+                memberships=[{"board_name": "算力", "board_type": "concept", "market": "cn", "source": "test"}],
+            )
+        for code in extra_codes[8:]:
+            self.db.replace_instrument_board_memberships(
+                instrument_code=code,
+                memberships=[{"board_name": "机器人", "board_type": "concept", "market": "cn", "source": "test"}],
+            )
+
+        snapshot = _make_snapshot_df({
+            "白酒": _rankable_sector_stocks("白酒股", 601000, [4.8, 4.3, 3.9, 3.6, 3.1, 2.8, 2.5, 2.0], leader_score=0.0),
+            "算力": _rankable_sector_stocks("算力股", 603100, [5.4, 4.9, 4.5, 4.0, 3.6, 3.1, 2.9, 2.6], leader_score=0.0),
+            "机器人": _rankable_sector_stocks("机器人股", 603200, [3.9, 3.6, 3.3, 2.9, 2.5, 2.1, 1.9, 1.6], leader_score=0.0),
+            "锂电池": _cold_sector_stocks(),
+        })
+
+        results = self.engine.compute_all_sectors(snapshot, date(2026, 3, 28))
+
+        hot_boards = [r.board_name for r in results if r.sector_status == "hot"]
+        self.assertGreaterEqual(len(hot_boards), 1)
+        self.assertIn("算力", hot_boards)
+
+    def test_board_without_leader_candidate_can_still_be_hot_with_quality_flag(self) -> None:
+        """龙头候选缺失应影响质量标签，而不是阻止热点识别。"""
+        snapshot = _make_snapshot_df({
+            "白酒": _rankable_sector_stocks(
+                "白酒股",
+                601000,
+                [7.8, 7.1, 6.8, 6.1, 5.7, 5.0, 4.8, 4.1],
+                leader_score=0.0,
+                limit_up_indexes=[0, 1, 2],
+            ),
+            "锂电池": _cold_sector_stocks(),
+        })
+
+        results = self.engine.compute_all_sectors(snapshot, date(2026, 3, 28))
+
+        target = max(results, key=lambda item: item.sector_hot_score)
+        self.assertEqual(target.sector_status, "hot")
+        self.assertEqual(getattr(target, "quality_flags", {}).get("has_leader_candidate"), True)
+        self.assertEqual(getattr(target, "quality_flags", {}).get("leader_candidate_count"), 3)
 
 
 class ColdStartTestCase(_SectorHeatTestBase):

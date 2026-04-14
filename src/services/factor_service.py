@@ -174,6 +174,7 @@ class FactorService:
                     "avg_amount": round(avg_amount, 2),
                     "breakout_ratio": round(breakout_ratio, 4),
                     "pct_chg": float(latest["pct_chg"] or 0.0),
+                    "circ_mv": info.get("circ_mv"),
                     "is_st": bool(info.get("is_st", False)),
                     "days_since_listed": int(days_since_listed),
                     "turnover_rate": turnover_rate,

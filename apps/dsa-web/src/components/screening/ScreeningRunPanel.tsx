@@ -9,7 +9,7 @@ import type { ScreeningRun } from '../../types/screening';
 import { cn } from '../../utils/cn';
 
 function formatDatetime(iso?: string) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   try {
     return new Date(iso).toLocaleString('zh-CN', {
       month: '2-digit',
@@ -20,11 +20,6 @@ function formatDatetime(iso?: string) {
   } catch {
     return iso;
   }
-}
-
-function formatThemeSummary(names: string[] | undefined): string {
-  if (!names || names.length === 0) return '—';
-  return names.slice(0, 3).join('、');
 }
 
 function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'info' {
@@ -70,7 +65,7 @@ const RunHistoryItem: React.FC<{
         <StatusIcon status={run.status} />
         {STAGE_LABELS[run.status] || run.status}
       </Badge>
-      <span className="flex-1 truncate text-secondary-text">{run.tradeDate || '—'}</span>
+      <span className="flex-1 truncate text-secondary-text">{run.tradeDate || '-'}</span>
       {run.strategyNames?.includes('extreme_strength_combo') && (
         <Badge variant="default" size="sm" className="bg-orange/10 text-orange">
           热点
@@ -115,13 +110,12 @@ export const ScreeningRunPanel: React.FC = () => {
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3" data-testid="screening-run-panel">
-      {/* Current run status */}
       <Card variant="bordered" padding="md" className="lg:col-span-2">
         <h3 className="mb-3 text-sm font-semibold text-foreground">运行状态</h3>
         {!currentRun && !isRunning ? (
           <EmptyState
             title="暂无运行中的筛选"
-            description="点击「开始筛选」启动一次全市场扫描"
+            description="点击“开始筛选”启动一次全市场扫描"
           />
         ) : currentRun ? (
           <div className="space-y-4">
@@ -146,19 +140,6 @@ export const ScreeningRunPanel: React.FC = () => {
                 </p>
               </div>
             </div>
-            {currentRun.fusedThemePipeline && (
-              <div className="rounded-lg border border-purple/20 bg-purple/5 px-3 py-2 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-foreground">题材管道</span>
-                  <span className="text-secondary-text">
-                    {currentRun.fusedThemePipeline.mergedThemeCount} 个融合题材
-                  </span>
-                </div>
-                <div className="mt-1 text-secondary-text">
-                  {formatThemeSummary(currentRun.fusedThemePipeline.selectedThemeNames)}
-                </div>
-              </div>
-            )}
             {currentRun.errorSummary && (
               <div className="rounded-lg border border-danger/20 bg-danger/5 px-3 py-2 text-xs text-danger">
                 {currentRun.errorSummary}
@@ -173,7 +154,6 @@ export const ScreeningRunPanel: React.FC = () => {
         ) : null}
       </Card>
 
-      {/* History sidebar */}
       <Card variant="bordered" padding="md">
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-foreground">历史记录</h3>
@@ -193,9 +173,9 @@ export const ScreeningRunPanel: React.FC = () => {
         {historyLoading ? (
           <Loading label="加载历史..." />
         ) : runHistory.length === 0 ? (
-          <p className="text-center text-xs text-secondary-text py-6">暂无历史记录</p>
+          <p className="py-6 text-center text-xs text-secondary-text">暂无历史记录</p>
         ) : (
-          <div className="flex flex-col gap-2 max-h-100 overflow-y-auto" data-testid="run-history-list">
+          <div className="flex max-h-100 flex-col gap-2 overflow-y-auto" data-testid="run-history-list">
             {runHistory.map((run) => (
               <RunHistoryItem
                 key={run.runId}

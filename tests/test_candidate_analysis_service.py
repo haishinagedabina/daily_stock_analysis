@@ -7,18 +7,31 @@ from src.services.candidate_analysis_service import CandidateAnalysisBatchResult
 from src.services.candidate_analysis_service import CandidateAnalysisService
 
 
+def _mock_review(query_id: str = "query-600519") -> MagicMock:
+    review = MagicMock()
+    review.to_payload.return_value = {
+        "result_source": "rules_plus_ai",
+        "fallback_reason": None,
+    }
+    review.reasoning_summary = "趋势延续。"
+    review.ai_operation_advice = "focus"
+    review.ai_query_id = query_id
+    review.result_source = "rules_plus_ai"
+    review.fallback_reason = None
+    review.trade_stage = "focus"
+    review.confidence = 0.75
+    review.environment_ok = True
+    review.initial_position = "1/4"
+    review.stop_loss_rule = "跌破MA20离场"
+    review.take_profit_plan = "沿5日线止盈"
+    review.invalidation_rule = "放量长阴失效"
+    return review
+
+
 class CandidateAnalysisServiceTestCase(unittest.TestCase):
     def test_analyze_top_k_searches_news_for_top_m_without_blocking_ai(self) -> None:
-        analysis_service = MagicMock()
-        analysis_service.analyze_stock.return_value = {
-            "report": {
-                "meta": {"query_id": "query-600519"},
-                "summary": {
-                    "analysis_summary": "趋势延续。",
-                    "operation_advice": "关注",
-                },
-            }
-        }
+        screening_ai_review_service = MagicMock()
+        screening_ai_review_service.review_candidate.return_value = _mock_review()
 
         search_service = MagicMock()
         search_service.is_available = True
@@ -41,9 +54,9 @@ class CandidateAnalysisServiceTestCase(unittest.TestCase):
 
         db = MagicMock()
         service = CandidateAnalysisService(
-            analysis_service=analysis_service,
             search_service=search_service,
             db_manager=db,
+            screening_ai_review_service=screening_ai_review_service,
         )
 
         batch = service.analyze_top_k(
@@ -62,17 +75,9 @@ class CandidateAnalysisServiceTestCase(unittest.TestCase):
         db.save_news_intel.assert_called_once()
 
     def test_analyze_top_k_reports_failed_codes_when_single_ai_call_fails(self) -> None:
-        analysis_service = MagicMock()
-        analysis_service.analyze_stock.side_effect = [
-            {
-                "report": {
-                    "meta": {"query_id": "query-600519"},
-                    "summary": {
-                        "analysis_summary": "趋势延续。",
-                        "operation_advice": "关注",
-                    },
-                }
-            },
+        screening_ai_review_service = MagicMock()
+        screening_ai_review_service.review_candidate.side_effect = [
+            _mock_review(),
             RuntimeError("ai timeout"),
         ]
 
@@ -80,9 +85,9 @@ class CandidateAnalysisServiceTestCase(unittest.TestCase):
         search_service.is_available = False
 
         service = CandidateAnalysisService(
-            analysis_service=analysis_service,
             search_service=search_service,
             db_manager=MagicMock(),
+            screening_ai_review_service=screening_ai_review_service,
         )
 
         batch = service.analyze_top_k(
@@ -96,16 +101,8 @@ class CandidateAnalysisServiceTestCase(unittest.TestCase):
         self.assertEqual(batch.failed_codes, ["000001"])
 
     def test_analyze_top_k_binds_news_only_candidate_to_stable_query_id(self) -> None:
-        analysis_service = MagicMock()
-        analysis_service.analyze_stock.return_value = {
-            "report": {
-                "meta": {"query_id": "query-600519"},
-                "summary": {
-                    "analysis_summary": "趋势延续。",
-                    "operation_advice": "关注",
-                },
-            }
-        }
+        screening_ai_review_service = MagicMock()
+        screening_ai_review_service.review_candidate.return_value = _mock_review()
 
         search_service = MagicMock()
         search_service.is_available = True
@@ -140,9 +137,9 @@ class CandidateAnalysisServiceTestCase(unittest.TestCase):
 
         db = MagicMock()
         service = CandidateAnalysisService(
-            analysis_service=analysis_service,
             search_service=search_service,
             db_manager=db,
+            screening_ai_review_service=screening_ai_review_service,
         )
 
         batch = service.analyze_top_k(

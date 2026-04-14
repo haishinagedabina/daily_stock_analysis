@@ -59,13 +59,7 @@ describe('ScreeningRunPanel', () => {
     expect(screen.getByText('30')).toBeInTheDocument();
   });
 
-  it('shows error summary when present', () => {
-    defaultStore.currentRun = { ...baseRun, status: 'failed', errorSummary: 'timeout error' };
-    render(<ScreeningRunPanel />);
-    expect(screen.getByText('timeout error')).toBeInTheDocument();
-  });
-
-  it('shows fused theme pipeline summary when present', () => {
+  it('does not show fused theme pipeline summary when present', () => {
     defaultStore.currentRun = {
       ...baseRun,
       fusedThemePipeline: {
@@ -76,9 +70,14 @@ describe('ScreeningRunPanel', () => {
       },
     };
     render(<ScreeningRunPanel />);
-    expect(screen.getByText('题材管道')).toBeInTheDocument();
-    expect(screen.getByText('AI芯片、机器人概念')).toBeInTheDocument();
-    expect(screen.getByText('2 个融合题材')).toBeInTheDocument();
+    expect(screen.queryByText('题材管道')).not.toBeInTheDocument();
+    expect(screen.queryByText('AI芯片、机器人概念')).not.toBeInTheDocument();
+  });
+
+  it('shows error summary when present', () => {
+    defaultStore.currentRun = { ...baseRun, status: 'failed', errorSummary: 'timeout error' };
+    render(<ScreeningRunPanel />);
+    expect(screen.getByText('timeout error')).toBeInTheDocument();
   });
 
   it('shows history list', () => {

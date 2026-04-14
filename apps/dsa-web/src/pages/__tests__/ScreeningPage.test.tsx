@@ -71,14 +71,40 @@ describe('ScreeningPage', () => {
   it('calls fetchRunHistory on mount', async () => {
     const { useScreeningStore } = await import('../../stores/screeningStore');
     render(<ScreeningPage />);
-    const store = useScreeningStore() as unknown as Record<string, unknown>;
-    expect(store.fetchRunHistory).toBeDefined();
-    expect(store.fetchRunHistory).toHaveBeenCalledTimes(1);
+    const resolvedStore = useScreeningStore() as unknown as Record<string, unknown>;
+    expect(resolvedStore.fetchRunHistory).toBeDefined();
+    expect(resolvedStore.fetchRunHistory).toHaveBeenCalledTimes(1);
   });
 
-  it('renders theme pipeline section for terminal runs with theme snapshots', async () => {
+  it('renders theme pipeline section for terminal runs with local theme snapshots', () => {
     store.currentRun = {
       runId: 'run-theme-page',
+      status: 'completed',
+      universeSize: 5000,
+      candidateCount: 12,
+      aiTopK: 5,
+      failedSymbols: [],
+      warnings: [],
+      syncFailureRatio: 0,
+      configSnapshot: {},
+      notificationAttempts: 0,
+      localThemePipeline: {
+        source: 'local',
+        hotThemeCount: 1,
+        warmThemeCount: 0,
+        selectedThemeNames: ['机器人概念'],
+        themes: [],
+      },
+    };
+
+    render(<ScreeningPage />);
+    expect(screen.getByTestId('theme-pipeline-section')).toBeInTheDocument();
+    expect(screen.getByText('题材管道详情')).toBeInTheDocument();
+  });
+
+  it('does not render theme pipeline section for fused-only terminal runs', () => {
+    store.currentRun = {
+      runId: 'run-theme-page-fused-only',
       status: 'completed',
       universeSize: 5000,
       candidateCount: 12,
@@ -97,8 +123,7 @@ describe('ScreeningPage', () => {
     };
 
     render(<ScreeningPage />);
-    expect(screen.getByTestId('theme-pipeline-section')).toBeInTheDocument();
-    expect(screen.getByText('题材管道详情')).toBeInTheDocument();
+    expect(screen.queryByTestId('theme-pipeline-section')).not.toBeInTheDocument();
   });
 
   it('does not render theme pipeline section for non-terminal runs', () => {
@@ -113,11 +138,12 @@ describe('ScreeningPage', () => {
       syncFailureRatio: 0,
       configSnapshot: {},
       notificationAttempts: 0,
-      fusedThemePipeline: {
-        activeSources: ['local'],
+      localThemePipeline: {
+        source: 'local',
+        hotThemeCount: 1,
+        warmThemeCount: 0,
         selectedThemeNames: ['机器人概念'],
-        mergedThemeCount: 1,
-        mergedThemes: [],
+        themes: [],
       },
     };
 

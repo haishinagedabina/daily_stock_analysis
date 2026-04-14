@@ -26,8 +26,7 @@ const ScreeningPage: React.FC = () => {
   const showThemePipeline =
     currentRun != null &&
     isTerminalStatus(currentRun.status) &&
-    (currentRun.fusedThemePipeline != null ||
-      currentRun.localThemePipeline != null ||
+    (currentRun.localThemePipeline != null ||
       currentRun.externalThemePipeline != null);
 
   return (

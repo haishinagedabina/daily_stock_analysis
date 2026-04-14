@@ -217,12 +217,17 @@ def test_screening_task_service_uses_full_market_sync_for_manual_today_run():
     )
     service.config.screening_market_guard_enabled = False
 
-    result = service.execute_run(
-        trade_date=today,
-        stock_codes=None,
-        candidate_limit=30,
-        ai_top_k=0,
-    )
+    with patch.object(
+        ScreeningTaskService,
+        "_resolve_screening_trade_date",
+        return_value=(today, None),
+    ):
+        result = service.execute_run(
+            trade_date=today,
+            stock_codes=None,
+            candidate_limit=30,
+            ai_top_k=0,
+        )
 
     assert result["status"] == "completed"
     sync_kwargs = market_data_sync_service.sync_trade_date.call_args.kwargs
@@ -543,7 +548,7 @@ def test_screening_task_service_logs_stage_durations_and_health_report(caplog):
     assert "duration_ms=" in caplog.text
     assert "health_summary=ok" in caplog.text
     assert "selected_count=1" in caplog.text
-    assert "rejected_count=0" in caplog.text
+    assert "rejected_count=1" in caplog.text
     assert "event=run_completed" in caplog.text
 
 

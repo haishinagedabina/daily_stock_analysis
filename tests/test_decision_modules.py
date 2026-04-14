@@ -107,6 +107,7 @@ class CandidatePoolClassifierTestCase(unittest.TestCase):
             leader_score=75.0,
             extreme_strength_score=50.0,
             theme_position=ThemePosition.MAIN_THEME,
+            is_limit_up=True,
         )
         self.assertEqual(result, CandidatePoolLevel.LEADER_POOL)
 
@@ -116,6 +117,7 @@ class CandidatePoolClassifierTestCase(unittest.TestCase):
             leader_score=30.0,
             extreme_strength_score=85.0,
             theme_position=ThemePosition.MAIN_THEME,
+            is_limit_up=True,
         )
         self.assertEqual(result, CandidatePoolLevel.LEADER_POOL)
 
@@ -125,6 +127,7 @@ class CandidatePoolClassifierTestCase(unittest.TestCase):
             leader_score=30.0,
             extreme_strength_score=65.0,
             theme_position=ThemePosition.FOLLOWER_THEME,
+            is_limit_up=True,
         )
         self.assertEqual(result, CandidatePoolLevel.FOCUS_LIST)
 
@@ -134,6 +137,7 @@ class CandidatePoolClassifierTestCase(unittest.TestCase):
             leader_score=55.0,
             extreme_strength_score=40.0,
             theme_position=ThemePosition.FOLLOWER_THEME,
+            is_limit_up=True,
         )
         self.assertEqual(result, CandidatePoolLevel.FOCUS_LIST)
 
@@ -143,6 +147,7 @@ class CandidatePoolClassifierTestCase(unittest.TestCase):
             leader_score=20.0,
             extreme_strength_score=30.0,
             theme_position=ThemePosition.FOLLOWER_THEME,
+            is_limit_up=False,
         )
         self.assertEqual(result, CandidatePoolLevel.WATCHLIST)
 
@@ -164,6 +169,7 @@ class CandidatePoolRegressionTestCase(unittest.TestCase):
             leader_score=90.0,
             extreme_strength_score=99.0,
             theme_position=ThemePosition.NON_THEME,
+            is_limit_up=True,
         )
         self.assertNotEqual(result, CandidatePoolLevel.LEADER_POOL)
         self.assertEqual(result, CandidatePoolLevel.WATCHLIST)
@@ -174,6 +180,7 @@ class CandidatePoolRegressionTestCase(unittest.TestCase):
             leader_score=90.0,
             extreme_strength_score=99.0,
             theme_position=ThemePosition.FOLLOWER_THEME,
+            is_limit_up=True,
         )
         self.assertNotEqual(result, CandidatePoolLevel.LEADER_POOL)
         self.assertEqual(result, CandidatePoolLevel.FOCUS_LIST)
@@ -184,6 +191,7 @@ class CandidatePoolRegressionTestCase(unittest.TestCase):
             leader_score=90.0,
             extreme_strength_score=99.0,
             theme_position=ThemePosition.FADING_THEME,
+            is_limit_up=True,
         )
         self.assertEqual(result, CandidatePoolLevel.WATCHLIST)
 

@@ -21,6 +21,12 @@ service should be treated as an engineering preflight / strategy-matching
 entry, not a standalone `L0`.
 The screening runtime now always uses the unified five-layer main path, so
 there is no environment toggle for enabling or disabling that pipeline.
+The screening AI second-pass is now a dedicated structured review layer:
+
+- it consumes `CandidateDecision` inputs instead of the legacy single-stock analyzer prompt
+- it returns fixed JSON fields such as `trade_stage / entry_maturity / setup_type / risk_level`
+- it cannot override upstream environment/theme hard constraints
+- invalid JSON, timeout, or non-normalizable output fail closed back to rule results
 
 To reduce the latency of OpenClaw hot-theme screening, the project now persists stock-to-board relationships locally:
 
@@ -90,6 +96,7 @@ The scheduled prewarm is now best treated as an optional fallback. The primary l
 - 运行状态面板会自动回填最近一次任务；候选结果现在统一围绕 `trade_stage + setup_type + trade_plan` 展示，命中策略退回审计证据层
 - 首筛阶段不再按 `avg_amount` 做硬过滤，低成交额股票会继续进入策略匹配，再由后续题材/候选池/交易阶段链路收敛质量
 - OpenClaw 热点题材触发的 `extreme_strength_combo` 现在会固定走策略引擎，按请求 `trade_date` 执行，并结合个股所属板块做热点题材硬门槛匹配
+- L2 本地热点板块识别已从“绝对综合分 + 固定阈值”切换为“市场相对排名驱动”：`hot/warm` 由 `board_strength_score / board_strength_rank / percentile` 决定，`stage` 与 `quality_flags` 仅负责生命周期解释和主线优先级排序
 - 候选详情中的 `phase_results` 已统一为正式五阶段键，并新增 `phase_explanations` 供前端直接展示阶段解释；OpenClaw `options.candidate_limit/ai_top_k` 也会在接口层做准确校验
 - OpenClaw `extreme_strength_combo` 候选详情现会把原始规则表达式转成中文展示，并将命中的技术形态单独收敛到独立板块；因子快照中的对象/数组值也会展开为可读文本，避免出现 `[object Object]`
 - 筛选结果内部与落库统一为 `CandidateDecision`，补齐 `setup_freshness`、`theme_duration/trade_theme_stage`、`trade_plan.execution_note` 等字段，API 与通知模板同步消费这套结构

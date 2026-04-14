@@ -33,6 +33,7 @@ from src.schemas.trading_types import (
     ThemePosition,
     TradeStage,
 )
+from src.services._debug_session_logger import write_debug_log
 from src.services.screener_service import ScreeningCandidateRecord, ScreenerService
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,8 @@ class FiveLayerPipeline:
 
         stats["total_sectors"] = len(all_sector_results)
         stats["hot_warm_sectors"] = len(sector_results)
+        stats["hot_sector_count"] = sum(1 for s in all_sector_results if s.sector_status == "hot")
+        stats["warm_sector_count"] = sum(1 for s in all_sector_results if s.sector_status == "warm")
         stats["sector_status_counts"] = _counter_to_dict(
             [str(s.sector_status) for s in all_sector_results]
         )
@@ -229,6 +232,44 @@ class FiveLayerPipeline:
         )
         stats["theme_result_count"] = len(theme_results)
         stats["identified_theme_position_counts"] = identified_theme_positions
+        stats["top_hot_boards"] = [
+            {
+                "board_name": str(s.board_name),
+                "board_strength_score": round(float(getattr(s, "board_strength_score", s.sector_hot_score)), 2),
+                "board_strength_rank": int(getattr(s, "board_strength_rank", 0) or 0),
+                "stage": str(s.sector_stage),
+            }
+            for s in sorted(
+                [item for item in all_sector_results if item.sector_status == "hot"],
+                key=lambda item: float(getattr(item, "board_strength_score", item.sector_hot_score)),
+                reverse=True,
+            )[:8]
+        ]
+        stats["top_warm_boards"] = [
+            {
+                "board_name": str(s.board_name),
+                "board_strength_score": round(float(getattr(s, "board_strength_score", s.sector_hot_score)), 2),
+                "board_strength_rank": int(getattr(s, "board_strength_rank", 0) or 0),
+                "stage": str(s.sector_stage),
+            }
+            for s in sorted(
+                [item for item in all_sector_results if item.sector_status == "warm"],
+                key=lambda item: float(getattr(item, "board_strength_score", item.sector_hot_score)),
+                reverse=True,
+            )[:8]
+        ]
+        stats["board_strength_rank_preview"] = [
+            {
+                "board_name": str(s.board_name),
+                "sector_status": str(s.sector_status),
+                "board_strength_score": round(float(getattr(s, "board_strength_score", s.sector_hot_score)), 2),
+                "board_strength_rank": int(getattr(s, "board_strength_rank", 0) or 0),
+            }
+            for s in sorted(
+                all_sector_results,
+                key=lambda item: int(getattr(item, "board_strength_rank", 9999) or 9999),
+            )[:8]
+        ]
 
         # ── L2: Universe 缩小（仅主线/次线板块的成员） ────────────────
         main_theme_boards = theme_resolver.get_main_theme_boards()
@@ -269,6 +310,35 @@ class FiveLayerPipeline:
             identified_theme_positions,
             len(main_theme_boards),
         )
+        # region agent log
+        write_debug_log(
+            location="src/services/five_layer_pipeline.py:run",
+            message="Five-layer pipeline L2 summary",
+            hypothesis_id="H2,H3,H4",
+            run_id=run_id,
+            data={
+                "snapshot_rows": int(len(snapshot_df)),
+                "hot_theme_stock_count": int(hot_theme_stock_count),
+                "theme_match_passed_count": int(theme_match_passed_count),
+                "leader_score_source_counts": leader_score_source_counts,
+                "total_sectors": int(len(all_sector_results)),
+                "hot_warm_sector_count": int(len(sector_results)),
+                "hot_sector_count": int(stats["hot_sector_count"]),
+                "warm_sector_count": int(stats["warm_sector_count"]),
+                "sector_status_counts": stats["sector_status_counts"],
+                "theme_result_count": int(len(theme_results)),
+                "identified_theme_position_counts": identified_theme_positions,
+                "main_theme_board_count": int(len(main_theme_boards)),
+                "main_theme_boards": _limit_list(sorted(list(main_theme_boards)), limit=12),
+                "l2_filter_mode": l2_filter_mode,
+                "theme_member_candidate_count": int(theme_member_candidate_count),
+                "universe_after_l2": int(len(theme_universe_df)),
+                "top_hot_boards": stats["top_hot_boards"],
+                "top_warm_boards": stats["top_warm_boards"],
+                "board_strength_rank_preview": stats["board_strength_rank_preview"],
+            },
+        )
+        # endregion
         logger.info(
             "pipeline L2 universe: before=%d after=%d mode=%s theme_member_candidates=%d",
             len(snapshot_df),
@@ -328,12 +398,14 @@ class FiveLayerPipeline:
             prefiltered_rules=prefiltered_rules,
         )
         selected = [_normalize_candidate_record(item) for item in evaluation.selected[:candidate_limit]]
-        stats["selected_before_l345"] = len(selected)
+        stats["matched_before_limit"] = len(evaluation.selected)
+        stats["selected_after_limit"] = len(selected)
         stats["rejected_before_l345"] = len(evaluation.rejected)
         stats["screening_rejection_reason_counts"] = _rejection_reason_counts(evaluation.rejected)
         logger.info(
-            "pipeline screening: universe=%d selected=%d rejected=%d top_reasons=%s",
+            "pipeline screening: universe=%d matched_before_limit=%d selected_after_limit=%d rejected=%d top_reasons=%s",
             len(theme_universe_df),
+            len(evaluation.selected),
             len(selected),
             len(evaluation.rejected),
             _top_items(stats["screening_rejection_reason_counts"]),
@@ -459,6 +531,7 @@ class FiveLayerPipeline:
                 extreme_strength_score=extreme_strength,
                 theme_position=tp,
                 market_regime=market_env.regime,
+                is_limit_up=bool(fs.get("is_limit_up", False)),
             )
 
             # L5: 交易阶段裁决
@@ -623,6 +696,11 @@ class FiveLayerPipeline:
                     "stock_count": s.stock_count,
                     "up_count": s.up_count,
                     "limit_up_count": getattr(s, "limit_up_count", 0),
+                    "board_strength_score": getattr(s, "board_strength_score", s.sector_hot_score),
+                    "board_strength_rank": getattr(s, "board_strength_rank", 0),
+                    "board_strength_percentile": getattr(s, "board_strength_percentile", 0.0),
+                    "leader_candidate_count": getattr(s, "leader_candidate_count", 0),
+                    "quality_flags": dict(getattr(s, "quality_flags", {}) or {}),
                 }
                 for s in sector_results
             ],

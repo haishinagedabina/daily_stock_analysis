@@ -73,12 +73,7 @@ class HotThemeScreener:
             # Phase 2: Select leader by priority
             leader_code, entry_reason = self.leader_selector.select_leader(
                 theme_stocks=theme_stocks,
-                limit_up_within_30min=self._find_stock_by_condition(
-                    theme_stocks, stock_signals, "limit_up_within_30min"
-                ),
-                above_ma100=self._find_stock_by_condition(
-                    theme_stocks, stock_signals, "above_ma100"
-                ),
+                stock_snapshots=stock_signals,
             )
 
             if not leader_code:

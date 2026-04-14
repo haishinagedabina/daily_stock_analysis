@@ -24,14 +24,7 @@ class CandidateDecisionBuilder:
             decision.selected_for_ai = decision.rank <= ai_top_k
             review = CandidateDecisionBuilder._build_ai_review(ai_payload)
             decision.ai_review = review
-            decision.has_ai_analysis = bool(
-                review
-                and (
-                    review.ai_summary
-                    or review.ai_operation_advice
-                    or review.ai_reasoning
-                )
-            )
+            decision.has_ai_analysis = bool(review and review.result_source == "rules_plus_ai")
             updated.append(decision)
         return updated
 
@@ -55,4 +48,16 @@ class CandidateDecisionBuilder:
             ai_theme_alignment=ai_payload.get("ai_theme_alignment"),
             ai_entry_quality=ai_payload.get("ai_entry_quality"),
             stage_conflict=bool(ai_payload.get("stage_conflict", False)),
+            result_source=ai_payload.get("result_source"),
+            is_fallback=bool(ai_payload.get("is_fallback", False)),
+            fallback_reason=ai_payload.get("fallback_reason"),
+            downgrade_reasons=list(ai_payload.get("downgrade_reasons", []) or []),
+            initial_position=ai_payload.get("initial_position"),
+            stop_loss_rule=ai_payload.get("stop_loss_rule"),
+            take_profit_plan=ai_payload.get("take_profit_plan"),
+            invalidation_rule=ai_payload.get("invalidation_rule"),
+            prompt_version=ai_payload.get("prompt_version"),
+            model_name=ai_payload.get("model_name"),
+            parse_status=ai_payload.get("parse_status"),
+            retry_count=int(ai_payload.get("retry_count", 0) or 0),
         )

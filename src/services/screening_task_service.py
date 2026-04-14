@@ -15,8 +15,10 @@ from src.core.market_guard import MarketGuard
 from src.services.candidate_analysis_service import CandidateAnalysisService
 from src.services.candidate_analysis_service import CandidateAnalysisBatchResult
 from src.services.candidate_decision_builder import CandidateDecisionBuilder
+from src.services._debug_session_logger_ea8dae import write_debug_log_ea8dae
 from src.services.factor_service import FactorService
 from src.services.market_data_sync_service import MarketDataSyncService
+from src.services._debug_session_logger import write_debug_log
 from src.services.screening_mode_registry import (
     ResolvedScreeningRuntimeConfig,
     resolve_screening_runtime_config,
@@ -599,9 +601,10 @@ class ScreeningTaskService:
                 decision_context = pipeline_result.decision_context
                 pipeline_stats = pipeline_result.pipeline_stats
                 logger.info(
-                    "screening_run event=five_layer_pipeline_done candidates=%d selected_before_l345=%s rejected_before_l345=%s vetoed_count=%s kept_count=%s l2_filter_mode=%s",
+                    "screening_run event=five_layer_pipeline_done candidates=%d matched_before_limit=%s selected_after_limit=%s rejected_before_l345=%s vetoed_count=%s kept_count=%s l2_filter_mode=%s",
                     len(selected),
-                    pipeline_stats.get("selected_before_l345"),
+                    pipeline_stats.get("matched_before_limit"),
+                    pipeline_stats.get("selected_after_limit"),
                     pipeline_stats.get("rejected_before_l345"),
                     pipeline_stats.get("vetoed_count"),
                     pipeline_stats.get("kept_count"),
@@ -617,7 +620,8 @@ class ScreeningTaskService:
                 ),
                 regime_cap=regime_candidate_cap,
                 allowed_rules=pipeline_stats.get("allowed_rules"),
-                selected_before_l345=pipeline_stats.get("selected_before_l345"),
+                matched_before_limit=pipeline_stats.get("matched_before_limit"),
+                selected_after_limit=pipeline_stats.get("selected_after_limit"),
                 vetoed_count=pipeline_stats.get("vetoed_count"),
                 kept_count=pipeline_stats.get("kept_count"),
                 pipeline_skipped=pipeline_skipped,
@@ -633,14 +637,45 @@ class ScreeningTaskService:
                 except Exception as exc:
                     logger.warning("five_layer: failed to persist decision_context: %s", exc)
                 try:
+                    theme_pipeline_updates = self._build_theme_pipeline_context_updates(
+                        decision_context=decision_context,
+                        trade_date=effective_trade_date,
+                        market=market,
+                        theme_context=effective_theme_context,
+                    )
+                    # region agent log
+                    write_debug_log(
+                        location="src/services/screening_task_service.py:execute_run",
+                        message="Theme pipeline context updates prepared",
+                        hypothesis_id="H4",
+                        run_id=run_id,
+                        data={
+                            "decision_hot_theme_count": int(decision_context.get("hot_theme_count", 0) or 0),
+                            "decision_warm_theme_count": int(decision_context.get("warm_theme_count", 0) or 0),
+                            "decision_sector_heat_count": int(
+                                len(list(decision_context.get("sector_heat_results", []) or []))
+                            ),
+                            "local_selected_theme_names": list(
+                                (theme_pipeline_updates.get("local_theme_pipeline") or {}).get("selected_theme_names", []) or []
+                            ),
+                            "local_theme_count": int(
+                                len(((theme_pipeline_updates.get("local_theme_pipeline") or {}).get("themes", []) or []))
+                            ),
+                            "external_theme_count": int(
+                                len(((theme_pipeline_updates.get("external_theme_pipeline") or {}).get("themes", []) or []))
+                            ),
+                            "fused_selected_theme_names": list(
+                                (theme_pipeline_updates.get("fused_theme_pipeline") or {}).get("selected_theme_names", []) or []
+                            ),
+                            "fused_theme_count": int(
+                                ((theme_pipeline_updates.get("fused_theme_pipeline") or {}).get("merged_theme_count", 0) or 0)
+                            ),
+                        },
+                    )
+                    # endregion
                     self._update_run_context(
                         run_id,
-                        **self._build_theme_pipeline_context_updates(
-                            decision_context=decision_context,
-                            trade_date=effective_trade_date,
-                            market=market,
-                            theme_context=effective_theme_context,
-                        ),
+                        **theme_pipeline_updates,
                     )
                 except Exception as exc:
                     logger.warning("five_layer: failed to persist theme pipeline context: %s", exc)
@@ -665,6 +700,34 @@ class ScreeningTaskService:
                 self._must_update_status(run_id=run_id, status="ai_enriching")
                 try:
                     five_layer_contexts = self._build_five_layer_contexts(selected)
+                    # region agent log
+                    write_debug_log_ea8dae(
+                        location="src/services/screening_task_service.py:702",
+                        message="screening_ai_stage_input",
+                        hypothesis_id="H4",
+                        run_id=run_id,
+                        data={
+                            "candidate_count": len(selected),
+                            "ai_top_k": runtime_config.ai_top_k,
+                            "five_layer_context_count": len(five_layer_contexts),
+                            "top_candidates": [
+                                {
+                                    "code": getattr(candidate, "code", None),
+                                    "rank": getattr(candidate, "rank", None),
+                                    "rule_score": getattr(candidate, "rule_score", None),
+                                    "trade_stage": getattr(candidate, "trade_stage", None),
+                                    "market_regime": getattr(candidate, "market_regime", None),
+                                    "theme_position": getattr(candidate, "theme_position", None),
+                                    "entry_maturity": getattr(candidate, "entry_maturity", None),
+                                    "context_preview": str(
+                                        five_layer_contexts.get(getattr(candidate, "code", ""), "") or ""
+                                    )[:180],
+                                }
+                                for candidate in selected[: runtime_config.ai_top_k]
+                            ],
+                        },
+                    )
+                    # endregion
                     ai_batch = self.candidate_analysis_service.analyze_top_k(
                         selected,
                         top_k=runtime_config.ai_top_k,
@@ -811,26 +874,39 @@ class ScreeningTaskService:
         ai_results: Dict[str, Dict[str, Any]],
         ai_top_k: int,
     ) -> List[Dict[str, Any]]:
-        from src.services.ai_review_protocol import AiReviewProtocol
-
-        protocol = AiReviewProtocol()
         normalized = [
             candidate if hasattr(candidate, "to_payload") else CandidateDecisionBuilder.build_initial([candidate])[0]
             for candidate in selected
         ]
+        for candidate in normalized:
+            ai_payload = ai_results.get(candidate.code, {})
+            if not ai_payload:
+                continue
+            write_debug_log_ea8dae(
+                location="src/services/screening_task_service.py:860",
+                message="screening_ai_payload_normalized",
+                hypothesis_id="H2",
+                run_id="post-fix",
+                data={
+                    "code": candidate.code,
+                    "rank": candidate.rank,
+                    "rule_score": candidate.rule_score,
+                    "rule_trade_stage": getattr(candidate.trade_stage, "value", candidate.trade_stage),
+                    "result_source": ai_payload.get("result_source"),
+                    "fallback_reason": ai_payload.get("fallback_reason"),
+                    "ai_trade_stage": ai_payload.get("ai_trade_stage"),
+                    "ai_confidence": ai_payload.get("ai_confidence"),
+                    "parse_status": ai_payload.get("parse_status"),
+                    "retry_count": ai_payload.get("retry_count"),
+                },
+            )
         decisions = CandidateDecisionBuilder.attach_ai_reviews(normalized, ai_results, ai_top_k)
         payloads: List[Dict[str, Any]] = []
         for candidate in decisions:
             ai_payload = ai_results.get(candidate.code, {})
             if ai_payload:
-                review_fields = _ai_review_fields(protocol, ai_payload, candidate)
-                candidate.ai_review = CandidateDecisionBuilder._build_ai_review(
-                    {
-                        **ai_payload,
-                        **review_fields,
-                    }
-                )
-                candidate.has_ai_analysis = True
+                candidate.ai_review = CandidateDecisionBuilder._build_ai_review(ai_payload)
+                candidate.has_ai_analysis = bool(candidate.ai_review and candidate.ai_review.result_source == "rules_plus_ai")
             payloads.append(candidate.to_payload())
         return payloads
 

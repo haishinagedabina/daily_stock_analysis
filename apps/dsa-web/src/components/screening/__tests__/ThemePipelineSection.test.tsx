@@ -19,13 +19,13 @@ const baseRun: ScreeningRun = {
 };
 
 describe('ThemePipelineSection', () => {
-  it('returns null when no theme pipeline snapshots exist', () => {
+  it('returns null when no local or external theme pipeline snapshots exist', () => {
     const { container } = render(<ThemePipelineSection run={baseRun} />);
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('renders fused theme pipeline summary', () => {
-    render(
+  it('does not render section when only fused theme pipeline exists', () => {
+    const { container } = render(
       <ThemePipelineSection
         run={{
           ...baseRun,
@@ -33,26 +33,13 @@ describe('ThemePipelineSection', () => {
             activeSources: ['local', 'external'],
             selectedThemeNames: ['AI芯片', '机器人概念'],
             mergedThemeCount: 2,
-            mergedThemes: [
-              {
-                name: 'AI芯片',
-                rawNames: ['AI芯片', '算力芯片'],
-                matchedSources: ['local', 'external'],
-                prioritySource: 'local',
-                heatScore: 92,
-                confidence: 0.9,
-              },
-            ],
+            mergedThemes: [],
           },
         }}
       />,
     );
 
-    expect(screen.getByText('题材管道详情')).toBeInTheDocument();
-    expect(screen.getByText('融合结果')).toBeInTheDocument();
-    expect(screen.getByText('AI芯片、机器人概念')).toBeInTheDocument();
-    expect(screen.getByText('local + external')).toBeInTheDocument();
-    expect(screen.getByText('原始题材: AI芯片、算力芯片')).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('expands local and external pipeline panels', () => {
@@ -69,6 +56,7 @@ describe('ThemePipelineSection', () => {
               {
                 name: '机器人概念',
                 rawName: '机器人',
+                source: 'local',
                 sourceBoard: '机器人',
                 sectorStatus: 'warm',
                 sectorStage: 'expand',
@@ -86,6 +74,7 @@ describe('ThemePipelineSection', () => {
               {
                 name: 'AI芯片',
                 rawName: '算力芯片',
+                source: 'openclaw',
                 confidence: 0.91,
                 keywords: ['算力', '芯片'],
               },
@@ -94,6 +83,9 @@ describe('ThemePipelineSection', () => {
         }}
       />,
     );
+
+    expect(screen.getByText('题材管道详情')).toBeInTheDocument();
+    expect(screen.queryByText('融合结果')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /本地题材管道/i }));
     expect(screen.getAllByText('机器人概念').length).toBeGreaterThan(0);

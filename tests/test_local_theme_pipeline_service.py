@@ -100,3 +100,40 @@ def test_build_summary_normalizes_local_theme_name_with_alias_mapping():
     assert summary["themes"][0]["normalized_name"] == "机器人概念"
     assert summary["themes"][0]["raw_name"] == "机器人"
     assert summary["themes"][0]["normalization_status"] == "high_confidence"
+
+
+def test_build_summary_keeps_board_strength_rank_fields_and_quality_flags():
+    service = LocalThemePipelineService()
+    decision_context = {
+        "sector_heat_results": [
+            {
+                "board_name": "算力",
+                "canonical_theme": "算力",
+                "sector_hot_score": 68.0,
+                "sector_status": "hot",
+                "sector_stage": "launch",
+                "board_strength_score": 91.5,
+                "board_strength_rank": 1,
+                "board_strength_percentile": 0.99,
+                "quality_flags": {
+                    "has_leader_candidate": False,
+                    "leader_candidate_count": 0,
+                    "limit_up_cluster": True,
+                },
+            }
+        ],
+        "hot_theme_count": 1,
+        "warm_theme_count": 0,
+    }
+
+    summary = service.build_summary(
+        trade_date="2026-03-27",
+        market="cn",
+        decision_context=decision_context,
+    )
+
+    theme = summary["themes"][0]
+    assert theme["board_strength_score"] == 91.5
+    assert theme["board_strength_rank"] == 1
+    assert theme["board_strength_percentile"] == 0.99
+    assert theme["quality_flags"]["has_leader_candidate"] is False

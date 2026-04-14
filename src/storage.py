@@ -919,6 +919,11 @@ class DailySectorHeat(Base):
     avg_pct_chg = Column(Float, default=0.0)
     leader_codes_json = Column(Text)     # JSON: ["600519", ...]
     front_codes_json = Column(Text)      # JSON: ["600519", "000858", ...]
+    board_strength_score = Column(Float, default=0.0, index=True)
+    board_strength_rank = Column(Integer, default=0, index=True)
+    board_strength_percentile = Column(Float, default=0.0)
+    leader_candidate_count = Column(Integer, default=0)
+    quality_flags_json = Column(Text)
     # 审计
     reason = Column(Text)
     created_at = Column(DateTime, default=datetime.now, index=True)
@@ -946,6 +951,11 @@ class DailySectorHeat(Base):
             "avg_pct_chg": self.avg_pct_chg,
             "leader_codes_json": self.leader_codes_json,
             "front_codes_json": self.front_codes_json,
+            "board_strength_score": self.board_strength_score,
+            "board_strength_rank": self.board_strength_rank,
+            "board_strength_percentile": self.board_strength_percentile,
+            "leader_candidate_count": self.leader_candidate_count,
+            "quality_flags_json": self.quality_flags_json,
             "reason": self.reason,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
@@ -1096,6 +1106,7 @@ class DatabaseManager:
                 self._migrate_sqlite_screening_candidates_decision_fields()
                 self._migrate_sqlite_screening_candidates_strategy_fields()
                 self._migrate_sqlite_screening_candidates_ai_review_fields()
+                self._migrate_sqlite_daily_sector_heat_rank_fields()
         except Exception as exc:
             logger.exception("Inline database migration failed: %s", exc)
             raise
@@ -1219,6 +1230,25 @@ class DatabaseManager:
             for col_name, ddl in new_columns.items():
                 if col_name not in existing:
                     logger.info("Applying inline SQLite migration: adding %s to screening_candidates", col_name)
+                    conn.exec_driver_sql(ddl)
+
+    def _migrate_sqlite_daily_sector_heat_rank_fields(self) -> None:
+        """Ensure daily_sector_heat keeps rank-driven fields on SQLite."""
+        with self._engine.begin() as conn:
+            existing = {
+                row[1]
+                for row in conn.exec_driver_sql("PRAGMA table_info(daily_sector_heat)").fetchall()
+            }
+            new_columns = {
+                "board_strength_score": "ALTER TABLE daily_sector_heat ADD COLUMN board_strength_score FLOAT NOT NULL DEFAULT 0.0",
+                "board_strength_rank": "ALTER TABLE daily_sector_heat ADD COLUMN board_strength_rank INTEGER NOT NULL DEFAULT 0",
+                "board_strength_percentile": "ALTER TABLE daily_sector_heat ADD COLUMN board_strength_percentile FLOAT NOT NULL DEFAULT 0.0",
+                "leader_candidate_count": "ALTER TABLE daily_sector_heat ADD COLUMN leader_candidate_count INTEGER NOT NULL DEFAULT 0",
+                "quality_flags_json": "ALTER TABLE daily_sector_heat ADD COLUMN quality_flags_json TEXT",
+            }
+            for col_name, ddl in new_columns.items():
+                if col_name not in existing:
+                    logger.info("Applying inline SQLite migration: adding %s to daily_sector_heat", col_name)
                     conn.exec_driver_sql(ddl)
 
     def get_session(self) -> Session:
@@ -2134,6 +2164,18 @@ class DatabaseManager:
                         "ai_theme_alignment": item.get("ai_theme_alignment"),
                         "ai_entry_quality": item.get("ai_entry_quality"),
                         "stage_conflict": item.get("stage_conflict"),
+                        "result_source": item.get("result_source"),
+                        "is_fallback": item.get("is_fallback"),
+                        "fallback_reason": item.get("fallback_reason"),
+                        "downgrade_reasons": item.get("downgrade_reasons"),
+                        "initial_position": item.get("initial_position"),
+                        "stop_loss_rule": item.get("stop_loss_rule"),
+                        "take_profit_plan": item.get("take_profit_plan"),
+                        "invalidation_rule": item.get("invalidation_rule"),
+                        "prompt_version": item.get("prompt_version"),
+                        "model_name": item.get("model_name"),
+                        "parse_status": item.get("parse_status"),
+                        "retry_count": item.get("retry_count"),
                     }
                 decision_payload = dict(item)
                 if "ai_review" not in decision_payload and any(value is not None for value in ai_review.values()):
@@ -2241,6 +2283,18 @@ class DatabaseManager:
                     "ai_theme_alignment": item.get("ai_theme_alignment"),
                     "ai_entry_quality": item.get("ai_entry_quality"),
                     "stage_conflict": item.get("stage_conflict"),
+                    "result_source": item.get("result_source"),
+                    "is_fallback": item.get("is_fallback"),
+                    "fallback_reason": item.get("fallback_reason"),
+                    "downgrade_reasons": item.get("downgrade_reasons"),
+                    "initial_position": item.get("initial_position"),
+                    "stop_loss_rule": item.get("stop_loss_rule"),
+                    "take_profit_plan": item.get("take_profit_plan"),
+                    "invalidation_rule": item.get("invalidation_rule"),
+                    "prompt_version": item.get("prompt_version"),
+                    "model_name": item.get("model_name"),
+                    "parse_status": item.get("parse_status"),
+                    "retry_count": item.get("retry_count"),
                 }
             ai_query_id = ai_review.get("ai_query_id")
             if ai_query_id:
@@ -2248,11 +2302,20 @@ class DatabaseManager:
 
             news_titles = [record.title for record in news_records if getattr(record, "title", None)]
             news_count = len(news_records)
-            has_ai_analysis = bool(ai_review.get("ai_summary") or ai_review.get("ai_operation_advice"))
-            recommendation_source = "rules_plus_ai" if has_ai_analysis else "rules_only"
+            structured_ai_present = bool(
+                ai_review.get("ai_trade_stage")
+                or ai_review.get("ai_environment_ok") is not None
+                or ai_review.get("fallback_reason")
+                or ai_review.get("result_source")
+            )
+            recommendation_source = str(
+                ai_review.get("result_source")
+                or ("rules_plus_ai" if structured_ai_present and ai_review.get("ai_trade_stage") else "rules_only")
+            )
+            has_ai_analysis = recommendation_source == "rules_plus_ai"
             final_score = round(
                 float(item.get("rule_score", 0.0))
-                + self._screening_ai_bonus(ai_review.get("ai_operation_advice"))
+                + self._screening_ai_bonus(ai_review.get("ai_trade_stage"), recommendation_source)
                 + min(news_count, 3),
                 2,
             )
@@ -2283,11 +2346,24 @@ class DatabaseManager:
                 "ai_theme_alignment": ai_review.get("ai_theme_alignment"),
                 "ai_entry_quality": ai_review.get("ai_entry_quality"),
                 "stage_conflict": ai_review.get("stage_conflict"),
+                "result_source": recommendation_source,
+                "is_fallback": bool(ai_review.get("is_fallback", recommendation_source == "rules_fallback")),
+                "fallback_reason": ai_review.get("fallback_reason"),
+                "downgrade_reasons": list(ai_review.get("downgrade_reasons", []) or []),
+                "initial_position": ai_review.get("initial_position"),
+                "stop_loss_rule": ai_review.get("stop_loss_rule"),
+                "take_profit_plan": ai_review.get("take_profit_plan"),
+                "invalidation_rule": ai_review.get("invalidation_rule"),
+                "prompt_version": ai_review.get("prompt_version"),
+                "model_name": ai_review.get("model_name"),
+                "parse_status": ai_review.get("parse_status"),
+                "retry_count": ai_review.get("retry_count"),
             }
             if ai_review:
                 enriched_item["ai_review"] = {
                     **ai_review,
                     "ai_query_id": ai_query_id,
+                    "result_source": recommendation_source,
                 }
             enriched.append(enriched_item)
 
@@ -2319,8 +2395,16 @@ class DatabaseManager:
         }
 
     @staticmethod
-    def _screening_ai_bonus(operation_advice: Optional[str]) -> float:
+    def _screening_ai_bonus(ai_trade_stage: Optional[str], result_source: Optional[str]) -> float:
+        if result_source != "rules_plus_ai":
+            return 0.0
         mapping = {
+            "add_on_strength": 6.0,
+            "probe_entry": 4.0,
+            "focus": 2.0,
+            "watch": 0.0,
+            "stand_aside": -2.0,
+            "reject": -4.0,
             "买入": 8.0,
             "加仓": 6.0,
             "关注": 4.0,
@@ -2329,7 +2413,7 @@ class DatabaseManager:
             "减仓": -4.0,
             "卖出": -8.0,
         }
-        return mapping.get(str(operation_advice or "").strip(), 0.0)
+        return mapping.get(str(ai_trade_stage or "").strip(), 0.0)
 
     # ------------------------------------------------------------------
     # Instrument Master / Factor Snapshot CRUD
@@ -2662,6 +2746,11 @@ class DatabaseManager:
                         avg_pct_chg=float(item.get("avg_pct_chg", 0.0)),
                         leader_codes_json=item.get("leader_codes_json"),
                         front_codes_json=item.get("front_codes_json"),
+                        board_strength_score=float(item.get("board_strength_score", 0.0) or 0.0),
+                        board_strength_rank=int(item.get("board_strength_rank", 0) or 0),
+                        board_strength_percentile=float(item.get("board_strength_percentile", 0.0) or 0.0),
+                        leader_candidate_count=int(item.get("leader_candidate_count", 0) or 0),
+                        quality_flags_json=item.get("quality_flags_json"),
                         reason=item.get("reason"),
                         created_at=datetime.now(),
                     )

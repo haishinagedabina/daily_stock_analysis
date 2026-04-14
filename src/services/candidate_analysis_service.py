@@ -7,7 +7,10 @@ from typing import Any, Dict, Iterable, Optional
 
 from src.search_service import get_search_service
 from src.services.analysis_service import AnalysisService
-from src.services.ai_review_protocol import AiReviewProtocol
+from src.services._debug_session_logger_ea8dae import write_debug_log_ea8dae
+from src.services.screening_ai_review_prompt_builder import ScreeningAiReviewPromptBuilder
+from src.services.screening_ai_review_service import ScreeningAiReviewService
+from src.schemas.trading_types import CandidateDecision
 from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -34,12 +37,14 @@ class CandidateAnalysisService:
         search_service: Optional[Any] = None,
         db_manager: Optional[DatabaseManager] = None,
         skill_manager: Optional[Any] = None,
+        screening_ai_review_service: Optional[ScreeningAiReviewService] = None,
     ) -> None:
         self.analysis_service = analysis_service or AnalysisService()
         self.search_service = search_service or get_search_service()
         self.db = db_manager or DatabaseManager.get_instance()
         self._skill_manager = skill_manager
-        self._ai_review_protocol = AiReviewProtocol()
+        self._prompt_builder = ScreeningAiReviewPromptBuilder()
+        self._screening_ai_review_service = screening_ai_review_service or ScreeningAiReviewService()
 
     def analyze_top_k(
         self,
@@ -55,32 +60,70 @@ class CandidateAnalysisService:
         results: Dict[str, Dict[str, Any]] = {}
         failed_codes: list[str] = []
         for candidate in candidate_list[:top_k]:
-            code = candidate["code"] if isinstance(candidate, dict) else candidate.code
+            normalized_candidate = self._coerce_candidate(candidate)
+            code = normalized_candidate.code
+            raw_system_context = ctx_map.get(code) or self._prompt_builder.build(normalized_candidate)
+            system_context = raw_system_context if isinstance(raw_system_context, str) else str(raw_system_context or "")
+            context_source = "five_layer_context" if ctx_map.get(code) else "review_prompt"
+            # region agent log
+            write_debug_log_ea8dae(
+                location="src/services/candidate_analysis_service.py:60",
+                message="screening_ai_candidate_request",
+                hypothesis_id="H4",
+                data={
+                    "code": code,
+                    "top_k": top_k,
+                    "news_top_m": news_top_m,
+                    "context_source": context_source,
+                    "context_length": len(system_context),
+                    "context_preview": system_context[:240],
+                    "matched_strategies": self._extract_matched_strategies(normalized_candidate),
+                    "rule_trade_stage": getattr(normalized_candidate.trade_stage, "value", normalized_candidate.trade_stage),
+                },
+                run_id="pre-fix",
+            )
+            # endregion
             try:
-                result = self.analysis_service.analyze_stock(
-                    stock_code=code,
-                    report_type="simple",
-                    force_refresh=False,
-                    send_notification=False,
-                    system_context=ctx_map.get(code) or self._build_review_prompt(candidate),
-                )
+                review = self._screening_ai_review_service.review_candidate(normalized_candidate)
             except Exception as exc:
                 logger.warning("AI analysis failed for %s: %s", code, exc)
                 failed_codes.append(code)
                 continue
-            if not result:
-                failed_codes.append(code)
-                continue
-
-            report = result.get("report", {})
-            summary = report.get("summary", {}) if isinstance(report, dict) else {}
+            # region agent log
+            write_debug_log_ea8dae(
+                location="src/services/candidate_analysis_service.py:77",
+                message="screening_ai_candidate_response",
+                hypothesis_id="H1",
+                data={
+                    "code": code,
+                    "has_result": True,
+                    "query_id": review.ai_query_id,
+                    "analysis_summary_preview": str(review.reasoning_summary or "")[:200],
+                    "operation_advice": review.ai_operation_advice,
+                    "result_source": review.result_source,
+                    "fallback_reason": review.fallback_reason,
+                    "trade_stage": getattr(review.trade_stage, "value", review.trade_stage),
+                },
+                run_id="pre-fix",
+            )
+            # endregion
+            query_id = review.ai_query_id or f"screening-ai-{uuid.uuid4().hex}"
             entry: Dict[str, Any] = {
-                "ai_query_id": report.get("meta", {}).get("query_id") or news_query_ids.get(code),
-                "ai_summary": summary.get("analysis_summary"),
-                "ai_operation_advice": summary.get("operation_advice"),
+                **review.to_payload(),
+                "ai_query_id": query_id,
+                "ai_summary": review.reasoning_summary,
+                "ai_operation_advice": review.ai_operation_advice or getattr(review.trade_stage, "value", review.trade_stage),
+                "ai_trade_stage": getattr(review.trade_stage, "value", review.trade_stage),
+                "ai_reasoning": review.reasoning_summary,
+                "ai_confidence": review.confidence,
+                "ai_environment_ok": review.environment_ok,
+                "initial_position": review.initial_position,
+                "stop_loss_rule": review.stop_loss_rule,
+                "take_profit_plan": review.take_profit_plan,
+                "invalidation_rule": review.invalidation_rule,
             }
 
-            matched_strategies = self._extract_matched_strategies(candidate)
+            matched_strategies = self._extract_matched_strategies(normalized_candidate)
             if matched_strategies:
                 entry["matched_strategies"] = matched_strategies
 
@@ -96,43 +139,43 @@ class CandidateAnalysisService:
             return list(candidate.get("matched_strategies", []))
         return list(getattr(candidate, "matched_strategies", []) or [])
 
-    def _build_review_prompt(self, candidate: Any) -> str:
+    @staticmethod
+    def _coerce_candidate(candidate: Any) -> CandidateDecision:
+        if isinstance(candidate, CandidateDecision):
+            return candidate
         if isinstance(candidate, dict):
-            trade_plan = candidate.get("trade_plan")
-            return self._ai_review_protocol.build_review_prompt(
-                code=str(candidate.get("code", "")),
-                name=str(candidate.get("name", "") or ""),
-                rule_trade_stage=str(candidate.get("trade_stage", "") or ""),
-                setup_type=str(candidate.get("setup_type", "") or ""),
-                market_regime=str(candidate.get("market_regime", "") or ""),
-                theme_position=str(candidate.get("theme_position", "") or ""),
-                entry_maturity=str(candidate.get("entry_maturity", "") or ""),
-                trade_plan=trade_plan if isinstance(trade_plan, dict) else None,
-                factor_snapshot=dict(candidate.get("factor_snapshot", {}) or {}),
+            return CandidateDecision.from_payload(candidate)
+        payload = {
+            key: getattr(candidate, key)
+            for key in (
+                "code",
+                "name",
+                "rank",
+                "rule_score",
+                "rule_hits",
+                "factor_snapshot",
+                "matched_strategies",
+                "market_regime",
+                "risk_level",
+                "environment_ok",
+                "theme_tag",
+                "theme_score",
+                "theme_position",
+                "leader_score",
+                "sector_strength",
+                "theme_duration",
+                "trade_theme_stage",
+                "setup_type",
+                "entry_maturity",
+                "setup_freshness",
+                "strategy_family",
+                "setup_hit_reasons",
+                "trade_stage",
+                "trade_plan",
             )
-        trade_plan = getattr(candidate, "trade_plan", None)
-        trade_plan_payload = trade_plan.to_payload() if hasattr(trade_plan, "to_payload") else None
-        if trade_plan_payload is None and trade_plan is not None:
-            trade_plan_payload = {
-                "initial_position": getattr(trade_plan, "initial_position", None),
-                "add_rule": getattr(trade_plan, "add_rule", None),
-                "stop_loss_rule": getattr(trade_plan, "stop_loss_rule", None),
-                "take_profit_plan": getattr(trade_plan, "take_profit_plan", None),
-                "invalidation_rule": getattr(trade_plan, "invalidation_rule", None),
-                "holding_expectation": getattr(trade_plan, "holding_expectation", None),
-                "execution_note": getattr(trade_plan, "execution_note", None),
-            }
-        return self._ai_review_protocol.build_review_prompt(
-            code=str(getattr(candidate, "code", "")),
-            name=str(getattr(candidate, "name", "") or ""),
-            rule_trade_stage=str(getattr(getattr(candidate, "trade_stage", ""), "value", getattr(candidate, "trade_stage", "")) or ""),
-            setup_type=str(getattr(getattr(candidate, "setup_type", ""), "value", getattr(candidate, "setup_type", "")) or ""),
-            market_regime=str(getattr(getattr(candidate, "market_regime", ""), "value", getattr(candidate, "market_regime", "")) or ""),
-            theme_position=str(getattr(getattr(candidate, "theme_position", ""), "value", getattr(candidate, "theme_position", "")) or ""),
-            entry_maturity=str(getattr(getattr(candidate, "entry_maturity", ""), "value", getattr(candidate, "entry_maturity", "")) or ""),
-            trade_plan=trade_plan_payload,
-            factor_snapshot=dict(getattr(candidate, "factor_snapshot", {}) or {}),
-        )
+            if hasattr(candidate, key)
+        }
+        return CandidateDecision.from_payload(payload)
 
     def _enrich_news_for_top_m(self, candidates: Iterable[Any], news_top_m: int) -> Dict[str, str]:
         news_query_ids: Dict[str, str] = {}

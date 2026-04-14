@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Screening behavior
 
 - 首筛公共过滤已移除 `avg_amount < min_avg_amount` 的硬拒绝逻辑，当前会先放行可用股票进入策略匹配，再交给后续五层链路继续收敛
+- L2 本地热点板块已改为排名驱动识别：`hot/warm` 不再由固定阈值切分，而是基于 `board_strength_score / board_strength_rank / percentile` 进行分桶；`stage` 与 `quality_flags` 改为解释性字段，并同步落库到 `daily_sector_heat`
 
 ### Screening architecture consolidation
 
@@ -19,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The screening run no longer depends on the optional `screening_use_five_layer_pipeline` split; the five-layer pipeline is now the only main path
 - Added missing five-layer semantics including `setup_freshness`, `theme_duration`, `trade_theme_stage`, and `trade_plan.execution_note`
 - AI secondary review now follows a fixed schema and reads/writes the unified candidate decision object end-to-end
+- Screening AI second-pass now uses a dedicated review service with guard enforcement, explicit `rules_only / rules_fallback / rules_plus_ai` source states, and fail-closed fallback on invalid JSON / timeout / normalize failure
 - Strategy YAML metadata is now fully populated with `system_role / strategy_family / applicable_market / applicable_theme / setup_type`, and `/api/v1/screening/strategies` exposes those fields
 - Notification copy now prioritizes `trade_stage + setup + trade_plan` and moves matched strategies to an audit-evidence role
 - Screening run responses now expose `local_theme_pipeline / external_theme_pipeline / fused_theme_pipeline` as first-class fields, so clients no longer need to inspect `config_snapshot` for hot-theme pipeline details

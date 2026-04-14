@@ -1544,7 +1544,7 @@ class GeminiAnalyzer:
                 )
             else:
                 # 没有找到 JSON，尝试从纯文本中提取信息
-                logger.warning(f"无法从响应中提取 JSON，使用原始文本分析")
+                logger.warning("无法从响应中提取 JSON，使用原始文本分析")
                 return self._parse_text_response(response_text, code, name)
                 
         except json.JSONDecodeError as e:

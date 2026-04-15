@@ -14,12 +14,18 @@ from api.v1.endpoints.five_layer_backtest import router
 from api.v1.schemas.five_layer_backtest import (
     FiveLayerBacktestRunRequest,
     FiveLayerCalibrationRequest,
+    FiveLayerEvaluationItem,
+    FiveLayerGroupSummaryItem,
     FiveLayerRunResponse,
     FiveLayerEvaluationsResponse,
     FiveLayerSummariesResponse,
     FiveLayerCalibrationResponse,
     FiveLayerRecommendationsResponse,
     FiveLayerFullPipelineResponse,
+)
+from src.backtest.aggregators.ranking_effectiveness import (
+    RankingComparisonResult,
+    RankingEffectivenessReport,
 )
 
 
@@ -137,8 +143,38 @@ def _mock_summary(group_type="overall", group_key="all"):
         "p75_return_pct": 3.0,
         "extreme_sample_ratio": 0.05,
         "time_bucket_stability": 0.1,
+        "profit_factor": 1.8,
+        "avg_holding_days": 4.5,
+        "max_consecutive_losses": 3,
+        "plan_execution_rate": 0.6,
+        "stage_accuracy_rate": 0.7,
+        "system_grade": "A",
     })
     return s
+
+
+def _mock_ranking_report():
+    return RankingEffectivenessReport(
+        comparisons=[
+            RankingComparisonResult(
+                dimension="entry_maturity",
+                tier_high="HIGH",
+                tier_low="LOW",
+                high_avg_return=3.2,
+                low_avg_return=1.1,
+                excess_return_pct=2.1,
+                high_win_rate=66.0,
+                low_win_rate=45.0,
+                high_sample_count=12,
+                low_sample_count=10,
+                is_effective=True,
+            ),
+        ],
+        overall_effectiveness_ratio=0.75,
+        top_k_hit_rate=0.6,
+        excess_return_pct=1.2,
+        ranking_consistency=0.8,
+    )
 
 
 def _mock_recommendation():
@@ -234,6 +270,21 @@ class TestGetSummaries:
         assert len(data["items"]) == 1
         assert data["items"][0]["group_type"] == "overall"
         assert data["items"][0]["top_k_hit_rate"] == 0.7
+        assert data["items"][0]["profit_factor"] == 1.8
+
+
+class TestGetRankingEffectiveness:
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_ranking_effectiveness_ok(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.get_ranking_effectiveness.return_value = _mock_ranking_report()
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/ranking-effectiveness")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["overall_effectiveness_ratio"] == 0.75
+        assert data["comparisons"][0]["tier_high"] == "HIGH"
 
 
 class TestGetCalibration:
@@ -471,3 +522,33 @@ class TestSchemas:
             schema = t.to_openai_tool()
             assert schema["type"] == "function"
             assert "parameters" in schema["function"]
+
+    def test_group_summary_schema_accepts_new_fields(self):
+        item = FiveLayerGroupSummaryItem(
+            group_type="overall",
+            group_key="all",
+            sample_count=20,
+            profit_factor=1.8,
+            avg_holding_days=4.5,
+            max_consecutive_losses=2,
+            plan_execution_rate=0.55,
+            stage_accuracy_rate=0.65,
+            system_grade="A",
+        )
+
+        assert item.profit_factor == 1.8
+        assert item.system_grade == "A"
+
+    def test_evaluation_schema_accepts_detail_fields(self):
+        item = FiveLayerEvaluationItem(
+            backtest_run_id="flbt-test123456",
+            code="600519",
+            signal_family="entry",
+            evaluator_type="entry",
+            signal_type="buy",
+            factor_snapshot_json='{"ma100_breakout_days": 3}',
+            trade_plan_json='{"take_profit": 5}',
+        )
+
+        assert item.signal_type == "buy"
+        assert "ma100_breakout_days" in item.factor_snapshot_json

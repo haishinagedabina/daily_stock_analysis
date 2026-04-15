@@ -67,8 +67,12 @@ class FiveLayerEvaluationItem(BaseModel):
     code: str
     name: Optional[str] = None
     signal_family: str
+    signal_type: Optional[str] = None
     evaluator_type: str
+    evaluation_mode: Optional[str] = None
     execution_model: Optional[str] = None
+    snapshot_source: Optional[str] = None
+    replayed: Optional[bool] = None
 
     # Snapshot fields
     snapshot_trade_stage: Optional[str] = None
@@ -102,6 +106,8 @@ class FiveLayerEvaluationItem(BaseModel):
     outcome: Optional[str] = None
     stage_success: Optional[bool] = None
     eval_status: Optional[str] = None
+    factor_snapshot_json: Optional[str] = None
+    trade_plan_json: Optional[str] = None
 
 
 class FiveLayerEvaluationsResponse(BaseModel):
@@ -129,6 +135,34 @@ class FiveLayerGroupSummaryItem(BaseModel):
     p75_return_pct: Optional[float] = None
     extreme_sample_ratio: Optional[float] = None
     time_bucket_stability: Optional[float] = None
+    profit_factor: Optional[float] = None
+    avg_holding_days: Optional[float] = None
+    max_consecutive_losses: Optional[int] = None
+    plan_execution_rate: Optional[float] = None
+    stage_accuracy_rate: Optional[float] = None
+    system_grade: Optional[str] = None
+
+
+class RankingComparisonItem(BaseModel):
+    dimension: str
+    tier_high: str
+    tier_low: str
+    high_avg_return: Optional[float] = None
+    low_avg_return: Optional[float] = None
+    excess_return_pct: Optional[float] = None
+    high_win_rate: Optional[float] = None
+    low_win_rate: Optional[float] = None
+    high_sample_count: int
+    low_sample_count: int
+    is_effective: bool
+
+
+class RankingEffectivenessResponse(BaseModel):
+    comparisons: List[RankingComparisonItem] = Field(default_factory=list)
+    overall_effectiveness_ratio: float
+    top_k_hit_rate: Optional[float] = None
+    excess_return_pct: Optional[float] = None
+    ranking_consistency: Optional[float] = None
 
 
 class FiveLayerSummariesResponse(BaseModel):

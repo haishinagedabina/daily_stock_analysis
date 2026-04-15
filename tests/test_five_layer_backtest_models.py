@@ -198,6 +198,12 @@ class TestFiveLayerBacktestModels(unittest.TestCase):
             p75_return_pct=3.0,
             extreme_sample_ratio=0.05,
             time_bucket_stability=0.1,
+            profit_factor=1.8,
+            avg_holding_days=4.5,
+            max_consecutive_losses=3,
+            plan_execution_rate=0.6,
+            stage_accuracy_rate=0.7,
+            system_grade="A",
         )
 
         payload = summary.to_dict()
@@ -209,6 +215,12 @@ class TestFiveLayerBacktestModels(unittest.TestCase):
         self.assertEqual(payload["p75_return_pct"], 3.0)
         self.assertEqual(payload["extreme_sample_ratio"], 0.05)
         self.assertEqual(payload["time_bucket_stability"], 0.1)
+        self.assertEqual(payload["profit_factor"], 1.8)
+        self.assertEqual(payload["avg_holding_days"], 4.5)
+        self.assertEqual(payload["max_consecutive_losses"], 3)
+        self.assertEqual(payload["plan_execution_rate"], 0.6)
+        self.assertEqual(payload["stage_accuracy_rate"], 0.7)
+        self.assertEqual(payload["system_grade"], "A")
 
     def test_create_calibration_output(self):
         """Should persist calibration output with JSON fields."""
@@ -301,10 +313,16 @@ class TestFiveLayerBacktestModels(unittest.TestCase):
                 name="贵州茅台",
                 signal_family="entry",
                 evaluator_type="entry",
+                signal_type="buy",
+                evaluation_mode="historical_snapshot",
+                snapshot_source="screening_candidate",
+                replayed=False,
                 snapshot_trade_stage="probe_entry",
                 forward_return_1d=1.5,
                 mae=-2.0,
                 mfe=5.0,
+                factor_snapshot_json=json.dumps({"ma100_breakout_days": 3}),
+                trade_plan_json=json.dumps({"take_profit": 5}),
             )
             session.add(ev)
             session.commit()
@@ -314,6 +332,12 @@ class TestFiveLayerBacktestModels(unittest.TestCase):
             self.assertIn("snapshot_trade_stage", d)
             self.assertIn("forward_return_1d", d)
             self.assertIn("mae", d)
+            self.assertIn("signal_type", d)
+            self.assertIn("evaluation_mode", d)
+            self.assertIn("snapshot_source", d)
+            self.assertIn("replayed", d)
+            self.assertIn("factor_snapshot_json", d)
+            self.assertIn("trade_plan_json", d)
             self.assertEqual(d["code"], "600519")
 
     def test_run_to_dict(self):

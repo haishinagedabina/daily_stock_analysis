@@ -16,6 +16,15 @@
 
 ## Board Cache Warmup
 
+## Five-Layer Backtest Updates
+
+The five-layer backtest workflow now exposes a richer optimization and review path across backend APIs and the Web UI:
+
+- Web backtest results are organized into four layers: system health, strategy comparison, judgment validation, and per-stock drilldown.
+- Group summaries now include `profit_factor`, `avg_holding_days`, `max_consecutive_losses`, `plan_execution_rate`, `stage_accuracy_rate`, and `system_grade`.
+- Evaluation payloads now expose replay and diagnosis fields such as `signal_type`, `evaluation_mode`, `snapshot_source`, `replayed`, `factor_snapshot_json`, and `trade_plan_json`.
+- A dedicated API endpoint is available at `/api/v1/five-layer-backtest/runs/{backtest_run_id}/ranking-effectiveness` for ranking-comparison analysis.
+
 The formal trading decision flow starts at `L1-L5`. The older screening
 service should be treated as an engineering preflight / strategy-matching
 entry, not a standalone `L0`.

@@ -29,6 +29,10 @@ screening:
     - field: trend_score
       op: ">="
       value: 40
+    # 收盘在当日振幅上半部分，排除冲高回落的假突破
+    - field: close_strength
+      op: ">="
+      value: 0.5
   scoring:
     - field: breakout_ratio
       weight: 40

@@ -32,6 +32,10 @@ screening:
     - field: ma5_distance_pct
       op: "<="
       value: 2.0
+    # 当日收阳确认企稳（过滤仍在下跌的假回踩）
+    - field: pct_chg
+      op: ">"
+      value: 0
   scoring:
     - field: trend_score
       weight: 40

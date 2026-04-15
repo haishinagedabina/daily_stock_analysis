@@ -237,5 +237,32 @@ class TestGroupSummaryAggregator(unittest.TestCase):
         self.assertAlmostEqual(obs.win_rate_pct, 50.0)
 
 
+    def test_entry_group_exposes_new_metrics(self):
+        """Entry group should include profit factor, streak and execution metrics."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-agg")
+        entry = next(s for s in summaries if s.group_type == "signal_family" and s.group_key == "entry")
+
+        self.assertAlmostEqual(entry.profit_factor, 2.5)
+        self.assertIsNone(entry.avg_holding_days)
+        self.assertEqual(entry.max_consecutive_losses, 1)
+        self.assertAlmostEqual(entry.plan_execution_rate, 0.5)
+        self.assertAlmostEqual(entry.stage_accuracy_rate, 0.5)
+
+    def test_overall_summary_stage_accuracy_uses_entry_and_observation_rules(self):
+        """Overall stage accuracy should combine profitable entries and successful observations."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-agg")
+        overall = next(s for s in summaries if s.group_type == "overall" and s.group_key == "all")
+
+        self.assertAlmostEqual(overall.stage_accuracy_rate, 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

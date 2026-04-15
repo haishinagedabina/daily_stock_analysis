@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Backtest experience
+
+- Reworked the five-layer backtest page into four layers: system scorecard, strategy comparison, judgment validation, and per-stock drill-down
+- Added new summary metrics including `profit_factor`, `avg_holding_days`, `max_consecutive_losses`, `plan_execution_rate`, `stage_accuracy_rate`, and `system_grade`
+- Added `GET /api/v1/five-layer-backtest/runs/{backtest_run_id}/ranking-effectiveness` so Web/Desktop clients can display maturity-ranking effectiveness directly
+- Evaluation payloads now expose `factor_snapshot_json`, `trade_plan_json`, `signal_type`, `evaluation_mode`, `snapshot_source`, and `replayed` for expanded stock-level detail views
+
 ### Screening behavior
 
 - 首筛公共过滤已移除 `avg_amount < min_avg_amount` 的硬拒绝逻辑，当前会先放行可用股票进入策略匹配，再交给后续五层链路继续收敛

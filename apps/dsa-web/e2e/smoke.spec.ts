@@ -114,7 +114,7 @@ test.describe('web smoke', () => {
     await expect(page.getByRole('button', { name: /保存配置/ })).toBeVisible();
   });
 
-  test('backtest page renders filter controls after login', async ({ page }) => {
+  test('backtest page renders five-layer run controls after login', async ({ page }) => {
     await login(page);
 
     // Navigate to backtest page by clicking the link
@@ -122,10 +122,9 @@ test.describe('web smoke', () => {
     await page.waitForLoadState('domcontentloaded');
     await page.waitForTimeout(1000);
 
-    // Check for filter controls
-    const filterInput = page.getByPlaceholder(/stock code/i);
-    await expect(filterInput).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole('button', { name: /filter/i })).toBeVisible();
-    await expect(page.getByRole('button', { name: /run backtest/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '五层回测' })).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('input[type="date"]').first()).toBeVisible();
+    await expect(page.locator('select').first()).toBeVisible();
+    await expect(page.getByRole('button', { name: '运行五层回测' })).toBeVisible();
   });
 });

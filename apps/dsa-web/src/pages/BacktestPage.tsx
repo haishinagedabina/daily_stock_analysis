@@ -1,442 +1,325 @@
 import type React from 'react';
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { backtestApi } from '../api/backtest';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
-import { ApiErrorAlert, Card, Badge, Pagination } from '../components/common';
+import { ApiErrorAlert, Badge, Card } from '../components/common';
+import { EvaluationDetail } from '../components/backtest/EvaluationDetail';
+import { JudgmentValidation } from '../components/backtest/JudgmentValidation';
+import { StrategyComparison } from '../components/backtest/StrategyComparison';
+import { SystemScorecard } from '../components/backtest/SystemScorecard';
 import type {
+  BacktestFullPipelineResponse,
   BacktestResultItem,
   BacktestRunResponse,
-  PerformanceMetrics,
+  BacktestSummaryItem,
+  FiveLayerEvaluationMode,
+  FiveLayerExecutionModel,
+  FiveLayerMarket,
+  RankingEffectivenessData,
 } from '../types/backtest';
 
-// ============ Helpers ============
+const EVALUATION_MODE_OPTIONS: Array<{ value: FiveLayerEvaluationMode; label: string }> = [
+  { value: 'historical_snapshot', label: '历史快照' },
+  { value: 'rule_replay', label: '规则回放' },
+  { value: 'parameter_calibration', label: '参数校准' },
+];
+
+const EXECUTION_MODEL_OPTIONS: Array<{ value: FiveLayerExecutionModel; label: string }> = [
+  { value: 'conservative', label: '保守' },
+  { value: 'baseline', label: '基准' },
+  { value: 'optimistic', label: '乐观' },
+];
+
+const MARKET_OPTIONS: Array<{ value: FiveLayerMarket; label: string }> = [
+  { value: 'cn', label: 'A股' },
+  { value: 'hk', label: '港股' },
+  { value: 'us', label: '美股' },
+];
+
+function toDateInputValue(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function defaultRange(): { from: string; to: string } {
+  const today = new Date();
+  const from = new Date(today);
+  from.setDate(today.getDate() - 30);
+  return { from: toDateInputValue(from), to: toDateInputValue(today) };
+}
 
 function pct(value?: number | null): string {
   if (value == null) return '--';
   return `${value.toFixed(1)}%`;
 }
 
-function outcomeBadge(outcome?: string) {
-  if (!outcome) return <Badge variant="default">--</Badge>;
-  switch (outcome) {
-    case 'win':
-      return <Badge variant="success" glow>WIN</Badge>;
-    case 'loss':
-      return <Badge variant="danger" glow>LOSS</Badge>;
-    case 'neutral':
-      return <Badge variant="warning">NEUTRAL</Badge>;
-    default:
-      return <Badge variant="default">{outcome}</Badge>;
-  }
+function formatDateTime(value?: string | null): string {
+  if (!value) return '--';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
 }
 
-function statusBadge(status: string) {
+function statusBadge(status?: string | null) {
   switch (status) {
     case 'completed':
-      return <Badge variant="success">completed</Badge>;
-    case 'insufficient':
-      return <Badge variant="warning">insufficient</Badge>;
+      return <Badge variant="success">已完成</Badge>;
+    case 'running':
+    case 'started':
+      return <Badge variant="warning">运行中</Badge>;
+    case 'failed':
     case 'error':
-      return <Badge variant="danger">error</Badge>;
+      return <Badge variant="danger">失败</Badge>;
     default:
-      return <Badge variant="default">{status}</Badge>;
+      return <Badge variant="default">{status || '--'}</Badge>;
   }
 }
 
-function boolIcon(value?: boolean | null) {
-  if (value === true) return <span className="text-emerald-400">&#10003;</span>;
-  if (value === false) return <span className="text-red-400">&#10007;</span>;
-  return <span className="text-muted-text">--</span>;
-}
-
-// ============ Metric Row ============
-
-const MetricRow: React.FC<{ label: string; value: string; accent?: boolean }> = ({ label, value, accent }) => (
-  <div className="flex items-center justify-between border-b border-white/5 py-1.5 last:border-0">
-    <span className="text-xs text-secondary-text">{label}</span>
-    <span className={`text-sm font-mono font-semibold ${accent ? 'text-cyan' : 'text-white'}`}>{value}</span>
-  </div>
-);
-
-// ============ Performance Card ============
-
-const PerformanceCard: React.FC<{ metrics: PerformanceMetrics; title: string }> = ({ metrics, title }) => (
-  <Card variant="gradient" padding="md" className="animate-fade-in">
-    <div className="mb-3">
-      <span className="label-uppercase">{title}</span>
+const RunSummaryCard: React.FC<{ run: BacktestRunResponse }> = ({ run }) => (
+  <Card variant="gradient" padding="md">
+    <div className="mb-4 flex items-start justify-between gap-3">
+      <div>
+        <div className="label-uppercase">当前运行</div>
+        <div className="mt-1 break-all font-mono text-xs text-cyan">{run.backtestRunId}</div>
+      </div>
+      {statusBadge(run.status)}
     </div>
-    <MetricRow label="Direction Accuracy" value={pct(metrics.directionAccuracyPct)} accent />
-    <MetricRow label="Win Rate" value={pct(metrics.winRatePct)} accent />
-    <MetricRow label="Avg Sim. Return" value={pct(metrics.avgSimulatedReturnPct)} />
-    <MetricRow label="Avg Stock Return" value={pct(metrics.avgStockReturnPct)} />
-    <MetricRow label="SL Trigger Rate" value={pct(metrics.stopLossTriggerRate)} />
-    <MetricRow label="TP Trigger Rate" value={pct(metrics.takeProfitTriggerRate)} />
-    <MetricRow label="Avg Days to Hit" value={metrics.avgDaysToFirstHit != null ? metrics.avgDaysToFirstHit.toFixed(1) : '--'} />
-    <div className="mt-3 pt-2 border-t border-border/40 flex items-center justify-between">
-      <span className="text-xs text-muted-text">Evaluations</span>
-      <span className="text-xs text-secondary-text font-mono">
-        {Number(metrics.completedCount)} / {Number(metrics.totalEvaluations)}
-      </span>
-    </div>
-    <div className="flex items-center justify-between">
-      <span className="text-xs text-muted-text">W / L / N</span>
-      <span className="text-xs font-mono">
-        <span className="text-emerald-400">{metrics.winCount}</span>
-        {' / '}
-        <span className="text-red-400">{metrics.lossCount}</span>
-        {' / '}
-        <span className="text-amber-400">{metrics.neutralCount}</span>
-      </span>
+    <div className="space-y-2 text-sm">
+      <div className="flex items-center justify-between">
+        <span className="text-secondary-text">日期区间</span>
+        <span className="font-mono text-foreground">{run.tradeDateFrom} - {run.tradeDateTo}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-secondary-text">样本数</span>
+        <span className="font-mono text-foreground">{run.sampleCount}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-secondary-text">完成数</span>
+        <span className="font-mono text-foreground">{run.completedCount}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-secondary-text">错误数</span>
+        <span className="font-mono text-foreground">{run.errorCount}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-secondary-text">完成时间</span>
+        <span className="font-mono text-foreground">{formatDateTime(run.completedAt)}</span>
+      </div>
     </div>
   </Card>
 );
 
-// ============ Run Summary ============
-
-const RunSummary: React.FC<{ data: BacktestRunResponse }> = ({ data }) => (
-  <div className="flex items-center gap-4 rounded-lg border border-white/5 bg-elevated px-3 py-2 text-xs font-mono animate-fade-in">
-    <span className="text-secondary-text">Processed: <span className="text-white">{data.processed}</span></span>
-    <span className="text-secondary-text">Saved: <span className="text-cyan">{data.saved}</span></span>
-    <span className="text-secondary-text">Completed: <span className="text-emerald-400">{data.completed}</span></span>
-    <span className="text-secondary-text">Insufficient: <span className="text-amber-400">{data.insufficient}</span></span>
-    {data.errors > 0 && (
-      <span className="text-secondary-text">Errors: <span className="text-red-400">{data.errors}</span></span>
-    )}
-  </div>
+const EmptySection: React.FC<{ title: string; hint: string }> = ({ title, hint }) => (
+  <Card title={title} variant="gradient">
+    <p className="text-sm text-secondary-text">{hint}</p>
+  </Card>
 );
 
-// ============ Main Page ============
-
 const BacktestPage: React.FC = () => {
-  // Set page title
-  useEffect(() => {
-    document.title = '策略回测 - DSA';
-  }, []);
-
-  // Input state
-  const [codeFilter, setCodeFilter] = useState('');
-  const [evalDays, setEvalDays] = useState('');
-  const [forceRerun, setForceRerun] = useState(false);
+  const range = defaultRange();
+  const [tradeDateFrom, setTradeDateFrom] = useState(range.from);
+  const [tradeDateTo, setTradeDateTo] = useState(range.to);
+  const [evaluationMode, setEvaluationMode] = useState<FiveLayerEvaluationMode>('historical_snapshot');
+  const [executionModel, setExecutionModel] = useState<FiveLayerExecutionModel>('conservative');
+  const [market, setMarket] = useState<FiveLayerMarket>('cn');
+  const [evalDays, setEvalDays] = useState('10');
+  const [generateRecommendations, setGenerateRecommendations] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
-  const [runResult, setRunResult] = useState<BacktestRunResponse | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [runError, setRunError] = useState<ParsedApiError | null>(null);
   const [pageError, setPageError] = useState<ParsedApiError | null>(null);
+  const [runResult, setRunResult] = useState<BacktestRunResponse | null>(null);
+  const [summaries, setSummaries] = useState<BacktestSummaryItem[]>([]);
+  const [evaluations, setEvaluations] = useState<BacktestResultItem[]>([]);
+  const [rankingEffectiveness, setRankingEffectiveness] = useState<RankingEffectivenessData | null>(null);
 
-  // Results state
-  const [results, setResults] = useState<BacktestResultItem[]>([]);
-  const [totalResults, setTotalResults] = useState(0);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [isLoadingResults, setIsLoadingResults] = useState(false);
-  const pageSize = 20;
-
-  // Performance state
-  const [overallPerf, setOverallPerf] = useState<PerformanceMetrics | null>(null);
-  const [stockPerf, setStockPerf] = useState<PerformanceMetrics | null>(null);
-  const [isLoadingPerf, setIsLoadingPerf] = useState(false);
-
-  // Fetch results
-  const fetchResults = useCallback(async (page = 1, code?: string, windowDays?: number) => {
-    setIsLoadingResults(true);
-    try {
-      const response = await backtestApi.getResults({ code: code || undefined, evalWindowDays: windowDays, page, limit: pageSize });
-      setResults(response.items);
-      setTotalResults(response.total);
-      setCurrentPage(response.page);
-      setPageError(null);
-    } catch (err) {
-      console.error('Failed to fetch backtest results:', err);
-      setPageError(getParsedApiError(err));
-    } finally {
-      setIsLoadingResults(false);
-    }
-  }, []);
-
-  // Fetch performance
-  const fetchPerformance = useCallback(async (code?: string, windowDays?: number) => {
-    setIsLoadingPerf(true);
-    try {
-      const overall = await backtestApi.getOverallPerformance(windowDays);
-      setOverallPerf(overall);
-
-      if (code) {
-        const stock = await backtestApi.getStockPerformance(code, windowDays);
-        setStockPerf(stock);
-      } else {
-        setStockPerf(null);
-      }
-      setPageError(null);
-    } catch (err) {
-      console.error('Failed to fetch performance:', err);
-      setPageError(getParsedApiError(err));
-    } finally {
-      setIsLoadingPerf(false);
-    }
-  }, []);
-
-  // Initial load — fetch performance first, then filter results by its window
   useEffect(() => {
-    const init = async () => {
-      // Get latest performance (unfiltered returns most recent summary)
-      const overall = await backtestApi.getOverallPerformance();
-      setOverallPerf(overall);
-      // Use the summary's eval_window_days to filter results consistently
-      const windowDays = overall?.evalWindowDays;
-      if (windowDays && !evalDays) {
-        setEvalDays(String(windowDays));
-      }
-      fetchResults(1, undefined, windowDays);
-    };
-    init();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    document.title = '五层回测 - 每日股票分析';
+  }, []);
 
-  // Run backtest
+  const loadRunArtifacts = useCallback(async (runId: string, payload?: BacktestFullPipelineResponse) => {
+    try {
+      const [run, summaryResponse, resultsResponse, rankingResponse] = await Promise.all([
+        payload ? Promise.resolve(payload.run) : backtestApi.getRunDetail(runId),
+        payload ? Promise.resolve({ backtestRunId: runId, items: payload.summaries }) : backtestApi.getSummaries(runId),
+        backtestApi.getResults({ backtestRunId: runId, page: 1, limit: 200 }),
+        backtestApi.getRankingEffectiveness(runId),
+      ]);
+      setRunResult(run);
+      setSummaries(summaryResponse.items || []);
+      setEvaluations(resultsResponse.items || []);
+      setRankingEffectiveness(rankingResponse);
+      setPageError(null);
+    } catch (error) {
+      setPageError(getParsedApiError(error));
+    }
+  }, []);
+
   const handleRun = async () => {
     setIsRunning(true);
-    setRunResult(null);
     setRunError(null);
     try {
-      const code = codeFilter.trim() || undefined;
-      const evalWindowDays = evalDays ? parseInt(evalDays, 10) : undefined;
-      const response = await backtestApi.run({
-        code,
-        force: forceRerun || undefined,
-        minAgeDays: forceRerun ? 0 : undefined,
-        evalWindowDays,
+      const payload = await backtestApi.run({
+        tradeDateFrom,
+        tradeDateTo,
+        evaluationMode,
+        executionModel,
+        market,
+        evalWindowDays: parseInt(evalDays || '10', 10),
+        generateRecommendations,
       });
-      setRunResult(response);
-      // Refresh data with same eval_window_days
-      fetchResults(1, codeFilter.trim() || undefined, evalWindowDays);
-      fetchPerformance(codeFilter.trim() || undefined, evalWindowDays);
-    } catch (err) {
-      setRunError(getParsedApiError(err));
+      await loadRunArtifacts(payload.run.backtestRunId, payload);
+    } catch (error) {
+      setRunError(getParsedApiError(error));
     } finally {
       setIsRunning(false);
     }
   };
 
-  // Filter by code
-  const handleFilter = () => {
-    const code = codeFilter.trim() || undefined;
-    const windowDays = evalDays ? parseInt(evalDays, 10) : undefined;
-    setCurrentPage(1);
-    fetchResults(1, code, windowDays);
-    fetchPerformance(code, windowDays);
+  const handleRefresh = async () => {
+    if (!runResult) return;
+    setIsRefreshing(true);
+    await loadRunArtifacts(runResult.backtestRunId);
+    setIsRefreshing(false);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleFilter();
-    }
-  };
-
-  // Pagination
-  const totalPages = Math.ceil(totalResults / pageSize);
-  const handlePageChange = (page: number) => {
-    const windowDays = evalDays ? parseInt(evalDays, 10) : undefined;
-    fetchResults(page, codeFilter.trim() || undefined, windowDays);
-  };
+  const overallSummary = useMemo(
+    () => summaries.find((item) => item.groupType === 'overall') ?? null,
+    [summaries],
+  );
+  const strategySummaries = useMemo(
+    () => summaries.filter((item) => item.groupType === 'setup_type'),
+    [summaries],
+  );
+  const tradeStageSummaries = useMemo(
+    () => summaries.filter((item) => item.groupType === 'trade_stage'),
+    [summaries],
+  );
+  const maturitySummaries = useMemo(
+    () => summaries.filter((item) => item.groupType === 'entry_maturity'),
+    [summaries],
+  );
+  const entrySignalQuality = useMemo(() => {
+    const entryItems = evaluations.filter((item) => item.signalFamily === 'entry' && item.signalQualityScore != null);
+    if (entryItems.length === 0) return null;
+    return entryItems.reduce((sum, item) => sum + (item.signalQualityScore ?? 0), 0) / entryItems.length;
+  }, [evaluations]);
 
   return (
-    <div className="min-h-full flex flex-col rounded-[1.5rem] bg-transparent">
-      {/* Header */}
-      <header className="flex-shrink-0 border-b border-white/5 px-3 py-3 sm:px-4">
-        <div className="flex max-w-5xl flex-wrap items-center gap-2">
-          <div className="relative min-w-0 flex-[1_1_220px]">
-            <input
-              type="text"
-              value={codeFilter}
-              onChange={(e) => setCodeFilter(e.target.value.toUpperCase())}
-              onKeyDown={handleKeyDown}
-              placeholder="Filter by stock code (leave empty for all)"
-              disabled={isRunning}
-              className="input-terminal w-full"
-            />
+    <div className="min-h-full space-y-4">
+      <header className="rounded-3xl border border-white/8 bg-card/50 p-4">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold text-foreground">五层回测</h1>
+            <p className="mt-1 text-sm text-secondary-text">按方案重构为体检卡、策略拆解、判断验证和个股明细四层结构。</p>
           </div>
-          <button
-            type="button"
-            onClick={handleFilter}
-            disabled={isLoadingResults}
-            className="btn-secondary flex items-center gap-1.5 whitespace-nowrap"
-          >
-            Filter
-          </button>
-          <div className="flex items-center gap-1 whitespace-nowrap">
-            <span className="text-xs text-muted-text">Window</span>
-            <input
-              type="number"
-              min={1}
-              max={120}
-              value={evalDays}
-              onChange={(e) => setEvalDays(e.target.value)}
-              placeholder="10"
-              disabled={isRunning}
-              className="input-terminal w-14 text-center text-xs py-2"
-            />
+          {runResult ? (
+            <button type="button" className="btn-secondary" onClick={() => void handleRefresh()} disabled={isRefreshing || isRunning}>
+              {isRefreshing ? '刷新中...' : '刷新运行'}
+            </button>
+          ) : null}
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <input type="date" value={tradeDateFrom} onChange={(event) => setTradeDateFrom(event.target.value)} className="input-terminal w-full" />
+          <input type="date" value={tradeDateTo} onChange={(event) => setTradeDateTo(event.target.value)} className="input-terminal w-full" />
+          <div className="rounded-2xl border border-white/8 bg-white/5 px-3 py-2">
+            <label className="mb-1 block text-xs text-secondary-text">评估模式</label>
+            <select value={evaluationMode} onChange={(event) => setEvaluationMode(event.target.value as FiveLayerEvaluationMode)} className="w-full bg-transparent text-sm outline-none">
+              {EVALUATION_MODE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value} className="bg-base text-foreground">{option.label}</option>
+              ))}
+            </select>
           </div>
-          <button
-            type="button"
-            onClick={() => setForceRerun(!forceRerun)}
-            disabled={isRunning}
-            className={`
-              flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-              transition-all duration-200 whitespace-nowrap border cursor-pointer
-              ${forceRerun
-                ? 'border-cyan/40 bg-cyan/10 text-cyan shadow-[0_0_8px_rgba(0,212,255,0.15)]'
-                : 'border-white/10 bg-transparent text-muted-text hover:border-white/20 hover:text-secondary-text'
-              }
-              disabled:opacity-50 disabled:cursor-not-allowed
-            `}
-          >
-            <span className={`
-              inline-block w-1.5 h-1.5 rounded-full transition-colors duration-200
-              ${forceRerun ? 'bg-cyan shadow-[0_0_4px_rgba(0,212,255,0.6)]' : 'bg-border'}
-            `} />
-            Force
-          </button>
-          <button
-            type="button"
-            onClick={handleRun}
-            disabled={isRunning}
-            className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
-          >
-            {isRunning ? (
-              <>
-                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                Running...
-              </>
-            ) : (
-              'Run Backtest'
-            )}
+          <div className="rounded-2xl border border-white/8 bg-white/5 px-3 py-2">
+            <label className="mb-1 block text-xs text-secondary-text">执行模型</label>
+            <select value={executionModel} onChange={(event) => setExecutionModel(event.target.value as FiveLayerExecutionModel)} className="w-full bg-transparent text-sm outline-none">
+              {EXECUTION_MODEL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value} className="bg-base text-foreground">{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="rounded-2xl border border-white/8 bg-white/5 px-3 py-2">
+            <label className="mb-1 block text-xs text-secondary-text">市场</label>
+            <select value={market} onChange={(event) => setMarket(event.target.value as FiveLayerMarket)} className="w-full bg-transparent text-sm outline-none">
+              {MARKET_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value} className="bg-base text-foreground">{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="rounded-2xl border border-white/8 bg-white/5 px-3 py-2">
+            <label className="mb-1 block text-xs text-secondary-text">评估窗口</label>
+            <input type="number" min={1} max={120} value={evalDays} onChange={(event) => setEvalDays(event.target.value)} className="w-full bg-transparent text-sm outline-none" />
+          </div>
+          <label className="flex items-center gap-2 rounded-2xl border border-white/8 bg-white/5 px-3 py-2 text-sm text-secondary-text">
+            <input type="checkbox" checked={generateRecommendations} onChange={(event) => setGenerateRecommendations(event.target.checked)} />
+            生成建议
+          </label>
+          <button type="button" className="btn-primary" onClick={() => void handleRun()} disabled={isRunning}>
+            {isRunning ? '运行中...' : '运行五层回测'}
           </button>
         </div>
-        {runResult && (
-          <div className="mt-2 max-w-4xl">
-            <RunSummary data={runResult} />
-          </div>
-        )}
-        {runError && (
-          <ApiErrorAlert error={runError} className="mt-2 max-w-4xl" />
-        )}
+
+        {runError ? <ApiErrorAlert error={runError} className="mt-3" /> : null}
       </header>
 
-      {/* Main content */}
-      <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3 lg:flex-row">
-        {/* Left sidebar - Performance */}
-        <div className="flex max-h-[38vh] flex-col gap-3 overflow-y-auto lg:max-h-none lg:w-60 lg:flex-shrink-0">
-          {isLoadingPerf ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="w-8 h-8 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
-            </div>
-          ) : overallPerf ? (
-            <PerformanceCard metrics={overallPerf} title="Overall Performance" />
-          ) : (
-            <Card padding="md">
-              <p className="text-xs text-muted-text text-center py-4">
-                No backtest data yet. Run a backtest to see performance metrics.
-              </p>
-            </Card>
-          )}
+      {pageError ? <ApiErrorAlert error={pageError} /> : null}
 
-          {stockPerf && (
-            <PerformanceCard metrics={stockPerf} title={`${stockPerf.code || codeFilter}`} />
-          )}
+      <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+        <div className="space-y-4">
+          {runResult ? <RunSummaryCard run={runResult} /> : null}
+          {overallSummary ? (
+            <Card variant="gradient">
+              <div className="label-uppercase">快速摘要</div>
+              <div className="mt-4 grid gap-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-secondary-text">综合评分</span>
+                  <span className="font-mono text-foreground">{overallSummary.systemGrade || '--'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-secondary-text">盈亏比</span>
+                  <span className="font-mono text-foreground">{overallSummary.profitFactor?.toFixed(2) ?? '--'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-secondary-text">判断准确率</span>
+                  <span className="font-mono text-foreground">{pct(overallSummary.stageAccuracyRate != null ? overallSummary.stageAccuracyRate * 100 : null)}</span>
+                </div>
+              </div>
+            </Card>
+          ) : null}
         </div>
 
-        {/* Right content - Results table */}
-        <section className="min-h-0 flex-1 overflow-y-auto">
-          {pageError ? (
-            <ApiErrorAlert error={pageError} className="mb-3" />
-          ) : null}
-          {isLoadingResults ? (
-            <div className="flex flex-col items-center justify-center h-64">
-              <div className="w-10 h-10 border-3 border-cyan/20 border-t-cyan rounded-full animate-spin" />
-              <p className="mt-3 text-secondary-text text-sm">Loading results...</p>
-            </div>
-          ) : results.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-64 text-center">
-              <div className="w-12 h-12 mb-3 rounded-xl bg-elevated flex items-center justify-center">
-                <svg className="w-6 h-6 text-muted-text" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                </svg>
-              </div>
-              <h3 className="text-base font-medium text-foreground mb-1.5">No Results</h3>
-              <p className="text-xs text-muted-text max-w-xs">
-                Run a backtest to evaluate historical analysis accuracy
-              </p>
-            </div>
+        <div className="space-y-4">
+          {overallSummary ? (
+            <SystemScorecard summary={overallSummary} signalQualityScore={entrySignalQuality} />
           ) : (
-            <div className="animate-fade-in">
-              <div className="overflow-x-auto rounded-xl border border-white/6 bg-card/72">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-elevated text-left">
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Code</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Date</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Advice</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Dir.</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Outcome</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-right">Return%</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-center">SL</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-center">TP</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {results.map((row) => (
-                      <tr
-                        key={row.analysisHistoryId}
-                        className="border-t border-white/5 transition-colors hover:bg-hover"
-                      >
-                        <td className="px-3 py-2 font-mono text-cyan text-xs">{row.code}</td>
-                        <td className="px-3 py-2 text-xs text-secondary-text">{row.analysisDate || '--'}</td>
-                        <td className="px-3 py-2 text-xs text-foreground truncate max-w-[140px]" title={row.operationAdvice || ''}>
-                          {row.operationAdvice || '--'}
-                        </td>
-                        <td className="px-3 py-2 text-xs">
-                          <span className="flex items-center gap-1">
-                            {boolIcon(row.directionCorrect)}
-                            <span className="text-muted-text">{row.directionExpected || ''}</span>
-                          </span>
-                        </td>
-                        <td className="px-3 py-2">{outcomeBadge(row.outcome)}</td>
-                        <td className="px-3 py-2 text-xs font-mono text-right">
-                          <span className={
-                            row.simulatedReturnPct != null
-                              ? row.simulatedReturnPct > 0 ? 'text-emerald-400' : row.simulatedReturnPct < 0 ? 'text-red-400' : 'text-secondary-text'
-                              : 'text-muted-text'
-                          }>
-                            {pct(row.simulatedReturnPct)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-center">{boolIcon(row.hitStopLoss)}</td>
-                        <td className="px-3 py-2 text-center">{boolIcon(row.hitTakeProfit)}</td>
-                        <td className="px-3 py-2">{statusBadge(row.evalStatus)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Pagination */}
-              <div className="mt-4">
-                <Pagination
-                  currentPage={currentPage}
-                  totalPages={totalPages}
-                  onPageChange={handlePageChange}
-                />
-              </div>
-
-              <p className="text-xs text-muted-text text-center mt-2">
-                {totalResults} result{totalResults !== 1 ? 's' : ''} total
-              </p>
-            </div>
+            <EmptySection title="系统体检" hint="运行回测后，这里会显示系统总体评分和 KPI。" />
           )}
-        </section>
-      </main>
+
+          {strategySummaries.length > 0 ? (
+            <StrategyComparison summaries={strategySummaries} />
+          ) : (
+            <EmptySection title="策略拆解" hint="回测完成后会按 setup_type 展示策略优劣。" />
+          )}
+
+          {(tradeStageSummaries.length > 0 || maturitySummaries.length > 0 || strategySummaries.length > 0) ? (
+            <JudgmentValidation
+              tradeStageSummaries={tradeStageSummaries}
+              maturitySummaries={maturitySummaries}
+              setupTypeSummaries={strategySummaries}
+              rankingEffectiveness={rankingEffectiveness}
+            />
+          ) : (
+            <EmptySection title="判断验证" hint="这里会展示交易阶段、成熟度和 MAE 精度验证。" />
+          )}
+
+          {evaluations.length > 0 ? (
+            <EvaluationDetail evaluations={evaluations} isLoading={isRunning || isRefreshing} />
+          ) : (
+            <EmptySection title="个股明细" hint="回测完成后，这里会显示入场信号和观察信号明细。" />
+          )}
+        </div>
+      </div>
     </div>
   );
 };

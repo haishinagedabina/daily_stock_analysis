@@ -164,6 +164,11 @@ class GroupSummaryAggregator:
             p75_return_pct=metrics["p75_return_pct"],
             extreme_sample_ratio=metrics["extreme_sample_ratio"],
             time_bucket_stability=metrics["time_bucket_stability"],
+            profit_factor=metrics["profit_factor"],
+            avg_holding_days=metrics["avg_holding_days"],
+            max_consecutive_losses=metrics["max_consecutive_losses"],
+            plan_execution_rate=metrics["plan_execution_rate"],
+            stage_accuracy_rate=metrics["stage_accuracy_rate"],
             metrics_json=json.dumps(extra, ensure_ascii=False),
             computed_at=datetime.now(),
         )
@@ -212,9 +217,50 @@ def aggregate_group(
     mae_vals = [e.mae for e in valid if e.mae is not None]
     mfe_vals = [e.mfe for e in valid if e.mfe is not None]
     dd_vals = [e.max_drawdown_from_peak for e in valid if e.max_drawdown_from_peak is not None]
+    holding_vals = [
+        e.holding_days for e in valid
+        if e.holding_days is not None and e.holding_days > 0
+    ]
 
     # Stability metrics
     stability = StabilityMetricsCalculator.compute(returns, trade_dates)
+
+    positive_returns = [r for r in returns if r > 0]
+    negative_returns = [r for r in returns if r < 0]
+    total_positive = sum(positive_returns) if positive_returns else 0
+    total_negative = abs(sum(negative_returns)) if negative_returns else 0
+    profit_factor = round(total_positive / total_negative, 4) if total_negative > 0 else None
+
+    sorted_evals = sorted(
+        [e for e in valid if e.trade_date is not None and e.outcome is not None],
+        key=lambda e: (e.trade_date, e.code),
+    )
+    max_consecutive_losses = 0
+    current_streak = 0
+    for evaluation in sorted_evals:
+        if evaluation.outcome == "loss":
+            current_streak += 1
+            max_consecutive_losses = max(max_consecutive_losses, current_streak)
+            continue
+        current_streak = 0
+
+    plan_evals = [e for e in valid if e.plan_success is not None]
+    plan_execution_rate = (
+        round(sum(1 for e in plan_evals if e.plan_success) / len(plan_evals), 4)
+        if plan_evals else None
+    )
+
+    stage_correct = 0
+    stage_total = 0
+    for evaluation in valid:
+        if evaluation.signal_family == "entry" and evaluation.forward_return_5d is not None:
+            stage_total += 1
+            if evaluation.forward_return_5d > 0:
+                stage_correct += 1
+        elif evaluation.signal_family == "observation" and evaluation.stage_success is not None:
+            stage_total += 1
+            if evaluation.stage_success:
+                stage_correct += 1
 
     return {
         "sample_count": n,
@@ -228,6 +274,11 @@ def aggregate_group(
         "p75_return_pct": stability.p75,
         "extreme_sample_ratio": stability.extreme_sample_ratio,
         "time_bucket_stability": stability.time_bucket_stability,
+        "profit_factor": profit_factor,
+        "avg_holding_days": round(statistics.mean(holding_vals), 2) if holding_vals else None,
+        "max_consecutive_losses": max_consecutive_losses,
+        "plan_execution_rate": plan_execution_rate,
+        "stage_accuracy_rate": round(stage_correct / stage_total, 4) if stage_total > 0 else None,
     }
 
 

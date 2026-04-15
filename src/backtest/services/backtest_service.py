@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from src.backtest.aggregators.calibration_output_generator import CalibrationOutputGenerator
 from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
 from src.backtest.aggregators.ranking_effectiveness import RankingEffectivenessCalculator
+from src.backtest.aggregators.system_grader import SystemGrader
 from src.backtest.classifiers.signal_classifier import SignalClassifier
 from src.backtest.evaluators.entry_evaluator import EntrySignalEvaluator
 from src.backtest.evaluators.observation_evaluator import ObservationSignalEvaluator
@@ -411,10 +412,23 @@ class FiveLayerBacktestService:
                     top_k_hit_rate=ranking.top_k_hit_rate,
                     excess_return_pct=ranking.excess_return_pct,
                     ranking_consistency=ranking.ranking_consistency,
+                    system_grade=SystemGrader.grade(
+                        win_rate_pct=overall.win_rate_pct,
+                        profit_factor=overall.profit_factor,
+                        time_bucket_stability=overall.time_bucket_stability,
+                        sample_count=overall.sample_count or 0,
+                    ),
                 )
 
         logger.info("Computed %d summaries for run %s", len(summaries), backtest_run_id)
         return summaries
+
+    def get_ranking_effectiveness(self, backtest_run_id: str):
+        """Return ranking effectiveness for an existing run."""
+        summaries = self.summary_repo.get_by_run(backtest_run_id)
+        if not summaries:
+            return None
+        return RankingEffectivenessCalculator.compute(summaries)
 
     def generate_recommendations(
         self,

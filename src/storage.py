@@ -1113,6 +1113,7 @@ class DatabaseManager:
                 self._migrate_sqlite_screening_candidates_strategy_fields()
                 self._migrate_sqlite_screening_candidates_ai_review_fields()
                 self._migrate_sqlite_daily_sector_heat_rank_fields()
+                self._migrate_sqlite_five_layer_backtest_group_summary_fields()
         except Exception as exc:
             logger.exception("Inline database migration failed: %s", exc)
             raise
@@ -1255,6 +1256,31 @@ class DatabaseManager:
             for col_name, ddl in new_columns.items():
                 if col_name not in existing:
                     logger.info("Applying inline SQLite migration: adding %s to daily_sector_heat", col_name)
+                    conn.exec_driver_sql(ddl)
+
+    def _migrate_sqlite_five_layer_backtest_group_summary_fields(self) -> None:
+        """Ensure five-layer group summaries expose the latest aggregate fields on SQLite."""
+        with self._engine.begin() as conn:
+            existing = {
+                row[1]
+                for row in conn.exec_driver_sql(
+                    "PRAGMA table_info(five_layer_backtest_group_summaries)"
+                ).fetchall()
+            }
+            new_columns = {
+                "profit_factor": "ALTER TABLE five_layer_backtest_group_summaries ADD COLUMN profit_factor FLOAT",
+                "avg_holding_days": "ALTER TABLE five_layer_backtest_group_summaries ADD COLUMN avg_holding_days FLOAT",
+                "max_consecutive_losses": "ALTER TABLE five_layer_backtest_group_summaries ADD COLUMN max_consecutive_losses INTEGER",
+                "plan_execution_rate": "ALTER TABLE five_layer_backtest_group_summaries ADD COLUMN plan_execution_rate FLOAT",
+                "stage_accuracy_rate": "ALTER TABLE five_layer_backtest_group_summaries ADD COLUMN stage_accuracy_rate FLOAT",
+                "system_grade": "ALTER TABLE five_layer_backtest_group_summaries ADD COLUMN system_grade VARCHAR(4)",
+            }
+            for col_name, ddl in new_columns.items():
+                if col_name not in existing:
+                    logger.info(
+                        "Applying inline SQLite migration: adding %s to five_layer_backtest_group_summaries",
+                        col_name,
+                    )
                     conn.exec_driver_sql(ddl)
 
     def get_session(self) -> Session:

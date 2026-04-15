@@ -202,9 +202,13 @@ class FiveLayerBacktestEvaluation(Base):
             "replayed_theme_position": self.replayed_theme_position,
             "replayed_candidate_pool_level": self.replayed_candidate_pool_level,
             "replayed_risk_level": self.replayed_risk_level,
+            "evaluation_mode": self.evaluation_mode,
             "signal_family": self.signal_family,
+            "signal_type": self.signal_type,
             "evaluator_type": self.evaluator_type,
             "execution_model": self.execution_model,
+            "snapshot_source": self.snapshot_source,
+            "replayed": self.replayed,
             "entry_fill_status": self.entry_fill_status,
             "entry_fill_price": self.entry_fill_price,
             "exit_fill_status": self.exit_fill_status,
@@ -229,6 +233,8 @@ class FiveLayerBacktestEvaluation(Base):
             "evaluated_at": self.evaluated_at.isoformat() if self.evaluated_at else None,
             "metrics_json": self.metrics_json,
             "evidence_json": self.evidence_json,
+            "trade_plan_json": self.trade_plan_json,
+            "factor_snapshot_json": self.factor_snapshot_json,
         }
 
 
@@ -258,6 +264,12 @@ class FiveLayerBacktestGroupSummary(Base):
     p75_return_pct = Column(Float)
     extreme_sample_ratio = Column(Float)
     time_bucket_stability = Column(Float)
+    profit_factor = Column(Float)
+    avg_holding_days = Column(Float)
+    max_consecutive_losses = Column(Integer)
+    plan_execution_rate = Column(Float)
+    stage_accuracy_rate = Column(Float)
+    system_grade = Column(String(4))
 
     metrics_json = Column(Text)
 
@@ -288,6 +300,12 @@ class FiveLayerBacktestGroupSummary(Base):
             "p75_return_pct": self.p75_return_pct,
             "extreme_sample_ratio": self.extreme_sample_ratio,
             "time_bucket_stability": self.time_bucket_stability,
+            "profit_factor": self.profit_factor,
+            "avg_holding_days": self.avg_holding_days,
+            "max_consecutive_losses": self.max_consecutive_losses,
+            "plan_execution_rate": self.plan_execution_rate,
+            "stage_accuracy_rate": self.stage_accuracy_rate,
+            "system_grade": self.system_grade,
             "metrics_json": self.metrics_json,
         }
 

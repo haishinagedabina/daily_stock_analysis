@@ -418,6 +418,13 @@ class FactorService:
         prev_close = float(close_series.iloc[-2]) if len(close_series) >= 2 else close
         amplitude = round((high - low) / prev_close * 100.0, 4) if prev_close else 0.0
 
+        # Close strength: position of close within day's range (0=at low, 1=at high)
+        # Used by volume_breakout to filter out false breakouts (冲高回落)
+        if high > low:
+            close_strength = round((close - low) / (high - low), 4)
+        else:
+            close_strength = 0.5
+
         tail_bars = group.tail(5) if len(group) >= 5 else group.tail(1)
         candle_pattern = self._detect_candle_pattern(tail_bars)
 
@@ -452,6 +459,7 @@ class FactorService:
             "pct_chg_20d": pct_chg_20d,
             "ma5_distance_pct": ma5_distance_pct,
             "amplitude": amplitude,
+            "close_strength": close_strength,
             "candle_pattern": candle_pattern,
             **ma100_factors,
             **gap_limit_factors,
@@ -509,6 +517,7 @@ class FactorService:
         return {
             "gap_up": gap_result.get("is_gap_up", False),
             "gap_breakaway": gap_result.get("is_breakaway", False),
+            "gap_exhaustion_risk": gap_result.get("is_exhaustion_risk", False),
             "is_limit_up": limit_result.get("is_limit_up", False),
             "limit_up_breakout": limit_result.get("is_breakout_high", False),
         }

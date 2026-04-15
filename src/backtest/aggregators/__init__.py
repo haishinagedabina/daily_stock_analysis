@@ -10,6 +10,7 @@ from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggreg
 from src.backtest.aggregators.ranking_effectiveness import RankingEffectivenessCalculator
 from src.backtest.aggregators.sample_threshold import SampleThresholdGate
 from src.backtest.aggregators.stability_metrics import StabilityMetricsCalculator
+from src.backtest.aggregators.system_grader import SystemGrader
 
 __all__ = [
     "CalibrationOutputGenerator",
@@ -17,4 +18,5 @@ __all__ = [
     "RankingEffectivenessCalculator",
     "SampleThresholdGate",
     "StabilityMetricsCalculator",
+    "SystemGrader",
 ]

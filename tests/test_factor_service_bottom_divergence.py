@@ -4,6 +4,7 @@ Tests for FactorService integration with BottomDivergenceBreakoutDetector.
 """
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -51,6 +52,7 @@ class TestFactorServiceBottomDivergence(unittest.TestCase):
             "bottom_divergence_horizontal_breakout",
             "bottom_divergence_trendline_breakout",
             "bottom_divergence_sync_breakout",
+            "bottom_divergence_confirmation_days",
         ]
         for key in expected_keys:
             self.assertIn(key, result, f"Missing factor: {key}")
@@ -137,6 +139,94 @@ class TestFactorServiceBottomDivergence(unittest.TestCase):
         service = FactorService()
         result = service._compute_extended_factors(df, df.iloc[-1], df["close"])
         self.assertEqual(result["bottom_divergence_hit_reasons"], [])
+
+    @patch("src.services.factor_service.BottomDivergenceBreakoutDetector.detect")
+    def test_confirmation_days_tracks_latest_double_breakout_bar(self, detect_mock):
+        df = self._make_test_df(n=80)
+        detect_mock.return_value = {
+            "state": "confirmed",
+            "pattern_code": "price_flat_macd_up",
+            "pattern_label": "价格持平·MACD抬升",
+            "signal_strength": 0.82,
+            "entry_price": 12.3,
+            "stop_loss_price": 10.8,
+            "horizontal_breakout_confirmed": True,
+            "trendline_breakout_confirmed": True,
+            "double_breakout_sync": True,
+            "downtrend_line": {"breakout_bar_index": 76},
+            "hit_reasons": ["mocked"],
+        }
+
+        service = FactorService()
+        result = service._compute_extended_factors(df, df.iloc[-1], df["close"])
+
+        self.assertIn("bottom_divergence_confirmation_days", result)
+        self.assertEqual(result["bottom_divergence_confirmation_days"], 3)
+
+    @patch("src.services.factor_service.BottomDivergenceBreakoutDetector.detect")
+    def test_confirmed_bottom_divergence_fields_are_preserved(self, detect_mock):
+        df = self._make_test_df(n=90)
+        detect_mock.return_value = {
+            "state": "confirmed",
+            "pattern_code": "price_down_macd_up",
+            "pattern_label": "经典底背离",
+            "signal_strength": 0.91,
+            "entry_price": 11.8,
+            "stop_loss_price": 10.6,
+            "horizontal_breakout_confirmed": True,
+            "trendline_breakout_confirmed": True,
+            "double_breakout_sync": True,
+            "confirmation_bar_index": 88,
+            "hit_reasons": ["底背离成立", "双突破同步确认"],
+        }
+
+        result = FactorService._compute_bottom_divergence_factors(df)
+
+        self.assertTrue(result["bottom_divergence_double_breakout"])
+        self.assertEqual(result["bottom_divergence_state"], "confirmed")
+        self.assertEqual(result["bottom_divergence_pattern_code"], "price_down_macd_up")
+        self.assertEqual(result["bottom_divergence_pattern_label"], "经典底背离")
+        self.assertAlmostEqual(result["bottom_divergence_signal_strength"], 0.91)
+        self.assertEqual(result["bottom_divergence_entry_price"], 11.8)
+        self.assertEqual(result["bottom_divergence_stop_loss"], 10.6)
+        self.assertTrue(result["bottom_divergence_horizontal_breakout"])
+        self.assertTrue(result["bottom_divergence_trendline_breakout"])
+        self.assertTrue(result["bottom_divergence_sync_breakout"])
+        self.assertEqual(result["bottom_divergence_confirmation_days"], 1)
+        self.assertEqual(result["bottom_divergence_hit_reasons"], ["底背离成立", "双突破同步确认"])
+
+    @patch("src.services.factor_service.BottomDivergenceBreakoutDetector.detect")
+    def test_confirmed_bottom_divergence_fields_reach_extended_factors(self, detect_mock):
+        df = self._make_test_df(n=90)
+        detect_mock.return_value = {
+            "state": "confirmed",
+            "pattern_code": "price_down_macd_up",
+            "pattern_label": "经典底背离",
+            "signal_strength": 0.91,
+            "entry_price": 11.8,
+            "stop_loss_price": 10.6,
+            "horizontal_breakout_confirmed": True,
+            "trendline_breakout_confirmed": True,
+            "double_breakout_sync": True,
+            "confirmation_bar_index": 88,
+            "hit_reasons": ["底背离成立", "双突破同步确认"],
+        }
+
+        service = FactorService()
+        result = service._compute_extended_factors(df, df.iloc[-1], df["close"])
+
+        self.assertTrue(result["bottom_divergence_double_breakout"])
+        self.assertEqual(result["bottom_divergence_state"], "confirmed")
+        self.assertEqual(result["bottom_divergence_pattern_code"], "price_down_macd_up")
+        self.assertEqual(result["bottom_divergence_pattern_label"], "经典底背离")
+        self.assertAlmostEqual(result["bottom_divergence_signal_strength"], 0.91)
+        self.assertEqual(result["bottom_divergence_entry_price"], 11.8)
+        self.assertEqual(result["bottom_divergence_stop_loss"], 10.6)
+        self.assertTrue(result["bottom_divergence_horizontal_breakout"])
+        self.assertTrue(result["bottom_divergence_trendline_breakout"])
+        self.assertTrue(result["bottom_divergence_sync_breakout"])
+        self.assertEqual(result["bottom_divergence_confirmation_days"], 1)
+        self.assertEqual(result["bottom_divergence_hit_reasons"], ["底背离成立", "双突破同步确认"])
 
 
 if __name__ == "__main__":

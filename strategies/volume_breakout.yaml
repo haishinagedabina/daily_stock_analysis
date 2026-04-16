@@ -33,11 +33,15 @@ screening:
     - field: close_strength
       op: ">="
       value: 0.5
+    - field: ma5_distance_pct
+      op: "<="
+      value: 8.0
   scoring:
     - field: breakout_ratio
       weight: 40
       bonus_above: 1.0
-      bonus_multiplier: 1000
+      bonus_multiplier: 50
+      cap: 1.15
     - field: volume_ratio
       weight: 30
       cap: 5.0

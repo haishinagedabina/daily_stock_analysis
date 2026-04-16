@@ -25,6 +25,25 @@ export interface BacktestRunRequest {
   generateRecommendations?: boolean;
 }
 
+export interface BacktestScreeningRunRequest {
+  screeningRunId: string;
+  evaluationMode?: FiveLayerEvaluationMode;
+  executionModel?: FiveLayerExecutionModel;
+  market?: FiveLayerMarket;
+  evalWindowDays?: number;
+  generateRecommendations?: boolean;
+}
+
+export interface BacktestSampleBaseline {
+  rawSampleCount: number;
+  evaluatedSampleCount?: number | null;
+  aggregatableSampleCount: number;
+  entrySampleCount: number;
+  observationSampleCount: number;
+  suppressedSampleCount: number;
+  suppressedReasons: Record<string, number>;
+}
+
 export interface BacktestRunResponse {
   backtestRunId: string;
   evaluationMode: string;
@@ -41,6 +60,7 @@ export interface BacktestRunResponse {
   themeMappingVersion?: string | null;
   candidateSnapshotVersion?: string | null;
   rulesVersion?: string | null;
+  sampleBaseline?: BacktestSampleBaseline | null;
   createdAt?: string | null;
   startedAt?: string | null;
   completedAt?: string | null;
@@ -86,8 +106,18 @@ export interface BacktestResultItem {
   outcome?: string | null;
   stageSuccess?: boolean | null;
   evalStatus?: string | null;
+  metricsJson?: string | null;
+  evidenceJson?: string | null;
   factorSnapshotJson?: string | null;
   tradePlanJson?: string | null;
+  primaryStrategy?: string | null;
+  contributingStrategies?: string[];
+  matchedStrategies?: string[];
+  ruleHits?: string[];
+  sampleBucket?: string | null;
+  entryTimingLabel?: string | null;
+  ma100Low123ValidationStatus?: string | null;
+  ma100Low123DataComplete?: boolean | null;
 }
 
 export interface BacktestResultsResponse {
@@ -96,6 +126,20 @@ export interface BacktestResultsResponse {
   page: number;
   limit: number;
   items: BacktestResultItem[];
+}
+
+export interface BacktestFamilyBreakdownMetrics {
+  sampleCount?: number | null;
+  avgReturnPct?: number | null;
+  winRatePct?: number | null;
+}
+
+export interface BacktestStrategyCohortContext {
+  primaryStrategy?: string | null;
+  sampleBucket?: string | null;
+  snapshotMarketRegime?: string | null;
+  snapshotCandidatePoolLevel?: string | null;
+  snapshotEntryMaturity?: string | null;
 }
 
 export interface BacktestSummaryItem {
@@ -121,6 +165,10 @@ export interface BacktestSummaryItem {
   planExecutionRate?: number | null;
   stageAccuracyRate?: number | null;
   systemGrade?: string | null;
+  metricsJson?: string | null;
+  familyBreakdown?: Record<string, BacktestFamilyBreakdownMetrics> | null;
+  strategyCohortContext?: BacktestStrategyCohortContext | null;
+  sampleBaseline?: BacktestSampleBaseline | null;
 }
 
 export interface BacktestSummariesResponse {

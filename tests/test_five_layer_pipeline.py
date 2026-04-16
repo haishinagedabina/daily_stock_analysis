@@ -88,6 +88,10 @@ class FiveLayerDecisionTestCase(unittest.TestCase):
              "turnover_rate": 2.0, "close": 100.0, "ma5": 98.0, "ma10": 96.0,
              "ma20": 94.0, "ma60": 90.0, "is_limit_up": False,
              "above_ma100": True, "gap_breakaway": False},
+            {"code": "000858", "name": "五粮液", "pct_chg": 4.2, "volume_ratio": 1.4,
+             "turnover_rate": 2.1, "close": 120.0, "ma5": 118.0, "ma10": 116.0,
+             "ma20": 112.0, "ma60": 105.0, "is_limit_up": False,
+             "above_ma100": True, "gap_breakaway": False},
         ])
 
     def test_five_layer_populates_all_fields(self):
@@ -413,6 +417,143 @@ class Phase2BDispatchTestCase(unittest.TestCase):
         # With non_theme: reversal preferred → bottom_divergence_breakout wins
         self.assertEqual(candidate.setup_type, "bottom_divergence_breakout")
         self.assertEqual(candidate.strategy_family, "reversal")
+
+    def test_dispatch_exports_bottom_divergence_strategy_attribution(self):
+        """P0 sample: bottom divergence should be persisted as primary strategy for backtest attribution."""
+        from src.services.screening_task_service import ScreeningTaskService
+
+        svc = self._make_service()
+        candidate = ScreeningCandidateRecord(
+            code="600519", name="贵州茅台", rank=1, rule_score=80.0,
+            rule_hits=["hit"],
+            factor_snapshot={"pct_chg": 5.0, "leader_score": 75.0,
+                             "extreme_strength_score": 85.0, "has_stop_loss": True,
+                             "ma100_breakout_days": 3},
+            matched_strategies=[
+                "ma100_60min_combined",
+                "bottom_divergence_double_breakout",
+                "volume_breakout",
+            ],
+            strategy_scores={
+                "ma100_60min_combined": 50.0,
+                "bottom_divergence_double_breakout": 70.0,
+                "volume_breakout": 30.0,
+            },
+            setup_type="bottom_divergence_breakout",
+            strategy_family="reversal",
+        )
+
+        guard = MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0)
+        svc._apply_five_layer_decision(
+            selected=[candidate],
+            snapshot_df=self._make_snapshot_df(),
+            effective_trade_date=date(2026, 3, 31),
+            guard_result=guard,
+        )
+
+        payload = ScreeningTaskService._build_candidate_payloads(
+            selected=[candidate],
+            ai_results={},
+            ai_top_k=5,
+        )[0]
+
+        self.assertEqual(payload["primary_strategy"], "bottom_divergence_double_breakout")
+        self.assertEqual(
+            payload["contributing_strategies"],
+            ["ma100_60min_combined", "volume_breakout"],
+        )
+        self.assertEqual(payload["strategy_scores"]["bottom_divergence_double_breakout"], 70.0)
+
+    def test_dispatch_can_promote_ma100_low123_as_primary_setup(self):
+        """P0 sample: higher-scoring MA100+Low123 should win the resolved setup."""
+        svc = self._make_service()
+        candidate = ScreeningCandidateRecord(
+            code="000858", name="五粮液", rank=1, rule_score=86.0,
+            rule_hits=["hit"],
+            factor_snapshot={
+                "pct_chg": 4.2,
+                "leader_score": 78.0,
+                "extreme_strength_score": 68.0,
+                "has_stop_loss": True,
+                "ma100_breakout_days": 2,
+            },
+            matched_strategies=[
+                "ma100_low123_combined",
+                "bottom_divergence_double_breakout",
+                "volume_breakout",
+            ],
+            strategy_scores={
+                "ma100_low123_combined": 88.0,
+                "bottom_divergence_double_breakout": 72.0,
+                "volume_breakout": 30.0,
+            },
+            setup_type="bottom_divergence_breakout",
+            strategy_family="reversal",
+        )
+
+        guard = MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0)
+
+        svc._apply_five_layer_decision(
+            selected=[candidate],
+            snapshot_df=self._make_snapshot_df(),
+            effective_trade_date=date(2026, 3, 31),
+            guard_result=guard,
+        )
+
+        self.assertEqual(candidate.setup_type, "low123_breakout")
+        self.assertEqual(candidate.strategy_family, "reversal")
+        self.assertIn("ma100_low123_combined", candidate.matched_strategies)
+        self.assertIn("bottom_divergence_double_breakout", candidate.setup_hit_reasons)
+
+    def test_dispatch_exports_ma100_low123_strategy_attribution(self):
+        """P0 sample: MA100+Low123 should remain the primary strategy in persisted payloads."""
+        from src.services.screening_task_service import ScreeningTaskService
+
+        svc = self._make_service()
+        candidate = ScreeningCandidateRecord(
+            code="000858", name="五粮液", rank=1, rule_score=86.0,
+            rule_hits=["hit"],
+            factor_snapshot={
+                "pct_chg": 4.2,
+                "leader_score": 78.0,
+                "extreme_strength_score": 68.0,
+                "has_stop_loss": True,
+                "ma100_breakout_days": 2,
+            },
+            matched_strategies=[
+                "ma100_low123_combined",
+                "bottom_divergence_double_breakout",
+                "volume_breakout",
+            ],
+            strategy_scores={
+                "ma100_low123_combined": 88.0,
+                "bottom_divergence_double_breakout": 72.0,
+                "volume_breakout": 30.0,
+            },
+            setup_type="bottom_divergence_breakout",
+            strategy_family="reversal",
+        )
+
+        guard = MarketGuardResult(is_safe=True, index_price=3200.0, index_ma100=3100.0)
+        svc._apply_five_layer_decision(
+            selected=[candidate],
+            snapshot_df=self._make_snapshot_df(),
+            effective_trade_date=date(2026, 3, 31),
+            guard_result=guard,
+        )
+
+        payload = ScreeningTaskService._build_candidate_payloads(
+            selected=[candidate],
+            ai_results={},
+            ai_top_k=5,
+        )[0]
+
+        self.assertEqual(payload["primary_strategy"], "ma100_low123_combined")
+        self.assertEqual(
+            payload["contributing_strategies"],
+            ["bottom_divergence_double_breakout", "volume_breakout"],
+        )
+        self.assertEqual(payload["strategy_scores"]["ma100_low123_combined"], 88.0)
 
     def test_no_skill_manager_degrades_gracefully(self):
         """skill_manager=None 时退回到原始 setup_type 逻辑。"""

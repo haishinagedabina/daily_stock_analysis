@@ -57,6 +57,21 @@ class TestCandidateSelector(unittest.TestCase):
                     name="贵州茅台",
                     rank=1,
                     rule_score=85.0,
+                    matched_strategies_json=json.dumps(["trend_breakout", "ma100_60min_combined"]),
+                    rule_hits_json=json.dumps(["trend_breakout_hit", "ma100_support_hit"]),
+                    factor_snapshot_json=json.dumps({
+                        "close": 100.0,
+                        "ma20": 98.0,
+                        "bottom_divergence_state": "confirmed",
+                    }),
+                    candidate_decision_json=json.dumps({
+                        "primary_strategy": "trend_breakout",
+                        "contributing_strategies": ["ma100_60min_combined"],
+                        "strategy_scores": {
+                            "trend_breakout": 88.5,
+                            "ma100_60min_combined": 81.2,
+                        },
+                    }),
                     trade_stage="probe_entry",
                     setup_type="trend_breakout",
                     entry_maturity="high",
@@ -96,6 +111,28 @@ class TestCandidateSelector(unittest.TestCase):
                     candidate_pool_level="follower_pool",
                     risk_level="medium",
                 ),
+                ScreeningCandidate(
+                    run_id="sr-sel-001",
+                    code="600036",
+                    name="招商银行",
+                    rank=4,
+                    rule_score=58.0,
+                    matched_strategies_json=json.dumps({"unexpected": True}),
+                    rule_hits_json=json.dumps("hit_as_string"),
+                    factor_snapshot_json=json.dumps(["not", "a", "dict"]),
+                    candidate_decision_json=json.dumps({
+                        "primary_strategy": "bottom_divergence_breakout",
+                        "contributing_strategies": None,
+                        "strategy_scores": None,
+                    }),
+                    trade_stage="focus",
+                    setup_type="bottom_divergence_breakout",
+                    entry_maturity="medium",
+                    market_regime="balanced",
+                    theme_position="secondary_theme",
+                    candidate_pool_level="focus_list",
+                    risk_level="medium",
+                ),
             ]
             session.add_all(candidates)
             session.commit()
@@ -105,7 +142,7 @@ class TestCandidateSelector(unittest.TestCase):
         from src.backtest.services.candidate_selector import CandidateSelector
         selector = CandidateSelector(self.db)
         candidates = selector.select_candidates(screening_run_id="sr-sel-001")
-        self.assertEqual(len(candidates), 3)
+        self.assertEqual(len(candidates), 4)
 
     def test_select_returns_snapshot_fields(self):
         """Each candidate should have all five-layer snapshot fields populated."""
@@ -154,7 +191,7 @@ class TestCandidateSelector(unittest.TestCase):
             date_from=date(2024, 1, 1),
             date_to=date(2024, 1, 31),
         )
-        self.assertEqual(len(candidates), 3)
+        self.assertEqual(len(candidates), 4)
 
     def test_select_by_date_range_no_results(self):
         """Date range with no runs should return empty list."""
@@ -176,6 +213,47 @@ class TestCandidateSelector(unittest.TestCase):
         self.assertIn("screening_candidate_id", c)
         self.assertIn("trade_date", c)
         self.assertEqual(c["screening_run_id"], "sr-sel-001")
+
+    def test_select_includes_strategy_and_factor_evidence(self):
+        """Candidate dict should carry matched strategies, rule hits, factor snapshot and attribution."""
+        from src.backtest.services.candidate_selector import CandidateSelector
+
+        selector = CandidateSelector(self.db)
+        candidates = selector.select_candidates(screening_run_id="sr-sel-001")
+
+        entry_candidate = [c for c in candidates if c["code"] == "600519"][0]
+        self.assertEqual(
+            entry_candidate["matched_strategies"],
+            ["trend_breakout", "ma100_60min_combined"],
+        )
+        self.assertEqual(
+            entry_candidate["rule_hits"],
+            ["trend_breakout_hit", "ma100_support_hit"],
+        )
+        self.assertEqual(entry_candidate["factor_snapshot"]["bottom_divergence_state"], "confirmed")
+        self.assertEqual(entry_candidate["primary_strategy"], "trend_breakout")
+        self.assertEqual(
+            entry_candidate["contributing_strategies"],
+            ["ma100_60min_combined"],
+        )
+        self.assertAlmostEqual(
+            entry_candidate["strategy_scores"]["trend_breakout"],
+            88.5,
+        )
+
+    def test_select_normalizes_invalid_json_shapes(self):
+        """Selector should fall back to empty list/dict when JSON shape is invalid or null."""
+        from src.backtest.services.candidate_selector import CandidateSelector
+
+        selector = CandidateSelector(self.db)
+        candidates = selector.select_candidates(screening_run_id="sr-sel-001")
+
+        candidate = [c for c in candidates if c["code"] == "600036"][0]
+        self.assertEqual(candidate["matched_strategies"], [])
+        self.assertEqual(candidate["rule_hits"], [])
+        self.assertEqual(candidate["factor_snapshot"], {})
+        self.assertEqual(candidate["contributing_strategies"], [])
+        self.assertEqual(candidate["strategy_scores"], {})
 
 
 if __name__ == "__main__":

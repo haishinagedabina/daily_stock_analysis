@@ -14,6 +14,35 @@ from src.storage import DatabaseManager, ScreeningCandidate, ScreeningRun
 logger = logging.getLogger(__name__)
 
 
+def _loads_json(raw: Optional[str], default: Any) -> Any:
+    if not raw:
+        return default
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return default
+    return parsed if parsed is not None else default
+
+
+def _normalize_json_field(
+    raw: Optional[str],
+    default: Any,
+    expected_type: type | tuple[type, ...],
+    field_name: str,
+    candidate: ScreeningCandidate,
+) -> Any:
+    parsed = _loads_json(raw, default)
+    if isinstance(parsed, expected_type):
+        return parsed
+    logger.warning(
+        "Unexpected JSON shape for %s on screening candidate %s/%s; fallback to default",
+        field_name,
+        candidate.run_id,
+        candidate.code,
+    )
+    return default
+
+
 class CandidateSelector:
     """Reads screening candidates and returns dicts with five-layer fields."""
 
@@ -79,12 +108,36 @@ class CandidateSelector:
         candidate: ScreeningCandidate,
         trade_date: date,
     ) -> Dict[str, Any]:
-        trade_plan = None
-        if candidate.trade_plan_json:
-            try:
-                trade_plan = json.loads(candidate.trade_plan_json)
-            except (json.JSONDecodeError, TypeError):
-                pass
+        trade_plan = _loads_json(candidate.trade_plan_json, None)
+        factor_snapshot = _normalize_json_field(
+            candidate.factor_snapshot_json,
+            {},
+            dict,
+            "factor_snapshot_json",
+            candidate,
+        )
+        matched_strategies = _normalize_json_field(
+            candidate.matched_strategies_json,
+            [],
+            list,
+            "matched_strategies_json",
+            candidate,
+        )
+        rule_hits = _normalize_json_field(
+            candidate.rule_hits_json,
+            [],
+            list,
+            "rule_hits_json",
+            candidate,
+        )
+        parsed_decision_payload = _loads_json(candidate.candidate_decision_json, {})
+        decision_payload = parsed_decision_payload if isinstance(parsed_decision_payload, dict) else {}
+        if parsed_decision_payload not in ({}, None) and not isinstance(parsed_decision_payload, dict):
+            logger.warning(
+                "Unexpected JSON shape for candidate_decision_json on screening candidate %s/%s; fallback to empty dict",
+                candidate.run_id,
+                candidate.code,
+            )
 
         return {
             "screening_run_id": candidate.run_id,
@@ -103,6 +156,12 @@ class CandidateSelector:
             "candidate_pool_level": candidate.candidate_pool_level,
             "risk_level": candidate.risk_level,
             "trade_plan": trade_plan,
+            "factor_snapshot": factor_snapshot,
+            "matched_strategies": matched_strategies,
+            "rule_hits": rule_hits,
+            "primary_strategy": decision_payload.get("primary_strategy"),
+            "contributing_strategies": decision_payload.get("contributing_strategies") or [],
+            "strategy_scores": decision_payload.get("strategy_scores") or {},
             # AI override fields
             "ai_trade_stage": candidate.ai_trade_stage,
             "ai_confidence": candidate.ai_confidence,

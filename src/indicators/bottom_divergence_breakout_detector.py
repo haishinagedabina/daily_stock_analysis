@@ -112,6 +112,7 @@ def _empty_result(
         "horizontal_breakout_confirmed": False,
         "trendline_breakout_confirmed": False,
         "double_breakout_sync": False,
+        "confirmation_bar_index": None,
         "entry_price": None,
         "stop_loss_price": None,
         "signal_strength": 0.0,
@@ -693,11 +694,19 @@ class BottomDivergenceBreakoutDetector:
             state = "structure_ready"
 
         # --- 入场价与止损 ---
+        confirmation_bar = None
+        if h_breakout_bar is not None and tl_breakout_bar is not None:
+            confirmation_bar = max(h_breakout_bar, tl_breakout_bar)
+        elif h_breakout_bar is not None:
+            confirmation_bar = h_breakout_bar
+        elif tl_breakout_bar is not None:
+            confirmation_bar = tl_breakout_bar
+
         entry_price = None
         stop_loss_price = None
 
         if state == "confirmed":
-            entry_bar = max(h_breakout_bar, tl_breakout_bar)
+            entry_bar = confirmation_bar
             entry_price = round(float(close.iloc[entry_bar]), 4)
             stop_loss_price = round(min(a_price, b_price), 4)
 
@@ -763,6 +772,7 @@ class BottomDivergenceBreakoutDetector:
             "horizontal_breakout_confirmed": h_breakout_confirmed,
             "trendline_breakout_confirmed": tl_breakout_confirmed,
             "double_breakout_sync": double_sync,
+            "confirmation_bar_index": confirmation_bar,
             "entry_price": entry_price,
             "stop_loss_price": stop_loss_price,
             "signal_strength": round(signal_strength, 4),

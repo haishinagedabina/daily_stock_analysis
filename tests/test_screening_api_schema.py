@@ -69,6 +69,35 @@ class ScreeningApiSchemaTestCase(unittest.TestCase):
         self.assertEqual(item.ai_entry_quality, "high")
         self.assertFalse(item.stage_conflict)
 
+    def test_setup_type_none_serialized_as_null(self) -> None:
+        """SetupType.NONE should become None in payload, not the string 'none'.
+
+        Root cause: candidates without entry_core strategy match get
+        SetupType.NONE, which _serialize_value converts to the string "none".
+        The DB then stores "none" and the backtest aggregator treats it as a
+        real strategy group.  The fix in to_payload() converts it back to None.
+        """
+        decision = CandidateDecision(
+            code="000001",
+            name="平安银行",
+            setup_type=SetupType.NONE,
+        )
+        payload = decision.to_payload()
+        self.assertIsNone(
+            payload["setup_type"],
+            "SetupType.NONE must be serialized as None, not 'none'",
+        )
+
+    def test_setup_type_real_value_preserved(self) -> None:
+        """Real setup types must still serialize correctly."""
+        decision = CandidateDecision(
+            code="600519",
+            name="贵州茅台",
+            setup_type=SetupType.TREND_BREAKOUT,
+        )
+        payload = decision.to_payload()
+        self.assertEqual(payload["setup_type"], "trend_breakout")
+
     def test_screening_run_response_accepts_theme_pipeline_snapshots(self) -> None:
         response = ScreeningRunResponse(
             run_id="run-theme-pipeline",

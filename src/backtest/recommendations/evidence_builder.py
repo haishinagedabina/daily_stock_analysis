@@ -15,6 +15,7 @@ from src.backtest.models.backtest_models import (
     FiveLayerBacktestEvaluation,
     FiveLayerBacktestGroupSummary,
 )
+from src.backtest.utils.summary_metrics import get_sample_baseline
 
 
 class EvidenceBuilder:
@@ -51,6 +52,7 @@ class EvidenceBuilder:
                 "group_type": group_summary.group_type,
                 "group_key": group_summary.group_key,
                 "sample_count": group_summary.sample_count,
+                "sample_baseline": get_sample_baseline(group_summary),
                 "avg_return_pct": group_summary.avg_return_pct,
                 "median_return_pct": group_summary.median_return_pct,
                 "win_rate_pct": group_summary.win_rate_pct,

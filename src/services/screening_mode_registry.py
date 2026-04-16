@@ -9,7 +9,7 @@ _SCREENING_MODE_PRESETS: Dict[str, Dict[str, Any]] = {
     "balanced": {},
     "aggressive": {
         "candidate_limit": 50,
-        "ai_top_k": 8,
+        "ai_top_k": 25,
         "min_list_days": 60,
         "min_volume_ratio": 1.0,
         "breakout_lookback_days": 15,
@@ -17,7 +17,7 @@ _SCREENING_MODE_PRESETS: Dict[str, Dict[str, Any]] = {
     },
     "quality": {
         "candidate_limit": 20,
-        "ai_top_k": 3,
+        "ai_top_k": 10,
         "min_list_days": 180,
         "min_volume_ratio": 1.5,
         "breakout_lookback_days": 30,
@@ -89,8 +89,13 @@ def resolve_screening_runtime_config(
     resolved_ai_top_k = (
         ai_top_k
         if ai_top_k is not None
-        else int(_resolve_directional_value(base_ai_top_k, "ai_top_k", prefer_higher=True))
+        else (
+            max(base_ai_top_k, int(preset["ai_top_k"]))
+            if "ai_top_k" in preset
+            else base_ai_top_k
+        )
     )
+    resolved_ai_top_k = min(resolved_ai_top_k, resolved_candidate_limit)
 
     return ResolvedScreeningRuntimeConfig(
         mode=resolved_mode,

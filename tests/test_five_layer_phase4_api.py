@@ -80,6 +80,20 @@ def _mock_run(run_id="flbt-test123456"):
         "theme_mapping_version": None,
         "candidate_snapshot_version": None,
         "rules_version": None,
+        "config_json": json.dumps({
+            "sample_baseline": {
+                "raw_sample_count": 50,
+                "evaluated_sample_count": 48,
+                "aggregatable_sample_count": 30,
+                "entry_sample_count": 30,
+                "observation_sample_count": 18,
+                "suppressed_sample_count": 18,
+                "suppressed_reasons": {
+                    "missing_forward_return_5d": 12,
+                    "missing_risk_avoided_pct": 6,
+                },
+            },
+        }),
         "created_at": "2026-04-01T10:00:00",
         "started_at": "2026-04-01T10:00:01",
         "completed_at": "2026-04-01T10:05:00",
@@ -102,8 +116,43 @@ def _mock_evaluation(code="600519"):
         "entry_fill_status": "filled",
         "entry_fill_price": 1800.0,
         "forward_return_5d": 2.5,
+        "metrics_json": json.dumps({
+            "sample_bucket": "core",
+            "entry_timing_label": "on_time",
+        }),
         "outcome": "win",
         "eval_status": "evaluated",
+        "evidence_json": json.dumps({
+            "matched_strategies": ["trend_breakout"],
+            "primary_strategy": "trend_breakout",
+            "contributing_strategies": ["volume_breakout"],
+        }),
+        "factor_snapshot_json": json.dumps({
+            "ma100_low123_validation_status": "confirmed_missing_breakout_bar_index",
+            "ma100_low123_data_complete": False,
+        }),
+    })
+    return e
+
+
+def _mock_evaluation_with_invalid_strategy_lists(code="600519"):
+    e = MagicMock()
+    e.code = code
+    e.to_dict = MagicMock(return_value={
+        "id": 1,
+        "backtest_run_id": "flbt-test123456",
+        "trade_date": "2026-03-15",
+        "code": code,
+        "name": "贵州茅台",
+        "signal_family": "entry",
+        "evaluator_type": "entry",
+        "execution_model": "conservative",
+        "evidence_json": json.dumps({
+            "matched_strategies": [{"bad": "shape"}],
+            "contributing_strategies": [1, None],
+        }),
+        "metrics_json": json.dumps({}),
+        "factor_snapshot_json": json.dumps({}),
     })
     return e
 
@@ -149,6 +198,36 @@ def _mock_summary(group_type="overall", group_key="all"):
         "plan_execution_rate": 0.6,
         "stage_accuracy_rate": 0.7,
         "system_grade": "A",
+        "metrics_json": json.dumps({
+            "sample_baseline": {
+                "raw_sample_count": 50,
+                "aggregatable_sample_count": 30,
+                "entry_sample_count": 30,
+                "observation_sample_count": 20,
+                "suppressed_sample_count": 20,
+                "suppressed_reasons": {
+                    "missing_forward_return_5d": 12,
+                    "missing_risk_avoided_pct": 8,
+                },
+            },
+            "threshold_check": {
+                "can_display": True,
+                "can_suggest": True,
+                "can_action": False,
+                "reason": "sample_count=30 < ACTIONABLE_MIN=50: hypothesis max",
+            },
+            "family_breakdown": {
+                "entry": {"sample_count": 30, "avg_return_pct": 2.4},
+                "observation": {"sample_count": 20, "avg_return_pct": 1.1},
+            },
+            "strategy_cohort_context": {
+                "primary_strategy": "ma100_low123_combined",
+                "sample_bucket": "core",
+                "snapshot_market_regime": "balanced",
+                "snapshot_candidate_pool_level": "leader_pool",
+                "snapshot_entry_maturity": "high",
+            },
+        }),
     })
     return s
 
@@ -223,6 +302,8 @@ class TestGetRunDetail:
         data = resp.json()
         assert data["backtest_run_id"] == "flbt-test123456"
         assert data["status"] == "completed"
+        assert data["sample_baseline"]["raw_sample_count"] == 50
+        assert data["sample_baseline"]["aggregatable_sample_count"] == 30
 
     @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
     def test_get_run_not_found(self, MockService, client):
@@ -256,6 +337,45 @@ class TestGetEvaluations:
         assert resp.status_code == 200
         svc.eval_repo.get_by_run.assert_called_once_with("flbt-test123456", signal_family="entry")
 
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_evaluations_exposes_evidence_json(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.eval_repo.get_by_run.return_value = [_mock_evaluation()]
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/evaluations")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "evidence_json" in data["items"][0]
+
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_evaluations_exposes_structured_attribution_fields(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.eval_repo.get_by_run.return_value = [_mock_evaluation()]
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/evaluations")
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert item["primary_strategy"] == "trend_breakout"
+        assert item["contributing_strategies"] == ["volume_breakout"]
+        assert item["sample_bucket"] == "core"
+        assert item["entry_timing_label"] == "on_time"
+        assert item["ma100_low123_validation_status"] == "confirmed_missing_breakout_bar_index"
+        assert item["ma100_low123_data_complete"] is False
+
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_evaluations_normalizes_invalid_strategy_lists(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.eval_repo.get_by_run.return_value = [_mock_evaluation_with_invalid_strategy_lists()]
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/evaluations")
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert item["matched_strategies"] == []
+        assert item["contributing_strategies"] == []
+
 
 class TestGetSummaries:
     @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
@@ -271,6 +391,21 @@ class TestGetSummaries:
         assert data["items"][0]["group_type"] == "overall"
         assert data["items"][0]["top_k_hit_rate"] == 0.7
         assert data["items"][0]["profit_factor"] == 1.8
+
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_get_summaries_exposes_structured_metrics_fields(self, MockService, client):
+        svc = MockService.return_value
+        svc.get_run.return_value = _mock_run()
+        svc.summary_repo.get_by_run.return_value = [_mock_summary("strategy_cohort", "ps=ma100_low123_combined")]
+
+        resp = client.get("/five-layer-backtest/runs/flbt-test123456/summaries")
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert item["family_breakdown"]["entry"]["sample_count"] == 30
+        assert item["strategy_cohort_context"]["primary_strategy"] == "ma100_low123_combined"
+        assert item["sample_baseline"]["raw_sample_count"] == 50
+        assert item["sample_baseline"]["suppressed_sample_count"] == 20
+        assert item["threshold_check"]["can_action"] is False
 
 
 class TestGetRankingEffectiveness:
@@ -376,6 +511,40 @@ class TestRunBacktest:
         data = resp.json()["detail"]
         assert data["error"] == "internal_error"
         assert data["message"] == "五层回测执行失败"
+
+
+class TestRunByScreeningRun:
+    @patch("api.v1.endpoints.five_layer_backtest.FiveLayerBacktestService")
+    def test_run_by_screening_run_ok(self, MockService, client):
+        svc = MockService.return_value
+        svc.run_backtest_pipeline.return_value = _mock_run("flbt-screening123")
+        svc.compute_summaries.return_value = [_mock_summary()]
+        svc.generate_recommendations.return_value = [_mock_recommendation()]
+
+        resp = client.post("/five-layer-backtest/run/by-screening-run", json={
+            "screening_run_id": "sr-20260415-001",
+            "evaluation_mode": "historical_snapshot",
+            "execution_model": "conservative",
+            "market": "cn",
+            "eval_window_days": 10,
+            "generate_recommendations": True,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["run"]["backtest_run_id"] == "flbt-screening123"
+        svc.run_backtest_pipeline.assert_called_once_with(
+            screening_run_id="sr-20260415-001",
+            evaluation_mode="historical_snapshot",
+            execution_model="conservative",
+            market="cn",
+            eval_window_days=10,
+        )
+
+    def test_run_by_screening_run_validation_error(self, client):
+        resp = client.post("/five-layer-backtest/run/by-screening-run", json={
+            "screening_run_id": "",
+        })
+        assert resp.status_code == 422
 
 
 class TestRunCalibration:

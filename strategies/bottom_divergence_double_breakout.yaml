@@ -22,6 +22,9 @@ screening:
     - field: bottom_divergence_double_breakout
       op: "=="
       value: true
+    - field: bottom_divergence_confirmation_days
+      op: "<="
+      value: 10
   scoring:
     - field: bottom_divergence_signal_strength
       weight: 40

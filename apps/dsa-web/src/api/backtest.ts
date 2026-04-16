@@ -2,6 +2,7 @@ import apiClient from './index';
 import { toCamelCase } from './utils';
 import type {
   BacktestRunRequest,
+  BacktestScreeningRunRequest,
   BacktestFullPipelineResponse,
   BacktestRecommendationsResponse,
   RankingEffectivenessData,
@@ -43,6 +44,23 @@ export const backtestApi = {
 
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/five-layer-backtest/run',
+      requestData,
+    );
+    return toCamelCase<BacktestFullPipelineResponse>(response.data);
+  },
+
+  runByScreeningRun: async (params: BacktestScreeningRunRequest): Promise<BacktestFullPipelineResponse> => {
+    const requestData: Record<string, unknown> = {
+      screening_run_id: params.screeningRunId,
+      evaluation_mode: params.evaluationMode ?? 'historical_snapshot',
+      execution_model: params.executionModel ?? 'conservative',
+      market: params.market ?? 'cn',
+      eval_window_days: params.evalWindowDays ?? 10,
+      generate_recommendations: params.generateRecommendations ?? true,
+    };
+
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/five-layer-backtest/run/by-screening-run',
       requestData,
     );
     return toCamelCase<BacktestFullPipelineResponse>(response.data);

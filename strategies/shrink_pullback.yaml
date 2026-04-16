@@ -28,7 +28,7 @@ screening:
       value_ref: ma20
     - field: volume_ratio
       op: "<="
-      value: 0.8
+      value: 0.7
     - field: ma5_distance_pct
       op: "<="
       value: 2.0
@@ -36,6 +36,9 @@ screening:
     - field: pct_chg
       op: ">"
       value: 0
+    - field: pullback_touched_ma
+      op: "=="
+      value: true
   scoring:
     - field: trend_score
       weight: 40

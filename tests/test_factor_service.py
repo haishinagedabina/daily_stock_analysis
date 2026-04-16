@@ -236,6 +236,33 @@ class FactorServiceTestCase(unittest.TestCase):
         self.assertNotIn("is_hot_theme_stock", snapshot_df.columns)
         self.assertNotIn("theme_boards", snapshot_df.columns)
 
+    def test_compute_extended_factors_marks_recent_pullback_touch(self) -> None:
+        rows = []
+        start_date = date(2026, 3, 1)
+        closes = [10.0] * 17 + [10.0, 10.1, 10.2, 10.3]
+        lows = [9.8] * 18 + [9.95, 10.0, 10.1]
+        for idx, close in enumerate(closes):
+            trade_date = start_date + timedelta(days=idx)
+            rows.append(
+                {
+                    "date": trade_date,
+                    "code": "600519",
+                    "open": close - 0.05,
+                    "high": close + 0.1,
+                    "low": lows[idx],
+                    "close": close,
+                    "volume": 1000 + idx * 10,
+                    "amount": (1000 + idx * 10) * close,
+                    "pct_chg": 1.0,
+                }
+            )
+
+        group = pd.DataFrame(rows)
+        result = self.service._compute_extended_factors(group, group.iloc[-1], group["close"])
+
+        self.assertIn("pullback_touched_ma", result)
+        self.assertTrue(result["pullback_touched_ma"])
+
 
 if __name__ == "__main__":
     unittest.main()

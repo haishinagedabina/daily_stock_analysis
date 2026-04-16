@@ -6,6 +6,7 @@ resolve_execution → evaluate → save_evaluations → update_run.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import date, datetime
@@ -33,12 +34,84 @@ from src.backtest.repositories.recommendation_repo import RecommendationReposito
 from src.backtest.repositories.run_repo import RunRepository
 from src.backtest.repositories.summary_repo import SummaryRepository
 from src.backtest.services.candidate_selector import CandidateSelector
+from src.backtest.services.sample_bucket_service import SampleBucketService
+from src.backtest.utils.summary_metrics import get_aggregatable_sample_count
 from src.repositories.stock_repo import StockRepository
+from src.schemas.trading_types import (
+    CandidatePoolLevel,
+    EntryMaturity,
+    MarketEnvironment,
+    MarketRegime,
+    RiskLevel,
+    SetupType,
+    ThemePosition,
+    TradeStage,
+)
+from src.services.trade_stage_judge import TradeStageJudge
 from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_EVAL_WINDOW = 10
+_ENTRY_SIGNAL_STAGES = frozenset({TradeStage.PROBE_ENTRY.value, TradeStage.ADD_ON_STRENGTH.value})
+_LOW123_CONSERVATIVE_REJECTION = "confirmed_missing_breakout_bar_index"
+
+
+def _dump_json(payload: Any) -> Optional[str]:
+    if payload is None:
+        return None
+    try:
+        return json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_run_sample_baseline(
+    raw_candidate_count: int,
+    evaluations: List[FiveLayerBacktestEvaluation],
+) -> Dict[str, Any]:
+    """Build run-level sample baseline without requiring schema changes."""
+    entry_count = sum(1 for item in evaluations if item.signal_family == "entry")
+    observation_count = sum(1 for item in evaluations if item.signal_family == "observation")
+    suppressed_reasons: Dict[str, int] = {}
+    aggregatable_count = 0
+
+    for evaluation in evaluations:
+        if evaluation.forward_return_5d is not None or evaluation.risk_avoided_pct is not None:
+            aggregatable_count += 1
+            continue
+        if evaluation.signal_family == "observation":
+            reason = "missing_risk_avoided_pct"
+        elif evaluation.signal_family == "entry":
+            reason = "missing_forward_return_5d"
+        else:
+            reason = "missing_primary_metric"
+        suppressed_reasons[reason] = suppressed_reasons.get(reason, 0) + 1
+
+    return {
+        "raw_sample_count": raw_candidate_count,
+        "evaluated_sample_count": len(evaluations),
+        "aggregatable_sample_count": aggregatable_count,
+        "entry_sample_count": entry_count,
+        "observation_sample_count": observation_count,
+        "suppressed_sample_count": len(evaluations) - aggregatable_count,
+        "suppressed_reasons": suppressed_reasons,
+    }
+
+
+def _parse_enum_value(enum_cls: type, raw_value: Any):
+    if raw_value is None:
+        return None
+    try:
+        return enum_cls(str(raw_value))
+    except ValueError:
+        return None
+
+
+def _has_stop_loss_anchor(trade_plan: Any) -> bool:
+    if not isinstance(trade_plan, dict):
+        return False
+    return trade_plan.get("stop_loss") is not None or bool(trade_plan.get("stop_loss_rule"))
 
 
 class FiveLayerBacktestService:
@@ -57,6 +130,7 @@ class FiveLayerBacktestService:
         self.recommendation_engine = RecommendationEngine(
             self.summary_repo, self.eval_repo, self.recommendation_repo,
         )
+        self.trade_stage_judge = TradeStageJudge()
 
     def create_run(
         self,
@@ -135,6 +209,7 @@ class FiveLayerBacktestService:
             eval_window_days=eval_window_days,
         )
 
+        sample_baseline = _build_run_sample_baseline(len(candidates), evaluations)
         if evaluations:
             self.eval_repo.save_batch(evaluations)
 
@@ -144,6 +219,7 @@ class FiveLayerBacktestService:
             sample_count=len(candidates),
             completed_count=len(evaluations),
             error_count=error_count,
+            config_json=_dump_json({"sample_baseline": sample_baseline}),
             completed_at=datetime.now(),
         )
 
@@ -201,6 +277,7 @@ class FiveLayerBacktestService:
             eval_window_days=eval_window_days,
         )
 
+        sample_baseline = _build_run_sample_baseline(len(candidates), evaluations)
         if evaluations:
             self.eval_repo.save_batch(evaluations)
 
@@ -210,6 +287,7 @@ class FiveLayerBacktestService:
             sample_count=len(candidates),
             completed_count=len(evaluations),
             error_count=error_count,
+            config_json=_dump_json({"sample_baseline": sample_baseline}),
             completed_at=datetime.now(),
         )
 
@@ -256,6 +334,7 @@ class FiveLayerBacktestService:
         """Process a single candidate through classify → execute → evaluate."""
         trade_date = candidate["trade_date"]
         code = candidate["code"]
+        effective_trade_stage = self._resolve_backtest_trade_stage(candidate)
 
         # Classify signal
         has_exit_plan = False
@@ -264,7 +343,7 @@ class FiveLayerBacktestService:
             has_exit_plan = bool(trade_plan.get("exit_signal"))
 
         classification = SignalClassifier.classify(
-            trade_stage=candidate.get("trade_stage"),
+            trade_stage=effective_trade_stage,
             ai_trade_stage=candidate.get("ai_trade_stage"),
             ai_confidence=candidate.get("ai_confidence"),
             has_exit_plan=has_exit_plan,
@@ -285,9 +364,12 @@ class FiveLayerBacktestService:
             trade_date=trade_date,
             code=code,
             name=candidate.get("name"),
+            evaluation_mode=evaluation_mode,
             signal_family=classification.signal_family,
+            signal_type=classification.effective_trade_stage,
             evaluator_type=classification.evaluator_type,
             execution_model=execution_model,
+            snapshot_source="screening_candidate",
             eval_status="evaluated",
         )
 
@@ -299,6 +381,19 @@ class FiveLayerBacktestService:
         evaluation.snapshot_theme_position = candidate.get("theme_position")
         evaluation.snapshot_candidate_pool_level = candidate.get("candidate_pool_level")
         evaluation.snapshot_risk_level = candidate.get("risk_level")
+        evaluation.factor_snapshot_json = _dump_json(candidate.get("factor_snapshot"))
+        evaluation.trade_plan_json = _dump_json(candidate.get("trade_plan"))
+        evaluation.evidence_json = _dump_json(
+            {
+                "matched_strategies": candidate.get("matched_strategies", []),
+                "rule_hits": candidate.get("rule_hits", []),
+                "primary_strategy": candidate.get("primary_strategy"),
+                "contributing_strategies": candidate.get("contributing_strategies", []),
+                "strategy_scores": candidate.get("strategy_scores", {}),
+                "ai_trade_stage": candidate.get("ai_trade_stage"),
+                "ai_confidence": candidate.get("ai_confidence"),
+            },
+        )
 
         # Replayed fields stay NULL in historical_snapshot mode
 
@@ -309,7 +404,55 @@ class FiveLayerBacktestService:
             self._evaluate_observation(evaluation, forward_bars)
         # exit: framework only, no metrics yet
 
+        evaluation.metrics_json = _dump_json(
+            self._build_metrics_payload(
+                candidate=candidate,
+                evaluation=evaluation,
+                classification=classification,
+            ),
+        )
+
         return evaluation
+
+    def _resolve_backtest_trade_stage(self, candidate: Dict[str, Any]) -> Optional[str]:
+        """Recover a usable rule-stage from snapshot fields when persisted stage is overly conservative."""
+        persisted_stage = str(candidate.get("trade_stage") or "").lower() or None
+        if persisted_stage in _ENTRY_SIGNAL_STAGES:
+            return persisted_stage
+
+        factor_snapshot = candidate.get("factor_snapshot")
+        if not isinstance(factor_snapshot, dict):
+            factor_snapshot = {}
+
+        if factor_snapshot.get("ma100_low123_validation_status") == _LOW123_CONSERVATIVE_REJECTION:
+            return persisted_stage
+
+        regime = _parse_enum_value(MarketRegime, candidate.get("market_regime"))
+        setup_type = _parse_enum_value(SetupType, candidate.get("setup_type"))
+        entry_maturity = _parse_enum_value(EntryMaturity, candidate.get("entry_maturity"))
+        pool_level = _parse_enum_value(
+            CandidatePoolLevel,
+            candidate.get("candidate_pool_level"),
+        )
+        theme_position = _parse_enum_value(ThemePosition, candidate.get("theme_position"))
+        risk_level = _parse_enum_value(RiskLevel, candidate.get("risk_level")) or RiskLevel.MEDIUM
+
+        if None in (regime, setup_type, entry_maturity, pool_level, theme_position):
+            return persisted_stage
+
+        derived_stage = self.trade_stage_judge.judge(
+            env=MarketEnvironment(regime=regime, risk_level=risk_level),
+            setup_type=setup_type,
+            entry_maturity=entry_maturity,
+            pool_level=pool_level,
+            theme_position=theme_position,
+            has_stop_loss=_has_stop_loss_anchor(candidate.get("trade_plan")),
+        ).value
+
+        if derived_stage in _ENTRY_SIGNAL_STAGES:
+            return TradeStage.PROBE_ENTRY.value
+
+        return persisted_stage
 
     def _evaluate_entry(
         self,
@@ -355,6 +498,8 @@ class FiveLayerBacktestService:
             evaluation.mae = eval_result.mae
             evaluation.mfe = eval_result.mfe
             evaluation.max_drawdown_from_peak = eval_result.max_drawdown_from_peak
+            evaluation.optimal_entry_deviation = eval_result.optimal_entry_deviation
+            evaluation.optimal_entry_timing = eval_result.optimal_entry_timing
             evaluation.signal_quality_score = eval_result.signal_quality_score
             evaluation.plan_success = eval_result.plan_success
             evaluation.holding_days = eval_result.holding_days
@@ -382,6 +527,33 @@ class FiveLayerBacktestService:
         evaluation.stage_success = eval_result.stage_success
         evaluation.holding_days = eval_result.holding_days
         evaluation.outcome = eval_result.outcome
+
+    @staticmethod
+    def _build_metrics_payload(
+        candidate: Dict[str, Any],
+        evaluation: FiveLayerBacktestEvaluation,
+        classification: Any,
+    ) -> Dict[str, Any]:
+        sample_origin = SampleBucketService.resolve_sample_origin(candidate)
+        sample_bucket = SampleBucketService.resolve_sample_bucket(
+            signal_family=evaluation.signal_family,
+            effective_trade_stage=classification.effective_trade_stage,
+            entry_maturity=evaluation.snapshot_entry_maturity,
+        )
+        timing = SampleBucketService.resolve_entry_timing(
+            signal_family=evaluation.signal_family,
+            entry_fill_status=evaluation.entry_fill_status,
+            mae=evaluation.mae,
+            mfe=evaluation.mfe,
+            forward_return_5d=evaluation.forward_return_5d,
+        )
+        return {
+            "sample_origin": sample_origin,
+            "sample_bucket": sample_bucket,
+            "effective_trade_stage": classification.effective_trade_stage,
+            "ai_overridden": classification.ai_overridden,
+            **timing,
+        }
 
     # ── Phase 3: Aggregation & Recommendations ──────────────────────────
 
@@ -416,7 +588,7 @@ class FiveLayerBacktestService:
                         win_rate_pct=overall.win_rate_pct,
                         profit_factor=overall.profit_factor,
                         time_bucket_stability=overall.time_bucket_stability,
-                        sample_count=overall.sample_count or 0,
+                        sample_count=get_aggregatable_sample_count(overall),
                     ),
                 )
 

@@ -446,6 +446,9 @@ class FactorService:
         # Bottom divergence double breakout factors
         bottom_div_factors = self._compute_bottom_divergence_factors(group)
 
+        # Trend pullback freshness / support confirmation
+        pullback_touched_ma = self._compute_pullback_touched_ma(group, close_series)
+
         # MA100 + Low-123 combined factors (Strategy 2)
         ma100_low123_factors = self._compute_ma100_low123_combined_factors(
             ma100_factors, pattern_123_factors, pattern_123_raw, group
@@ -461,6 +464,7 @@ class FactorService:
             "amplitude": amplitude,
             "close_strength": close_strength,
             "candle_pattern": candle_pattern,
+            "pullback_touched_ma": pullback_touched_ma,
             **ma100_factors,
             **gap_limit_factors,
             **macd_factors,
@@ -625,11 +629,13 @@ class FactorService:
                 "bottom_divergence_horizontal_breakout": False,
                 "bottom_divergence_trendline_breakout": False,
                 "bottom_divergence_sync_breakout": False,
+                "bottom_divergence_confirmation_days": None,
                 "bottom_divergence_hit_reasons": [],
             }
 
         result = BottomDivergenceBreakoutDetector.detect(group)
         state = result.get("state", "rejected")
+        confirmation_days = FactorService._compute_bottom_divergence_confirmation_days(group, result)
 
         return {
             "bottom_divergence_double_breakout": state == "confirmed",
@@ -646,8 +652,48 @@ class FactorService:
                 "trendline_breakout_confirmed", False
             ),
             "bottom_divergence_sync_breakout": result.get("double_breakout_sync", False),
+            "bottom_divergence_confirmation_days": confirmation_days,
             "bottom_divergence_hit_reasons": result.get("hit_reasons", []),
         }
+
+    @staticmethod
+    def _compute_bottom_divergence_confirmation_days(
+        group: pd.DataFrame,
+        detector_result: dict,
+    ) -> Optional[int]:
+        confirmation_bar = detector_result.get("confirmation_bar_index")
+        if confirmation_bar is None:
+            downtrend_line = detector_result.get("downtrend_line") or {}
+            confirmation_bar = downtrend_line.get("breakout_bar_index")
+        if confirmation_bar is None:
+            return None
+        try:
+            latest_bar = len(group) - 1
+            return max(latest_bar - int(confirmation_bar), 0)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _compute_pullback_touched_ma(group: pd.DataFrame, close_series: pd.Series) -> bool:
+        if len(group) < 10:
+            return False
+
+        recent = group.tail(3).copy()
+        recent_closes = close_series.astype(float)
+        ma5_series = recent_closes.rolling(5).mean()
+        ma10_series = recent_closes.rolling(10).mean()
+
+        for idx, row in recent.iterrows():
+            low = float(row.get("low", row.get("close", 0.0)) or 0.0)
+            ma5 = ma5_series.iloc[idx] if idx < len(ma5_series) else np.nan
+            ma10 = ma10_series.iloc[idx] if idx < len(ma10_series) else np.nan
+
+            if pd.notna(ma5) and ma5 > 0 and abs(low - float(ma5)) / float(ma5) <= 0.01:
+                return True
+            if pd.notna(ma10) and ma10 > 0 and abs(low - float(ma10)) / float(ma10) <= 0.02:
+                return True
+
+        return False
 
     @staticmethod
     def _compute_ma100_low123_combined_factors(
@@ -657,6 +703,12 @@ class FactorService:
         """Combine MA100 + Low-123 pattern into a single gate with hit reasons.
 
         Hard freshness gate: bars_since_entry > 3 → reject entirely.
+        Shadow observability mode: if `breakout_bar_index` is missing, keep the
+        legacy confirmation result but emit explicit validation status/reason so
+        downstream screening, backtest attribution, and monitoring can isolate
+        these samples before a future fail-closed rollout.
+        Freshness is derived from `pattern_123_raw["downtrend_line"]["breakout_bar_index"]`
+        relative to the latest bar in `group`.
         """
         above_ma100 = bool(ma100_factors.get("above_ma100", False))
         p123_confirmed = bool(pattern_123_factors.get("pattern_123_low_trendline", False))
@@ -664,18 +716,33 @@ class FactorService:
         # bars_since_entry: how many bars since the 123 breakout confirmation
         entry_price = pattern_123_factors.get("pattern_123_entry_price")
         signal_strength = float(pattern_123_factors.get("pattern_123_signal_strength", 0.0))
-        p123_state = pattern_123_factors.get("pattern_123_state", "rejected")
+        bars_since_entry = FactorService._compute_low123_confirmation_days(group, pattern_123_raw)
+        data_complete = bars_since_entry is not None
 
-        # We don't have bars_since_entry directly from the detector;
-        # the detector returns state == "confirmed" only when the breakout
-        # just happened (within its own freshness window).  For the hard
-        # 3-bar gate we rely on the detector's built-in freshness component
-        # (it already scores freshness=0 when >5 bars old and only returns
-        # "confirmed" for recent breakouts).  Here we do NOT add extra
-        # freshness — the YAML filter on ma100_low123_confirmed already
-        # ensures only confirmed+above_ma100 stocks pass.
+        # Low123 detector and MA100 gate both need to be fresh enough to stay
+        # actionable. Even if the detector still reports a valid confirmed
+        # structure, we suppress stale breakouts once the trendline breakout
+        # is more than 3 bars old.
+        validation_status = "confirmed"
+        validation_reason: Optional[str] = None
+        if not p123_confirmed:
+            validation_status = "low123_not_confirmed"
+            validation_reason = "low123_not_confirmed"
+        elif not above_ma100:
+            validation_status = "below_ma100"
+            validation_reason = "below_ma100"
+        elif bars_since_entry is None:
+            validation_status = "confirmed_missing_breakout_bar_index"
+            validation_reason = "missing_breakout_bar_index"
+        elif bars_since_entry > 3:
+            validation_status = "stale_breakout"
+            validation_reason = "stale_breakout"
 
-        confirmed = p123_confirmed and above_ma100
+        confirmed = (
+            p123_confirmed
+            and above_ma100
+            and (bars_since_entry is None or bars_since_entry <= 3)
+        )
 
         # ── MA score (breakout recency + distance) ──
         breakout_days = int(ma100_factors.get("ma100_breakout_days", 0))
@@ -702,13 +769,37 @@ class FactorService:
                 ma100_factors, pattern_123_factors, pattern_123_raw, group,
                 breakout_days, distance_pct, signal_strength,
             )
+            if validation_status == "confirmed_missing_breakout_bar_index":
+                hit_reasons.insert(
+                    0,
+                    "【数据校验】缺少 breakout_bar_index，当前按观察模式保留，建议单独统计并人工复核",
+                )
 
         return {
             "ma100_low123_confirmed": confirmed,
+            "ma100_low123_data_complete": data_complete,
             "ma100_low123_pattern_strength": signal_strength if confirmed else 0.0,
             "ma100_low123_ma_score": ma_score if confirmed else 0.0,
+            "ma100_low123_validation_status": validation_status,
+            "ma100_low123_validation_reason": validation_reason,
             "ma100_low123_hit_reasons": hit_reasons,
         }
+
+    @staticmethod
+    def _compute_low123_confirmation_days(
+        group: pd.DataFrame,
+        detector_result: dict,
+    ) -> Optional[int]:
+        """Compute bars since Low123 trendline breakout confirmation."""
+        downtrend_line = detector_result.get("downtrend_line") or {}
+        confirmation_bar = downtrend_line.get("breakout_bar_index")
+        if confirmation_bar is None:
+            return None
+        try:
+            latest_bar = len(group) - 1
+            return max(latest_bar - int(confirmation_bar), 0)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _compute_ma100_60min_combined_factors(ma100_factors: dict) -> dict:

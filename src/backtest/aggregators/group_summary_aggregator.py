@@ -8,6 +8,7 @@ the candidate-level evaluation fact table. Uses snapshot fields
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import statistics
 from collections import defaultdict
@@ -37,11 +38,20 @@ SINGLE_DIMENSIONS = (
     "snapshot_trade_stage",
 )
 
+SPLIT_BY_SIGNAL_FAMILY_DIMENSIONS = tuple(
+    dim for dim in SINGLE_DIMENSIONS if dim != "signal_family"
+)
+
 COMBO_PAIRS: List[Tuple[str, str]] = [
     ("snapshot_theme_position", "snapshot_setup_type"),
     ("snapshot_candidate_pool_level", "snapshot_entry_maturity"),
-    ("snapshot_market_regime", "signal_family"),
 ]
+
+STRATEGY_COHORT_DIMENSIONS = (
+    "snapshot_market_regime",
+    "snapshot_candidate_pool_level",
+    "snapshot_entry_maturity",
+)
 
 # Map field name → group_type label
 _DIMENSION_TO_GROUP_TYPE = {
@@ -54,14 +64,23 @@ _DIMENSION_TO_GROUP_TYPE = {
     "snapshot_trade_stage": "trade_stage",
 }
 
+# Signal strength band thresholds for factor_snapshot-based grouping
+_STRENGTH_BANDS = (
+    ("weak", 0.0, 0.3),
+    ("medium", 0.3, 0.6),
+    ("strong", 0.6, 1.01),  # 1.01 to include 1.0
+)
+
 
 class GroupSummaryAggregator:
     """Computes and persists group summaries for a backtest run.
 
-    Produces three kinds of summaries:
+    Produces five kinds of summaries:
       1. overall  — single row aggregating all evaluations
       2. single-dimension — one row per unique value of each dimension
-      3. combo — one row per unique (dim_a, dim_b) pair
+      3. single-dimension split by signal family — one row per unique value+family
+      4. combo — one row per unique (dim_a, dim_b) pair
+      5. strategy_cohort — one row per strategy/bucket/context combination
     """
 
     def __init__(
@@ -105,6 +124,18 @@ class GroupSummaryAggregator:
                 if summary:
                     results.append(summary)
 
+        # 2b. Single-dimension summaries split by signal family
+        for dim in SPLIT_BY_SIGNAL_FAMILY_DIMENSIONS:
+            base_group_type = _DIMENSION_TO_GROUP_TYPE.get(dim, dim)
+            split_group_type = f"{base_group_type}_signal_family"
+            grouped = _group_by_combo(evaluations, dim, "signal_family")
+            for group_key, evals in grouped.items():
+                summary = self._persist_group(
+                    backtest_run_id, split_group_type, group_key, evals,
+                )
+                if summary:
+                    results.append(summary)
+
         # 3. Combo summaries
         for dim_a, dim_b in COMBO_PAIRS:
             group_type = "combo"
@@ -115,6 +146,42 @@ class GroupSummaryAggregator:
                 )
                 if summary:
                     results.append(summary)
+
+        # 4. Strategy cohort summaries
+        strategy_cohorts = _group_by_strategy_cohort(evaluations)
+        for group_key, evals in strategy_cohorts.items():
+            summary = self._persist_group(
+                backtest_run_id, "strategy_cohort", group_key, evals,
+            )
+            if summary:
+                results.append(summary)
+
+        # 5. Pattern code summaries (from factor_snapshot_json)
+        pattern_groups = _group_by_pattern_code(evaluations)
+        for group_key, evals in pattern_groups.items():
+            summary = self._persist_group(
+                backtest_run_id, "pattern_code", group_key, evals,
+            )
+            if summary:
+                results.append(summary)
+
+        # 6. Signal strength band summaries (from factor_snapshot_json)
+        strength_groups = _group_by_signal_strength_band(evaluations)
+        for group_key, evals in strength_groups.items():
+            summary = self._persist_group(
+                backtest_run_id, "signal_strength_band", group_key, evals,
+            )
+            if summary:
+                results.append(summary)
+
+        # 7. AI override status summaries (from metrics_json)
+        ai_groups = _group_by_ai_override(evaluations)
+        for group_key, evals in ai_groups.items():
+            summary = self._persist_group(
+                backtest_run_id, "ai_override", group_key, evals,
+            )
+            if summary:
+                results.append(summary)
 
         logger.info(
             "Computed %d summaries for run %s", len(results), backtest_run_id,
@@ -137,10 +204,11 @@ class GroupSummaryAggregator:
         if metrics is None:
             return None
 
-        threshold = SampleThresholdGate.check(metrics["sample_count"])
+        threshold = SampleThresholdGate.check(metrics["aggregatable_sample_count"])
 
         # Store threshold info in metrics_json (advisory, not a gate)
         extra = {
+            "sample_baseline": metrics["sample_baseline"],
             "threshold_check": {
                 "can_display": threshold.can_display,
                 "can_suggest": threshold.can_suggest,
@@ -148,6 +216,11 @@ class GroupSummaryAggregator:
                 "reason": threshold.reason,
             },
         }
+        family_breakdown = _build_family_breakdown(evaluations)
+        if len(family_breakdown) > 1:
+            extra["family_breakdown"] = family_breakdown
+        if group_type == "strategy_cohort":
+            extra["strategy_cohort_context"] = _build_strategy_cohort_context(evaluations)
 
         return self.summary_repo.upsert_summary(
             backtest_run_id=backtest_run_id,
@@ -184,15 +257,15 @@ def aggregate_group(
     Uses forward_return_5d as the primary return metric.
     Returns None if no valid evaluations.
     """
-    # Filter to evaluated entries with a return metric
-    valid = [
-        e for e in evaluations
-        if e.forward_return_5d is not None or e.risk_avoided_pct is not None
-    ]
-    if not valid:
+    raw_count = len(evaluations)
+    if raw_count == 0:
         return None
 
-    n = len(valid)
+    sample_baseline = _build_sample_baseline(evaluations)
+
+    # Filter to evaluated entries with a return metric
+    valid = [e for e in evaluations if _is_aggregatable(e)]
+    aggregatable_count = len(valid)
 
     # Primary return: forward_return_5d for entry, risk_avoided_pct for observation
     returns = []
@@ -203,7 +276,26 @@ def aggregate_group(
             returns.append(e.risk_avoided_pct)
 
     if not returns:
-        return None
+        return {
+            "sample_count": raw_count,
+            "aggregatable_sample_count": aggregatable_count,
+            "sample_baseline": sample_baseline,
+            "avg_return_pct": None,
+            "median_return_pct": None,
+            "win_rate_pct": None,
+            "avg_mae": None,
+            "avg_mfe": None,
+            "avg_drawdown": None,
+            "p25_return_pct": None,
+            "p75_return_pct": None,
+            "extreme_sample_ratio": None,
+            "time_bucket_stability": None,
+            "profit_factor": None,
+            "avg_holding_days": None,
+            "max_consecutive_losses": None,
+            "plan_execution_rate": None,
+            "stage_accuracy_rate": None,
+        }
 
     # Trade dates for stability
     trade_dates = [e.trade_date for e in valid if e.trade_date is not None]
@@ -211,15 +303,18 @@ def aggregate_group(
     # Win rate: "win" for entry, "correct_wait" for observation
     _WIN_OUTCOMES = frozenset({"win", "correct_wait"})
     win_count = sum(1 for e in valid if e.outcome in _WIN_OUTCOMES)
-    win_rate = (win_count / n) * 100 if n > 0 else 0.0
+    win_rate = (win_count / aggregatable_count) * 100 if aggregatable_count > 0 else 0.0
 
     # MAE / MFE / Drawdown
-    mae_vals = [e.mae for e in valid if e.mae is not None]
-    mfe_vals = [e.mfe for e in valid if e.mfe is not None]
-    dd_vals = [e.max_drawdown_from_peak for e in valid if e.max_drawdown_from_peak is not None]
+    mae_vals = [_as_number(e.mae) for e in valid]
+    mae_vals = [value for value in mae_vals if value is not None]
+    mfe_vals = [_as_number(e.mfe) for e in valid]
+    mfe_vals = [value for value in mfe_vals if value is not None]
+    dd_vals = [_as_number(e.max_drawdown_from_peak) for e in valid]
+    dd_vals = [value for value in dd_vals if value is not None]
     holding_vals = [
-        e.holding_days for e in valid
-        if e.holding_days is not None and e.holding_days > 0
+        value for value in (_as_number(e.holding_days) for e in valid)
+        if value is not None and value > 0
     ]
 
     # Stability metrics
@@ -232,7 +327,7 @@ def aggregate_group(
     profit_factor = round(total_positive / total_negative, 4) if total_negative > 0 else None
 
     sorted_evals = sorted(
-        [e for e in valid if e.trade_date is not None and e.outcome is not None],
+        [e for e in valid if e.trade_date is not None and isinstance(e.outcome, str)],
         key=lambda e: (e.trade_date, e.code),
     )
     max_consecutive_losses = 0
@@ -244,9 +339,9 @@ def aggregate_group(
             continue
         current_streak = 0
 
-    plan_evals = [e for e in valid if e.plan_success is not None]
+    plan_evals = [e for e in valid if _as_bool(e.plan_success) is not None]
     plan_execution_rate = (
-        round(sum(1 for e in plan_evals if e.plan_success) / len(plan_evals), 4)
+        round(sum(1 for e in plan_evals if _as_bool(e.plan_success)) / len(plan_evals), 4)
         if plan_evals else None
     )
 
@@ -257,13 +352,15 @@ def aggregate_group(
             stage_total += 1
             if evaluation.forward_return_5d > 0:
                 stage_correct += 1
-        elif evaluation.signal_family == "observation" and evaluation.stage_success is not None:
+        elif evaluation.signal_family == "observation" and _as_bool(evaluation.stage_success) is not None:
             stage_total += 1
-            if evaluation.stage_success:
+            if _as_bool(evaluation.stage_success):
                 stage_correct += 1
 
     return {
-        "sample_count": n,
+        "sample_count": raw_count,
+        "aggregatable_sample_count": aggregatable_count,
+        "sample_baseline": sample_baseline,
         "avg_return_pct": round(statistics.mean(returns), 4) if returns else None,
         "median_return_pct": stability.median,
         "win_rate_pct": round(win_rate, 2),
@@ -280,6 +377,65 @@ def aggregate_group(
         "plan_execution_rate": plan_execution_rate,
         "stage_accuracy_rate": round(stage_correct / stage_total, 4) if stage_total > 0 else None,
     }
+
+
+def _is_aggregatable(evaluation: FiveLayerBacktestEvaluation) -> bool:
+    return evaluation.forward_return_5d is not None or evaluation.risk_avoided_pct is not None
+
+
+def _build_sample_baseline(
+    evaluations: List[FiveLayerBacktestEvaluation],
+) -> Dict[str, Any]:
+    """Build an explainable sample baseline for one run/group."""
+    entry_count = sum(1 for item in evaluations if item.signal_family == "entry")
+    observation_count = sum(1 for item in evaluations if item.signal_family == "observation")
+    suppressed_reasons: Dict[str, int] = defaultdict(int)
+    aggregatable_count = 0
+
+    for evaluation in evaluations:
+        if _is_aggregatable(evaluation):
+            aggregatable_count += 1
+            continue
+        reason = _infer_suppression_reason(evaluation)
+        suppressed_reasons[reason] += 1
+
+    raw_count = len(evaluations)
+    suppressed_count = raw_count - aggregatable_count
+
+    return {
+        "raw_sample_count": raw_count,
+        "evaluated_sample_count": raw_count,
+        "aggregatable_sample_count": aggregatable_count,
+        "entry_sample_count": entry_count,
+        "observation_sample_count": observation_count,
+        "suppressed_sample_count": suppressed_count,
+        "suppressed_reasons": dict(suppressed_reasons),
+    }
+
+
+def _infer_suppression_reason(
+    evaluation: FiveLayerBacktestEvaluation,
+) -> str:
+    signal_family = str(evaluation.signal_family or "").lower()
+    if signal_family == "observation":
+        return "missing_risk_avoided_pct"
+    if signal_family == "entry":
+        return "missing_forward_return_5d"
+    return "missing_primary_metric"
+
+
+def _as_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _as_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 def _group_by_field(
@@ -306,6 +462,155 @@ def _group_by_combo(
         val_a = getattr(e, field_a, None)
         val_b = getattr(e, field_b, None)
         if val_a is not None and val_b is not None:
-            combo_key = f"{val_a}+{val_b}"
+            combo_key = f"{field_a}={val_a}|{field_b}={val_b}"
             groups[combo_key].append(e)
+    return dict(groups)
+
+
+def _build_family_breakdown(
+    evaluations: List[FiveLayerBacktestEvaluation],
+) -> Dict[str, Dict[str, Any]]:
+    """Build entry/observation split metrics for mixed groups."""
+    grouped = _group_by_field(evaluations, "signal_family")
+    breakdown: Dict[str, Dict[str, Any]] = {}
+    for family, family_evals in grouped.items():
+        metrics = aggregate_group(family_evals)
+        if metrics is not None:
+            breakdown[family] = metrics
+    return breakdown
+
+
+def _group_by_strategy_cohort(
+    evaluations: List[FiveLayerBacktestEvaluation],
+) -> Dict[str, List[FiveLayerBacktestEvaluation]]:
+    """Group evaluations by primary strategy, sample bucket and snapshot context."""
+    groups: Dict[str, List[FiveLayerBacktestEvaluation]] = defaultdict(list)
+    for evaluation in evaluations:
+        evidence = _load_json_dict(evaluation.evidence_json)
+        metrics = _load_json_dict(evaluation.metrics_json)
+        primary_strategy = str(evidence.get("primary_strategy") or "").strip()
+        sample_bucket = str(metrics.get("sample_bucket") or "").strip()
+        cohort_values = {
+            dimension: getattr(evaluation, dimension, None)
+            for dimension in STRATEGY_COHORT_DIMENSIONS
+        }
+        if (
+            not primary_strategy
+            or not sample_bucket
+            or any(value is None for value in cohort_values.values())
+        ):
+            continue
+        group_key = _build_strategy_cohort_key(
+            primary_strategy=primary_strategy,
+            sample_bucket=sample_bucket,
+            cohort_values=cohort_values,
+        )
+        groups[group_key].append(evaluation)
+    return dict(groups)
+
+
+def _load_json_dict(payload: Optional[str]) -> Dict[str, Any]:
+    """Parse a JSON object field defensively."""
+    if not payload:
+        return {}
+    try:
+        parsed = json.loads(payload)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _build_strategy_cohort_context(
+    evaluations: List[FiveLayerBacktestEvaluation],
+) -> Dict[str, Any]:
+    """Expose the full readable context behind a short strategy cohort key."""
+    if not evaluations:
+        return {}
+    evaluation = evaluations[0]
+    evidence = _load_json_dict(evaluation.evidence_json)
+    metrics = _load_json_dict(evaluation.metrics_json)
+    return {
+        "primary_strategy": evidence.get("primary_strategy"),
+        "sample_bucket": metrics.get("sample_bucket"),
+        "snapshot_market_regime": getattr(evaluation, "snapshot_market_regime", None),
+        "snapshot_candidate_pool_level": getattr(evaluation, "snapshot_candidate_pool_level", None),
+        "snapshot_entry_maturity": getattr(evaluation, "snapshot_entry_maturity", None),
+    }
+
+
+def _build_strategy_cohort_key(
+    primary_strategy: Any,
+    sample_bucket: Any,
+    cohort_values: Dict[str, Any],
+) -> str:
+    """Build a stable cohort key that stays within the DB column limit."""
+    normalized = {
+        "ps": str(primary_strategy).strip(),
+        "sb": str(sample_bucket).strip(),
+        "mr": str(cohort_values["snapshot_market_regime"]).strip(),
+        "cp": str(cohort_values["snapshot_candidate_pool_level"]).strip(),
+        "em": str(cohort_values["snapshot_entry_maturity"]).strip(),
+    }
+    full_key = "|".join(f"{key}={value}" for key, value in normalized.items())
+    if len(full_key) <= 128:
+        return full_key
+
+    digest = hashlib.sha1(full_key.encode("utf-8")).hexdigest()[:10]
+    shortened = {
+        "ps": normalized["ps"][:24],
+        "sb": normalized["sb"][:12],
+        "mr": normalized["mr"][:16],
+        "cp": normalized["cp"][:16],
+        "em": normalized["em"][:16],
+        "h": digest,
+    }
+    return "|".join(f"{key}={value}" for key, value in shortened.items())
+
+
+def _group_by_pattern_code(
+    evaluations: List[FiveLayerBacktestEvaluation],
+) -> Dict[str, List[FiveLayerBacktestEvaluation]]:
+    """Group evaluations by bottom_divergence_pattern_code from factor_snapshot_json."""
+    groups: Dict[str, List[FiveLayerBacktestEvaluation]] = defaultdict(list)
+    for e in evaluations:
+        factor_snapshot = _load_json_dict(e.factor_snapshot_json)
+        pattern_code = factor_snapshot.get("bottom_divergence_pattern_code")
+        if pattern_code:
+            groups[str(pattern_code)].append(e)
+    return dict(groups)
+
+
+def _group_by_signal_strength_band(
+    evaluations: List[FiveLayerBacktestEvaluation],
+) -> Dict[str, List[FiveLayerBacktestEvaluation]]:
+    """Group evaluations by bottom_divergence_signal_strength bands from factor_snapshot_json."""
+    groups: Dict[str, List[FiveLayerBacktestEvaluation]] = defaultdict(list)
+    for e in evaluations:
+        factor_snapshot = _load_json_dict(e.factor_snapshot_json)
+        strength = factor_snapshot.get("bottom_divergence_signal_strength")
+        if strength is None:
+            continue
+        try:
+            strength_val = float(strength)
+        except (TypeError, ValueError):
+            continue
+        for band_name, low, high in _STRENGTH_BANDS:
+            if low <= strength_val < high:
+                groups[band_name].append(e)
+                break
+    return dict(groups)
+
+
+def _group_by_ai_override(
+    evaluations: List[FiveLayerBacktestEvaluation],
+) -> Dict[str, List[FiveLayerBacktestEvaluation]]:
+    """Group evaluations by AI override status from metrics_json."""
+    groups: Dict[str, List[FiveLayerBacktestEvaluation]] = defaultdict(list)
+    for e in evaluations:
+        metrics = _load_json_dict(e.metrics_json)
+        ai_overridden = metrics.get("ai_overridden")
+        if ai_overridden is None:
+            continue
+        key = "ai_overridden" if ai_overridden else "ai_not_overridden"
+        groups[key].append(e)
     return dict(groups)

@@ -187,6 +187,38 @@ class TestCommonFilters:
         reasons = engine.apply_common_filters(row, _default_common_filters())
         assert reasons == []
 
+    def test_big_drop_is_filtered(self):
+        engine = StrategyScreeningEngine()
+        row = _bullish_row(pct_chg=-9.88, close_strength=0.0, candle_pattern="big_yin")
+        reasons = engine.apply_common_filters(row, _default_common_filters())
+        assert "big_drop_filtered" in reasons
+        assert "weak_close_filtered" in reasons
+        assert "big_yin_candle_filtered" in reasons
+
+    def test_recent_bottom_divergence_weak_close_is_not_filtered(self):
+        engine = StrategyScreeningEngine()
+        row = _bullish_row(
+            pct_chg=-1.5,
+            close_strength=0.0,
+            candle_pattern="normal",
+            bottom_divergence_double_breakout=True,
+            bottom_divergence_confirmation_days=3,
+        )
+        reasons = engine.apply_common_filters(row, _default_common_filters())
+        assert "weak_close_filtered" not in reasons
+
+    def test_same_day_bottom_divergence_weak_close_is_not_filtered(self):
+        engine = StrategyScreeningEngine()
+        row = _bullish_row(
+            pct_chg=-1.0,
+            close_strength=0.0,
+            candle_pattern="normal",
+            bottom_divergence_double_breakout=True,
+            bottom_divergence_confirmation_days=0,
+        )
+        reasons = engine.apply_common_filters(row, _default_common_filters())
+        assert "weak_close_filtered" not in reasons
+
 
 # ── Multi-strategy evaluate tests ───────────────────────────────────────────
 
@@ -401,18 +433,20 @@ class TestMultiStrategyEvaluation:
 # ── score aggregation tests ─────────────────────────────────────────────────
 
 class TestScoreAggregation:
-    def test_multi_strategy_score_is_sum(self):
-        """Aggregation: sum of scores across matched strategies."""
+    def test_multi_strategy_score_uses_role_weights(self):
+        """Aggregation: role-weighted sum across matched strategies."""
         rule_a = _make_rule(
             name="weak",
             filters=[],
             scoring=[ScoringWeight(field="trend_score", weight=10)],
         )
+        rule_a.system_role = "confirm"
         rule_b = _make_rule(
             name="strong",
             filters=[],
             scoring=[ScoringWeight(field="trend_score", weight=100)],
         )
+        rule_b.system_role = "entry_core"
         snapshot = _make_snapshot(_bullish_row("600001", trend_score=80))
         engine = StrategyScreeningEngine()
         result = engine.evaluate(
@@ -423,7 +457,11 @@ class TestScoreAggregation:
 
         candidate = result.selected[0]
         assert candidate.strategy_scores["strong"] > candidate.strategy_scores["weak"]
-        assert candidate.final_score == sum(candidate.strategy_scores.values())
+        expected = (
+            candidate.strategy_scores["strong"] * 1.0
+            + candidate.strategy_scores["weak"] * 0.5
+        )
+        assert candidate.final_score == pytest.approx(expected)
 
     def test_dual_strategy_stock_ranks_higher_than_single(self):
         """Stock matching 2 strategies should score higher than single-match."""
@@ -432,11 +470,13 @@ class TestScoreAggregation:
             filters=[FilterCondition(field="volume_ratio", op=">=", value=2.0)],
             scoring=[ScoringWeight(field="trend_score", weight=50)],
         )
+        rule_a.system_role = "entry_core"
         rule_b = _make_rule(
             name="strategy_b",
             filters=[FilterCondition(field="trend_score", op=">=", value=80)],
             scoring=[ScoringWeight(field="trend_score", weight=50)],
         )
+        rule_b.system_role = "entry_core"
         snapshot = _make_snapshot(
             _bullish_row("600001", volume_ratio=2.5, trend_score=85),  # matches both
             _bullish_row("600002", volume_ratio=1.0, trend_score=90),  # matches only B
@@ -452,7 +492,20 @@ class TestScoreAggregation:
         assert codes[0] == "600001", "dual-match stock should rank first"
         dual = result.selected[0]
         assert len(dual.matched_strategies) == 2
-        assert dual.final_score == sum(dual.strategy_scores.values())
+        assert dual.final_score == pytest.approx(sum(dual.strategy_scores.values()))
+
+    def test_strategy_score_is_capped_at_100(self):
+        rule = _make_rule(
+            scoring=[
+                ScoringWeight(field="trend_score", weight=80),
+                ScoringWeight(field="volume_ratio", weight=60, cap=5.0),
+            ],
+        )
+        engine = StrategyScreeningEngine()
+
+        score = engine._compute_strategy_score(rule, _bullish_row(trend_score=100, volume_ratio=5.0))
+
+        assert score == 100.0
 
 
 class TestNestedFilterGroups:
@@ -509,3 +562,42 @@ class TestNestedFilterGroups:
 
         selected_codes = [item.code for item in result.selected]
         assert selected_codes == ["600002"]
+
+    def test_build_rules_from_skills_supports_legacy_or_syntax(self):
+        skill = Skill(
+            name="gap_limitup_breakout",
+            display_name="跳空涨停突破",
+            description="legacy or syntax",
+            instructions="",
+            category="momentum",
+            screening={
+                "filters": [
+                    {"field": "above_ma100", "op": "==", "value": True},
+                    {
+                        "field": "gap_breakaway",
+                        "op": "==",
+                        "value": True,
+                        "or": [
+                            {"field": "limit_up_breakout", "op": "==", "value": True},
+                        ],
+                    },
+                ],
+                "scoring": [{"field": "trend_score", "weight": 100}],
+            },
+        )
+
+        rules = build_rules_from_skills([skill])
+        engine = StrategyScreeningEngine()
+        snapshot = _make_snapshot(
+            _bullish_row("600001", above_ma100=True, gap_breakaway=False, limit_up_breakout=True),
+            _bullish_row("600002", above_ma100=True, gap_breakaway=False, limit_up_breakout=False),
+        )
+
+        result = engine.evaluate(
+            snapshot_df=snapshot,
+            rules=rules,
+            common_filters=_default_common_filters(),
+        )
+
+        selected_codes = [item.code for item in result.selected]
+        assert selected_codes == ["600001"]

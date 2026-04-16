@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
@@ -212,6 +212,8 @@ class CandidateDecision:
     entry_maturity: EntryMaturity = EntryMaturity.LOW
     setup_freshness: float = 0.0
     strategy_family: Optional[StrategyFamily] = None
+    primary_strategy: Optional[str] = None
+    contributing_strategies: List[str] = field(default_factory=list)
     setup_hit_reasons: List[str] = field(default_factory=list)
     matched_strategies: List[str] = field(default_factory=list)
     # L5
@@ -242,6 +244,8 @@ class CandidateDecision:
             factor_snapshot=dict(getattr(record, "factor_snapshot", {}) or {}),
             matched_strategies=list(getattr(record, "matched_strategies", []) or []),
             strategy_scores=dict(getattr(record, "strategy_scores", {}) or {}),
+            primary_strategy=getattr(record, "primary_strategy", None),
+            contributing_strategies=list(getattr(record, "contributing_strategies", []) or []),
             setup_type=cls._coerce_enum(
                 SetupType,
                 getattr(record, "setup_type", None),
@@ -294,8 +298,20 @@ class CandidateDecision:
             trade_plan=cls._coerce_trade_plan(record),
         )
 
+    # Enum values that represent "no real value" — serialized as NULL for DB storage.
+    _NONE_ENUM_FIELDS: ClassVar[Dict[str, str]] = {
+        "setup_type": SetupType.NONE.value,
+    }
+
     def to_payload(self) -> Dict[str, Any]:
         payload = _serialize_value(self)
+        # SetupType.NONE means "no entry_core setup identified" — store as NULL
+        # so the backtest aggregator won't create a spurious "none" strategy group.
+        for field_name, none_value in self._NONE_ENUM_FIELDS.items():
+            if payload.get(field_name) == none_value:
+                payload[field_name] = None
+        payload.setdefault("primary_strategy", self.primary_strategy)
+        payload.setdefault("contributing_strategies", list(self.contributing_strategies))
         payload.setdefault("ai_query_id", None)
         payload.setdefault("ai_summary", None)
         payload.setdefault("ai_operation_advice", None)
@@ -348,6 +364,9 @@ class CandidateDecision:
     def from_payload(cls, payload: Dict[str, Any]) -> "CandidateDecision":
         trade_plan_payload = payload.get("trade_plan")
         ai_review_payload = payload.get("ai_review")
+        contributing_strategies = payload.get("contributing_strategies", [])
+        if not isinstance(contributing_strategies, list):
+            contributing_strategies = []
         if not isinstance(ai_review_payload, dict):
             flat_ai_values = {
                 "ai_query_id": payload.get("ai_query_id"),
@@ -409,6 +428,8 @@ class CandidateDecision:
             entry_maturity=cls._coerce_enum(EntryMaturity, payload.get("entry_maturity"), EntryMaturity.LOW),
             setup_freshness=float(payload.get("setup_freshness", 0.0) or 0.0),
             strategy_family=cls._coerce_optional_enum(StrategyFamily, payload.get("strategy_family")),
+            primary_strategy=payload.get("primary_strategy"),
+            contributing_strategies=list(contributing_strategies),
             setup_hit_reasons=list(payload.get("setup_hit_reasons", []) or []),
             matched_strategies=list(payload.get("matched_strategies", []) or []),
             trade_stage=cls._coerce_enum(TradeStage, payload.get("trade_stage"), TradeStage.WATCH),

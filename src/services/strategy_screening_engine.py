@@ -30,6 +30,14 @@ _STRATEGY_CN_MAP: Dict[str, str] = {
 }
 
 _PER_THEME_DEDUP_STRATEGIES = frozenset({"extreme_strength_combo"})
+_STRATEGY_MAX_SCORE = 100.0
+_ROLE_WEIGHT: Dict[str, float] = {
+    "entry_core": 1.0,
+    "stock_pool": 0.8,
+    "confirm": 0.5,
+    "observation": 0.3,
+    "bonus_signal": 0.2,
+}
 
 
 # ── Data structures ──────────────────────────────────────────────────────────
@@ -80,6 +88,9 @@ class StrategyScreeningRule:
 class CommonFilterConfig:
     exclude_st: bool = True
     min_list_days: int = 120
+    exclude_big_yin: bool = True
+    max_negative_pct_chg: float = -5.0
+    min_close_strength: float = 0.15
 
 
 @dataclass
@@ -161,6 +172,27 @@ class StrategyScreeningEngine:
             reasons.append("st_filtered")
         if float(row.get("days_since_listed") or 0) < config.min_list_days:
             reasons.append("listed_days_below_threshold")
+        if config.exclude_big_yin:
+            pct_chg = float(row.get("pct_chg") or 0.0)
+            raw_close_strength = row.get("close_strength")
+            close_strength = 1.0 if raw_close_strength is None else float(raw_close_strength)
+            candle = str(row.get("candle_pattern") or "")
+            raw_confirmation_days = row.get("bottom_divergence_confirmation_days")
+            is_recent_bottom_divergence = (
+                bool(row.get("bottom_divergence_double_breakout"))
+                and raw_confirmation_days is not None
+                and float(raw_confirmation_days) <= 10
+            )
+            if pct_chg < config.max_negative_pct_chg:
+                reasons.append("big_drop_filtered")
+            if (
+                not is_recent_bottom_divergence
+                and pct_chg < 0
+                and close_strength < config.min_close_strength
+            ):
+                reasons.append("weak_close_filtered")
+            if candle == "big_yin":
+                reasons.append("big_yin_candle_filtered")
         return reasons
 
     # ── main evaluate ────────────────────────────────────────────────────
@@ -222,7 +254,11 @@ class StrategyScreeningEngine:
                     "rejection_reasons": ["no_strategy_matched"],
                 })
 
-        selected = self._build_sorted_candidates(candidate_map, candidate_limit)
+        selected = self._build_sorted_candidates(
+            candidate_map,
+            candidate_limit,
+            rules=rules,
+        )
         return MultiStrategyEvaluationResult(
             selected=selected,
             rejected=rejected,
@@ -240,7 +276,7 @@ class StrategyScreeningEngine:
         self, rule: StrategyScreeningRule, row: Dict[str, Any]
     ) -> float:
         total = sum(self.evaluate_score_component(sw, row) for sw in rule.scoring)
-        return round(total, 2)
+        return round(min(total, _STRATEGY_MAX_SCORE), 2)
 
     @staticmethod
     def _build_rule_hits(
@@ -299,10 +335,18 @@ class StrategyScreeningEngine:
     def _build_sorted_candidates(
         candidate_map: Dict[str, "_CandidateAccumulator"],
         candidate_limit: Optional[int],
+        rules: Optional[List[StrategyScreeningRule]] = None,
     ) -> List[CandidateResult]:
+        role_map = {
+            rule.strategy_name: (rule.system_role or "entry_core")
+            for rule in (rules or [])
+        }
         candidates: List[CandidateResult] = []
         for acc in candidate_map.values():
-            final_score = sum(acc.strategy_scores.values()) if acc.strategy_scores else 0.0
+            final_score = 0.0
+            for strategy_name, score in acc.strategy_scores.items():
+                role = role_map.get(strategy_name, "entry_core")
+                final_score += score * _ROLE_WEIGHT.get(role, 1.0)
             unique_hits = list(dict.fromkeys(acc.rule_hits))
             rule_hits_display = StrategyScreeningEngine._build_rule_hits_display(
                 unique_hits, acc.factor_snapshot,
@@ -402,6 +446,24 @@ def build_rules_from_skills(
 def _parse_filter_node(raw: Any) -> Optional[FilterNode]:
     if not isinstance(raw, dict):
         return None
+    if "field" in raw and "op" in raw and "or" in raw:
+        children: List[FilterNode] = [
+            FilterCondition(
+                field=raw["field"],
+                op=raw["op"],
+                value=raw.get("value"),
+                value_ref=raw.get("value_ref"),
+            )
+        ]
+        or_items = raw.get("or")
+        if isinstance(or_items, list):
+            children.extend(
+                parsed
+                for item in or_items
+                for parsed in [_parse_filter_node(item)]
+                if parsed is not None
+            )
+        return FilterGroup(mode="any", conditions=children)
     if "field" in raw and "op" in raw:
         return FilterCondition(
             field=raw["field"],

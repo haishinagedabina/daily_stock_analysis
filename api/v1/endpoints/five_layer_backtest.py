@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,6 +12,7 @@ from api.deps import get_database_manager
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.five_layer_backtest import (
     FiveLayerBacktestRunRequest,
+    FiveLayerBacktestScreeningRunRequest,
     FiveLayerCalibrationItem,
     FiveLayerCalibrationRequest,
     FiveLayerCalibrationResponse,
@@ -54,7 +56,78 @@ def _parse_date(value: str, field_name: str) -> date:
 
 
 def _run_to_response(run) -> FiveLayerRunResponse:
-    return FiveLayerRunResponse(**run.to_dict())
+    payload = run.to_dict()
+    config = _parse_json_dict(payload.get("config_json"), field_name="config_json")
+    sample_baseline = config.get("sample_baseline")
+    payload.update(
+        {
+            "sample_baseline": sample_baseline if isinstance(sample_baseline, dict) else None,
+        }
+    )
+    return FiveLayerRunResponse(**payload)
+
+
+def _parse_json_dict(payload: str | None, field_name: str = "json_field") -> dict:
+    if not payload:
+        return {}
+    try:
+        parsed = json.loads(payload)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Failed to parse %s for five-layer backtest response", field_name)
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("Unexpected non-dict payload for %s in five-layer backtest response", field_name)
+        return {}
+    return parsed
+
+
+def _parse_json_list(payload) -> list:
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, str)]
+
+
+def _evaluation_to_response(evaluation) -> FiveLayerEvaluationItem:
+    payload = evaluation.to_dict()
+    evidence = _parse_json_dict(payload.get("evidence_json"), field_name="evidence_json")
+    metrics = _parse_json_dict(payload.get("metrics_json"), field_name="metrics_json")
+    factor_snapshot = _parse_json_dict(
+        payload.get("factor_snapshot_json"),
+        field_name="factor_snapshot_json",
+    )
+    payload.update(
+        {
+            "primary_strategy": evidence.get("primary_strategy"),
+            "contributing_strategies": _parse_json_list(evidence.get("contributing_strategies")),
+            "matched_strategies": _parse_json_list(evidence.get("matched_strategies")),
+            "rule_hits": _parse_json_list(evidence.get("rule_hits")),
+            "sample_bucket": metrics.get("sample_bucket"),
+            "entry_timing_label": metrics.get("entry_timing_label"),
+            "ma100_low123_validation_status": factor_snapshot.get("ma100_low123_validation_status"),
+            "ma100_low123_data_complete": factor_snapshot.get("ma100_low123_data_complete"),
+        }
+    )
+    return FiveLayerEvaluationItem(**payload)
+
+
+def _summary_to_response(summary) -> FiveLayerGroupSummaryItem:
+    payload = summary.to_dict()
+    metrics = _parse_json_dict(payload.get("metrics_json"), field_name="metrics_json")
+    sample_baseline = metrics.get("sample_baseline")
+    threshold_check = metrics.get("threshold_check")
+    family_breakdown = metrics.get("family_breakdown")
+    strategy_cohort_context = metrics.get("strategy_cohort_context")
+    payload.update(
+        {
+            "sample_baseline": sample_baseline if isinstance(sample_baseline, dict) else None,
+            "threshold_check": threshold_check if isinstance(threshold_check, dict) else None,
+            "family_breakdown": family_breakdown if isinstance(family_breakdown, dict) else None,
+            "strategy_cohort_context": (
+                strategy_cohort_context if isinstance(strategy_cohort_context, dict) else None
+            ),
+        }
+    )
+    return FiveLayerGroupSummaryItem(**payload)
 
 
 def _ranking_to_response(report) -> RankingEffectivenessResponse:
@@ -105,7 +178,7 @@ def run_five_layer_backtest(
         return FiveLayerFullPipelineResponse(
             run=_run_to_response(result["run"]),
             summaries=[
-                FiveLayerGroupSummaryItem(**summary.to_dict())
+                _summary_to_response(summary)
                 for summary in (result.get("summaries") or [])
             ],
             recommendations=[
@@ -117,6 +190,54 @@ def run_five_layer_backtest(
         raise
     except Exception as exc:
         logger.error("Failed to run five-layer backtest: %s", exc, exc_info=True)
+        raise _internal_error("五层回测执行失败")
+
+
+@router.post(
+    "/run/by-screening-run",
+    response_model=FiveLayerFullPipelineResponse,
+    responses={
+        400: {"description": "Invalid request", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Run five-layer backtest for one screening run",
+)
+def run_five_layer_backtest_by_screening_run(
+    request: FiveLayerBacktestScreeningRunRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> FiveLayerFullPipelineResponse:
+    try:
+        service = FiveLayerBacktestService(db_manager)
+        run = service.run_backtest_pipeline(
+            screening_run_id=request.screening_run_id,
+            evaluation_mode=request.evaluation_mode,
+            execution_model=request.execution_model,
+            market=request.market,
+            eval_window_days=request.eval_window_days,
+        )
+        summaries = service.compute_summaries(run.backtest_run_id)
+        recommendations = []
+        if request.generate_recommendations and summaries:
+            recommendations = service.generate_recommendations(run.backtest_run_id)
+        return FiveLayerFullPipelineResponse(
+            run=_run_to_response(run),
+            summaries=[
+                _summary_to_response(summary)
+                for summary in summaries
+            ],
+            recommendations=[
+                FiveLayerRecommendationItem(**recommendation.to_dict())
+                for recommendation in recommendations
+            ],
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Failed to run five-layer backtest by screening run: %s",
+            exc,
+            exc_info=True,
+        )
         raise _internal_error("五层回测执行失败")
 
 
@@ -177,7 +298,7 @@ def get_evaluations(
         total = len(evaluations)
         start = (page - 1) * limit
         items = [
-            FiveLayerEvaluationItem(**evaluation.to_dict())
+            _evaluation_to_response(evaluation)
             for evaluation in evaluations[start : start + limit]
         ]
         return FiveLayerEvaluationsResponse(
@@ -217,7 +338,7 @@ def get_summaries(
             )
 
         items = [
-            FiveLayerGroupSummaryItem(**summary.to_dict())
+            _summary_to_response(summary)
             for summary in service.summary_repo.get_by_run(backtest_run_id, group_type=group_type)
         ]
         return FiveLayerSummariesResponse(backtest_run_id=backtest_run_id, items=items)

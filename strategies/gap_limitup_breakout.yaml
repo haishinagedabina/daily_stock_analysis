@@ -22,10 +22,10 @@ screening:
     - field: above_ma100
       op: "=="
       value: true
-    - field: gap_breakaway
-      op: "=="
-      value: true
-      or:
+    - any:
+        - field: gap_breakaway
+          op: "=="
+          value: true
         - field: limit_up_breakout
           op: "=="
           value: true
@@ -36,7 +36,8 @@ screening:
     - field: breakout_ratio
       weight: 30
       bonus_above: 1.0
-      bonus_multiplier: 1000
+      bonus_multiplier: 50
+      cap: 1.15
     - field: trend_score
       weight: 20
     - field: liquidity_score

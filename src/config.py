@@ -551,7 +551,7 @@ class Config:
     # === 全市场筛选 / 预处理配置 ===
     screening_default_mode: str = "balanced"
     screening_candidate_limit: int = 30
-    screening_ai_top_k: int = 5
+    screening_ai_top_k: int = 10
     # Engineering preflight thresholds kept for compatibility with the old
     # screening entry. They are not formal L0 trading-system rules.
     screening_min_list_days: int = 120
@@ -1128,7 +1128,7 @@ class Config:
             # 全市场筛选
             screening_default_mode=os.getenv('SCREENING_DEFAULT_MODE', 'balanced'),
             screening_candidate_limit=int(os.getenv('SCREENING_CANDIDATE_LIMIT', '30')),
-            screening_ai_top_k=int(os.getenv('SCREENING_AI_TOP_K', '5')),
+            screening_ai_top_k=int(os.getenv('SCREENING_AI_TOP_K', '10')),
             screening_min_list_days=int(os.getenv('SCREENING_MIN_LIST_DAYS', '120')),
             screening_min_volume_ratio=float(os.getenv('SCREENING_MIN_VOLUME_RATIO', '1.2')),
             screening_breakout_lookback_days=int(os.getenv('SCREENING_BREAKOUT_LOOKBACK_DAYS', '20')),

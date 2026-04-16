@@ -20,6 +20,8 @@ class EvaluationResult:
     mae: Optional[float] = None
     mfe: Optional[float] = None
     max_drawdown_from_peak: Optional[float] = None
+    optimal_entry_deviation: Optional[float] = None
+    optimal_entry_timing: Optional[int] = None
     holding_days: int = 0
 
     # Plan outcome

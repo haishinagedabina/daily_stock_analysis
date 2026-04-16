@@ -21,7 +21,14 @@
 The five-layer backtest workflow now exposes a richer optimization and review path across backend APIs and the Web UI:
 
 - Web backtest results are organized into four layers: system health, strategy comparison, judgment validation, and per-stock drilldown.
+- The Web backtest entry now defaults to research mode anchored on the latest screening run, while date-range replay remains available as an explicit fallback mode.
+- The Web header now separates `运行上下文` and `研究上下文`, so users can directly see the current screening/backtest anchor together with raw/evaluated/aggregatable/entry/observation/suppressed sample baselines.
+- Run-level ranking-effectiveness output is now promoted into the main research narrative, clearly marked as whole-run evidence rather than current-strategy-only evidence, and shows which dimensions are effective or still inconclusive together with high/low tier sample counts and return gaps.
+- Backtest recommendations are now surfaced in the research canvas as `优先动作 / 继续观察 / 仅展示`, helping users distinguish immediately actionable setup changes from hypothesis-level follow-up and display-only low-confidence groups.
+- The research workbench now enters an explicit degraded-research state when a strategy slice becomes observation-only or loses key attribution/timing semantics, warning that the current view is suitable for observation study rather than buy-point conclusions.
 - Group summaries now include `profit_factor`, `avg_holding_days`, `max_consecutive_losses`, `plan_execution_rate`, `stage_accuracy_rate`, and `system_grade`.
+- Run and summary payloads now expose structured sample-baseline metadata so clients can distinguish raw samples, aggregatable samples, and suppressed samples with reasons.
+- Screening-run backtests now recover the minimum analyzable `probe_entry` from five-layer snapshot fields when persisted `trade_stage` is too conservative, while `ma100_low123` samples with `confirmed_missing_breakout_bar_index` still remain in observation mode.
 - Evaluation payloads now expose replay and diagnosis fields such as `signal_type`, `evaluation_mode`, `snapshot_source`, `replayed`, `factor_snapshot_json`, and `trade_plan_json`.
 - A dedicated API endpoint is available at `/api/v1/five-layer-backtest/runs/{backtest_run_id}/ranking-effectiveness` for ranking-comparison analysis.
 

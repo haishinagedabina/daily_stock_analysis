@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""TDD RED: Tests for GroupSummaryAggregator.
+"""Tests for GroupSummaryAggregator behavior.
 
 Aggregates evaluations into group summaries by:
 - overall
 - signal_family (entry/observation)
 - snapshot_setup_type
 - snapshot_market_regime
-- combo (market_regime+signal_family)
+- combo (theme_position+setup_type / candidate_pool_level+entry_maturity)
+- strategy_cohort (primary_strategy+sample_bucket+snapshot context)
 """
 
 import json
@@ -66,6 +67,11 @@ class TestGroupSummaryAggregator(unittest.TestCase):
                 snapshot_trade_stage="probe_entry",
                 snapshot_setup_type="trend_breakout",
                 snapshot_market_regime="balanced",
+                snapshot_theme_position="leader",
+                snapshot_candidate_pool_level="tier1",
+                snapshot_entry_maturity="high",
+                metrics_json=json.dumps({"sample_bucket": "core"}, ensure_ascii=False),
+                evidence_json=json.dumps({"primary_strategy": "trend_breakout"}, ensure_ascii=False),
                 forward_return_5d=5.0,
                 forward_return_1d=2.0,
                 mae=-3.0,
@@ -86,6 +92,11 @@ class TestGroupSummaryAggregator(unittest.TestCase):
                 snapshot_trade_stage="probe_entry",
                 snapshot_setup_type="trend_pullback",
                 snapshot_market_regime="balanced",
+                snapshot_theme_position="rotation",
+                snapshot_candidate_pool_level="tier2",
+                snapshot_entry_maturity="medium",
+                metrics_json=json.dumps({"sample_bucket": "boundary"}, ensure_ascii=False),
+                evidence_json=json.dumps({"primary_strategy": "trend_pullback"}, ensure_ascii=False),
                 forward_return_5d=-2.0,
                 forward_return_1d=-1.0,
                 mae=-6.0,
@@ -107,6 +118,10 @@ class TestGroupSummaryAggregator(unittest.TestCase):
                 snapshot_trade_stage="watch",
                 snapshot_setup_type=None,
                 snapshot_market_regime="balanced",
+                snapshot_candidate_pool_level="tier2",
+                snapshot_entry_maturity="medium",
+                metrics_json=json.dumps({"sample_bucket": "boundary"}, ensure_ascii=False),
+                evidence_json=json.dumps({"primary_strategy": "trend_pullback"}, ensure_ascii=False),
                 risk_avoided_pct=8.0,
                 opportunity_cost_pct=3.0,
                 stage_success=True,
@@ -123,10 +138,136 @@ class TestGroupSummaryAggregator(unittest.TestCase):
                 snapshot_trade_stage="stand_aside",
                 snapshot_setup_type=None,
                 snapshot_market_regime="defensive",
+                snapshot_candidate_pool_level="tier3",
+                snapshot_entry_maturity="low",
+                metrics_json=json.dumps({"sample_bucket": "noise"}, ensure_ascii=False),
+                evidence_json=json.dumps({"primary_strategy": "failed_breakout"}, ensure_ascii=False),
                 risk_avoided_pct=2.0,
                 opportunity_cost_pct=10.0,
                 stage_success=False,
                 outcome="missed_opportunity",
+                eval_status="evaluated",
+            ),
+        ]
+        EvaluationRepository(self.db).save_batch(evals)
+
+    def _seed_p0_strategy_run(self):
+        from src.backtest.models.backtest_models import FiveLayerBacktestEvaluation
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.run_repo import RunRepository
+
+        RunRepository(self.db).create_run(
+            backtest_run_id="run-p0-agg",
+            evaluation_mode="historical_snapshot",
+            execution_model="conservative",
+            trade_date_from=date(2024, 2, 1),
+            trade_date_to=date(2024, 2, 29),
+            market="cn",
+        )
+
+        evals = [
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-p0-agg",
+                screening_candidate_id=11,
+                trade_date=date(2024, 2, 20),
+                code="300750",
+                signal_family="entry",
+                evaluator_type="entry",
+                snapshot_trade_stage="probe_entry",
+                snapshot_setup_type="bottom_divergence_breakout",
+                snapshot_market_regime="balanced",
+                snapshot_theme_position="main_theme",
+                snapshot_candidate_pool_level="leader_pool",
+                snapshot_entry_maturity="high",
+                metrics_json=json.dumps({"sample_bucket": "core"}, ensure_ascii=False),
+                evidence_json=json.dumps(
+                    {"primary_strategy": "bottom_divergence_double_breakout"},
+                    ensure_ascii=False,
+                ),
+                forward_return_5d=6.0,
+                forward_return_1d=2.5,
+                mae=-2.0,
+                mfe=9.0,
+                outcome="win",
+                eval_status="evaluated",
+            ),
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-p0-agg",
+                screening_candidate_id=12,
+                trade_date=date(2024, 2, 21),
+                code="002594",
+                signal_family="entry",
+                evaluator_type="entry",
+                snapshot_trade_stage="probe_entry",
+                snapshot_setup_type="low123_breakout",
+                snapshot_market_regime="balanced",
+                snapshot_theme_position="main_theme",
+                snapshot_candidate_pool_level="leader_pool",
+                snapshot_entry_maturity="high",
+                metrics_json=json.dumps({"sample_bucket": "core"}, ensure_ascii=False),
+                evidence_json=json.dumps(
+                    {"primary_strategy": "ma100_low123_combined"},
+                    ensure_ascii=False,
+                ),
+                forward_return_5d=4.0,
+                forward_return_1d=1.5,
+                mae=-2.5,
+                mfe=7.0,
+                outcome="win",
+                eval_status="evaluated",
+            ),
+        ]
+        EvaluationRepository(self.db).save_batch(evals)
+
+    def _seed_missing_metric_run(self):
+        from src.backtest.models.backtest_models import FiveLayerBacktestEvaluation
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.run_repo import RunRepository
+
+        RunRepository(self.db).create_run(
+            backtest_run_id="run-missing-metrics",
+            evaluation_mode="historical_snapshot",
+            execution_model="conservative",
+            trade_date_from=date(2024, 3, 1),
+            trade_date_to=date(2024, 3, 31),
+            market="cn",
+        )
+
+        evals = [
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-missing-metrics",
+                screening_candidate_id=21,
+                trade_date=date(2024, 3, 20),
+                code="300001",
+                signal_family="entry",
+                evaluator_type="entry",
+                snapshot_trade_stage="probe_entry",
+                snapshot_setup_type="trend_pullback",
+                snapshot_market_regime="balanced",
+                snapshot_theme_position="main_theme",
+                snapshot_candidate_pool_level="leader_pool",
+                snapshot_entry_maturity="high",
+                metrics_json=json.dumps({"sample_bucket": "core"}, ensure_ascii=False),
+                evidence_json=json.dumps({"primary_strategy": "trend_pullback"}, ensure_ascii=False),
+                outcome=None,
+                eval_status="evaluated",
+            ),
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-missing-metrics",
+                screening_candidate_id=22,
+                trade_date=date(2024, 3, 21),
+                code="300002",
+                signal_family="observation",
+                evaluator_type="observation",
+                snapshot_trade_stage="watch",
+                snapshot_setup_type="trend_pullback",
+                snapshot_market_regime="balanced",
+                snapshot_theme_position="main_theme",
+                snapshot_candidate_pool_level="leader_pool",
+                snapshot_entry_maturity="medium",
+                metrics_json=json.dumps({"sample_bucket": "boundary"}, ensure_ascii=False),
+                evidence_json=json.dumps({"primary_strategy": "trend_pullback"}, ensure_ascii=False),
+                outcome=None,
                 eval_status="evaluated",
             ),
         ]
@@ -204,7 +345,7 @@ class TestGroupSummaryAggregator(unittest.TestCase):
         self.assertIn("defensive", mr)
 
     def test_combo_groups(self):
-        """Should produce market_regime+signal_family combos."""
+        """Should produce non-family combo summaries for configured dimension pairs."""
         from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
         from src.backtest.repositories.evaluation_repo import EvaluationRepository
         from src.backtest.repositories.summary_repo import SummaryRepository
@@ -213,7 +354,22 @@ class TestGroupSummaryAggregator(unittest.TestCase):
         combos = [s for s in summaries if s.group_type == "combo"]
         self.assertGreater(len(combos), 0)
         keys = [s.group_key for s in combos]
-        self.assertIn("balanced+entry", keys)
+        self.assertIn(
+            "snapshot_theme_position=leader|snapshot_setup_type=trend_breakout",
+            keys,
+        )
+
+    def test_combo_groups_skip_market_regime_signal_family_duplicates(self):
+        """Combo summaries should not duplicate dedicated market_regime_signal_family rows."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-agg")
+        combo_keys = [s.group_key for s in summaries if s.group_type == "combo"]
+
+        self.assertNotIn("balanced+entry", combo_keys)
 
     def test_summaries_persisted(self):
         """Summaries should be saved to DB."""
@@ -262,6 +418,526 @@ class TestGroupSummaryAggregator(unittest.TestCase):
         overall = next(s for s in summaries if s.group_type == "overall" and s.group_key == "all")
 
         self.assertAlmostEqual(overall.stage_accuracy_rate, 0.5)
+
+    def test_market_regime_signal_family_split_summaries(self):
+        """Single-dimension summaries should also emit signal-family split rows."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-agg")
+        split = {
+            s.group_key: s
+            for s in summaries
+            if s.group_type == "market_regime_signal_family"
+        }
+
+        balanced_entry = "snapshot_market_regime=balanced|signal_family=entry"
+        balanced_observation = "snapshot_market_regime=balanced|signal_family=observation"
+        defensive_observation = "snapshot_market_regime=defensive|signal_family=observation"
+        self.assertIn(balanced_entry, split)
+        self.assertIn(balanced_observation, split)
+        self.assertIn(defensive_observation, split)
+        self.assertEqual(split[balanced_entry].sample_count, 2)
+        self.assertAlmostEqual(split[balanced_observation].avg_return_pct, 8.0)
+
+    def test_overall_summary_metrics_include_family_breakdown(self):
+        """Mixed-family overall summary should persist a family breakdown in metrics_json."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-agg")
+        overall = next(s for s in summaries if s.group_type == "overall" and s.group_key == "all")
+
+        self.assertIsNotNone(overall.metrics_json)
+        metrics = json.loads(overall.metrics_json)
+        self.assertEqual(metrics["family_breakdown"]["entry"]["sample_count"], 2)
+        self.assertAlmostEqual(metrics["family_breakdown"]["entry"]["avg_return_pct"], 1.5)
+        self.assertEqual(metrics["family_breakdown"]["observation"]["sample_count"], 2)
+        self.assertAlmostEqual(metrics["family_breakdown"]["observation"]["avg_return_pct"], 5.0)
+
+    def test_signal_family_summary_metrics_skip_nested_family_breakdown(self):
+        """Single-family summaries should not carry redundant family_breakdown payloads."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-agg")
+        entry = next(s for s in summaries if s.group_type == "signal_family" and s.group_key == "entry")
+
+        self.assertIsNotNone(entry.metrics_json)
+        metrics = json.loads(entry.metrics_json)
+        self.assertNotIn("family_breakdown", metrics)
+
+    def test_strategy_cohort_summaries_use_primary_strategy_and_sample_bucket(self):
+        """Strategy cohort rows should group by primary strategy, bucket and snapshot context."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-agg")
+        cohorts = {
+            s.group_key: s
+            for s in summaries
+            if s.group_type == "strategy_cohort"
+        }
+
+        trend_pullback_boundary = "ps=trend_pullback|sb=boundary|mr=balanced|cp=tier2|em=medium"
+        self.assertIn(trend_pullback_boundary, cohorts)
+        self.assertEqual(cohorts[trend_pullback_boundary].sample_count, 2)
+        self.assertAlmostEqual(cohorts[trend_pullback_boundary].avg_return_pct, 3.0)
+
+    def test_strategy_cohort_summary_includes_family_breakdown_for_mixed_samples(self):
+        """Mixed-family strategy cohort should persist family breakdown in metrics_json."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-agg")
+        cohort = next(
+            s for s in summaries
+            if s.group_type == "strategy_cohort"
+            and s.group_key.startswith("ps=trend_pullback|sb=boundary|")
+        )
+
+        self.assertIsNotNone(cohort.metrics_json)
+        metrics = json.loads(cohort.metrics_json)
+        self.assertEqual(
+            metrics["strategy_cohort_context"],
+            {
+                "primary_strategy": "trend_pullback",
+                "sample_bucket": "boundary",
+                "snapshot_market_regime": "balanced",
+                "snapshot_candidate_pool_level": "tier2",
+                "snapshot_entry_maturity": "medium",
+            },
+        )
+        self.assertEqual(metrics["family_breakdown"]["entry"]["sample_count"], 1)
+        self.assertAlmostEqual(metrics["family_breakdown"]["entry"]["avg_return_pct"], -2.0)
+        self.assertEqual(metrics["family_breakdown"]["observation"]["sample_count"], 1)
+        self.assertAlmostEqual(metrics["family_breakdown"]["observation"]["avg_return_pct"], 8.0)
+
+    def test_strategy_cohort_key_stays_within_group_key_limit(self):
+        """Long strategy ids should still produce a short stable cohort key."""
+        from src.backtest.aggregators.group_summary_aggregator import (
+            _build_strategy_cohort_key,
+        )
+
+        key = _build_strategy_cohort_key(
+            primary_strategy="trend_pullback_super_long_strategy_name_for_length_guardrail_test",
+            sample_bucket="boundary",
+            cohort_values={
+                "snapshot_market_regime": "balanced_market_regime_name",
+                "snapshot_candidate_pool_level": "tier2_candidate_pool",
+                "snapshot_entry_maturity": "medium_entry_maturity",
+            },
+        )
+
+        self.assertLessEqual(len(key), 128)
+        self.assertIn("h=", key)
+
+    def test_strategy_cohort_skips_blank_primary_strategy(self):
+        """Blank primary_strategy should not form a ps= cohort bucket."""
+        from src.backtest.aggregators.group_summary_aggregator import _group_by_strategy_cohort
+        from src.backtest.models.backtest_models import FiveLayerBacktestEvaluation
+
+        evaluations = [
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-agg",
+                screening_candidate_id=99,
+                code="300750",
+                signal_family="entry",
+                snapshot_market_regime="balanced",
+                snapshot_candidate_pool_level="tier1",
+                snapshot_entry_maturity="high",
+                metrics_json=json.dumps({"sample_bucket": "core"}, ensure_ascii=False),
+                evidence_json=json.dumps({"primary_strategy": "   "}, ensure_ascii=False),
+                forward_return_5d=2.0,
+                outcome="win",
+            ),
+        ]
+
+        groups = _group_by_strategy_cohort(evaluations)
+        self.assertEqual(groups, {})
+
+    def test_p0_strategy_cohorts_include_bottom_divergence_and_ma100_low123(self):
+        """P0 strategy cohorts should preserve bottom divergence and MA100+Low123 attribution."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        self._seed_p0_strategy_run()
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-p0-agg")
+        cohorts = {
+            s.group_key: s
+            for s in summaries
+            if s.group_type == "strategy_cohort"
+        }
+
+        self.assertIn(
+            "ps=bottom_divergence_double_breakout|sb=core|mr=balanced|cp=leader_pool|em=high",
+            cohorts,
+        )
+        self.assertIn(
+            "ps=ma100_low123_combined|sb=core|mr=balanced|cp=leader_pool|em=high",
+            cohorts,
+        )
+        self.assertEqual(
+            cohorts["ps=bottom_divergence_double_breakout|sb=core|mr=balanced|cp=leader_pool|em=high"].sample_count,
+            1,
+        )
+        self.assertAlmostEqual(
+            cohorts["ps=bottom_divergence_double_breakout|sb=core|mr=balanced|cp=leader_pool|em=high"].avg_return_pct,
+            6.0,
+        )
+        self.assertEqual(
+            cohorts["ps=ma100_low123_combined|sb=core|mr=balanced|cp=leader_pool|em=high"].sample_count,
+            1,
+        )
+        self.assertAlmostEqual(
+            cohorts["ps=ma100_low123_combined|sb=core|mr=balanced|cp=leader_pool|em=high"].avg_return_pct,
+            4.0,
+        )
+
+    def test_p0_setup_type_summaries_include_bottom_divergence_and_low123(self):
+        """P0 setup summaries should expose bottom divergence and low123 setup types."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        self._seed_p0_strategy_run()
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-p0-agg")
+        setup_groups = {
+            s.group_key: s
+            for s in summaries
+            if s.group_type == "setup_type"
+        }
+
+        self.assertIn("bottom_divergence_breakout", setup_groups)
+        self.assertIn("low123_breakout", setup_groups)
+        self.assertEqual(setup_groups["bottom_divergence_breakout"].sample_count, 1)
+        self.assertEqual(setup_groups["low123_breakout"].sample_count, 1)
+
+    def test_overall_summary_exposes_raw_and_aggregatable_sample_baseline(self):
+        """Overall summary should expose both raw sample count and the subset that contributes to metrics."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        self._seed_missing_metric_run()
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-missing-metrics")
+        overall = next(s for s in summaries if s.group_type == "overall" and s.group_key == "all")
+
+        self.assertEqual(overall.sample_count, 2)
+        self.assertIsNone(overall.avg_return_pct)
+
+        metrics = json.loads(overall.metrics_json)
+        self.assertEqual(metrics["sample_baseline"]["raw_sample_count"], 2)
+        self.assertEqual(metrics["sample_baseline"]["aggregatable_sample_count"], 0)
+        self.assertEqual(metrics["sample_baseline"]["entry_sample_count"], 1)
+        self.assertEqual(metrics["sample_baseline"]["observation_sample_count"], 1)
+        self.assertEqual(metrics["sample_baseline"]["suppressed_sample_count"], 2)
+        self.assertEqual(
+            metrics["sample_baseline"]["suppressed_reasons"],
+            {
+                "missing_forward_return_5d": 1,
+                "missing_risk_avoided_pct": 1,
+            },
+        )
+
+    def test_setup_type_summary_keeps_missing_metric_strategy_with_suppressed_reason(self):
+        """Setup types seen in evaluations should still produce summary rows even when all metric fields are missing."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        self._seed_missing_metric_run()
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-missing-metrics")
+        setup_groups = {
+            s.group_key: s
+            for s in summaries
+            if s.group_type == "setup_type"
+        }
+
+        self.assertIn("trend_pullback", setup_groups)
+        trend_pullback = setup_groups["trend_pullback"]
+        self.assertEqual(trend_pullback.sample_count, 2)
+        self.assertIsNone(trend_pullback.avg_return_pct)
+
+        metrics = json.loads(trend_pullback.metrics_json)
+        self.assertEqual(metrics["sample_baseline"]["raw_sample_count"], 2)
+        self.assertEqual(metrics["sample_baseline"]["aggregatable_sample_count"], 0)
+        self.assertEqual(metrics["sample_baseline"]["suppressed_sample_count"], 2)
+        self.assertFalse(metrics["threshold_check"]["can_display"])
+
+    def _seed_pattern_code_run(self):
+        from src.backtest.models.backtest_models import FiveLayerBacktestEvaluation
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.run_repo import RunRepository
+
+        RunRepository(self.db).create_run(
+            backtest_run_id="run-pattern",
+            evaluation_mode="historical_snapshot",
+            execution_model="conservative",
+            trade_date_from=date(2024, 4, 1),
+            trade_date_to=date(2024, 4, 30),
+            market="cn",
+        )
+
+        evals = [
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-pattern",
+                screening_candidate_id=31,
+                trade_date=date(2024, 4, 10),
+                code="600519",
+                signal_family="entry",
+                evaluator_type="entry",
+                snapshot_trade_stage="probe_entry",
+                snapshot_setup_type="bottom_divergence_breakout",
+                snapshot_market_regime="balanced",
+                snapshot_theme_position="main_theme",
+                snapshot_candidate_pool_level="leader_pool",
+                snapshot_entry_maturity="high",
+                factor_snapshot_json=json.dumps({
+                    "bottom_divergence_pattern_code": "price_down_macd_up",
+                    "bottom_divergence_signal_strength": 0.75,
+                }, ensure_ascii=False),
+                forward_return_5d=6.0,
+                mae=-2.0,
+                mfe=9.0,
+                outcome="win",
+                eval_status="evaluated",
+            ),
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-pattern",
+                screening_candidate_id=32,
+                trade_date=date(2024, 4, 11),
+                code="000858",
+                signal_family="entry",
+                evaluator_type="entry",
+                snapshot_trade_stage="probe_entry",
+                snapshot_setup_type="bottom_divergence_breakout",
+                snapshot_market_regime="balanced",
+                snapshot_theme_position="main_theme",
+                snapshot_candidate_pool_level="leader_pool",
+                snapshot_entry_maturity="high",
+                factor_snapshot_json=json.dumps({
+                    "bottom_divergence_pattern_code": "price_down_macd_up",
+                    "bottom_divergence_signal_strength": 0.45,
+                }, ensure_ascii=False),
+                forward_return_5d=-3.0,
+                mae=-5.0,
+                mfe=2.0,
+                outcome="loss",
+                eval_status="evaluated",
+            ),
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-pattern",
+                screening_candidate_id=33,
+                trade_date=date(2024, 4, 12),
+                code="601318",
+                signal_family="entry",
+                evaluator_type="entry",
+                snapshot_trade_stage="probe_entry",
+                snapshot_setup_type="bottom_divergence_breakout",
+                snapshot_market_regime="balanced",
+                snapshot_theme_position="main_theme",
+                snapshot_candidate_pool_level="leader_pool",
+                snapshot_entry_maturity="medium",
+                factor_snapshot_json=json.dumps({
+                    "bottom_divergence_pattern_code": "price_flat_macd_up",
+                    "bottom_divergence_signal_strength": 0.2,
+                }, ensure_ascii=False),
+                forward_return_5d=1.0,
+                mae=-1.0,
+                mfe=3.0,
+                outcome="win",
+                eval_status="evaluated",
+            ),
+            # No pattern_code — should be excluded from pattern grouping
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-pattern",
+                screening_candidate_id=34,
+                trade_date=date(2024, 4, 13),
+                code="600036",
+                signal_family="entry",
+                evaluator_type="entry",
+                snapshot_trade_stage="probe_entry",
+                snapshot_setup_type="trend_breakout",
+                snapshot_market_regime="balanced",
+                snapshot_theme_position="main_theme",
+                snapshot_candidate_pool_level="leader_pool",
+                snapshot_entry_maturity="high",
+                factor_snapshot_json=json.dumps({}, ensure_ascii=False),
+                forward_return_5d=2.0,
+                mae=-1.5,
+                mfe=4.0,
+                outcome="win",
+                eval_status="evaluated",
+            ),
+        ]
+        EvaluationRepository(self.db).save_batch(evals)
+
+    def test_pattern_code_grouping(self):
+        """Should produce summaries grouped by bottom_divergence_pattern_code."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        self._seed_pattern_code_run()
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-pattern")
+        pattern_groups = {
+            s.group_key: s
+            for s in summaries
+            if s.group_type == "pattern_code"
+        }
+
+        self.assertIn("price_down_macd_up", pattern_groups)
+        self.assertIn("price_flat_macd_up", pattern_groups)
+        self.assertEqual(pattern_groups["price_down_macd_up"].sample_count, 2)
+        self.assertEqual(pattern_groups["price_flat_macd_up"].sample_count, 1)
+        self.assertAlmostEqual(pattern_groups["price_down_macd_up"].avg_return_pct, 1.5)
+
+    def test_signal_strength_band_grouping(self):
+        """Should produce summaries grouped by signal strength bands (weak/medium/strong)."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        self._seed_pattern_code_run()
+
+        agg = GroupSummaryAggregator(EvaluationRepository(self.db), SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-pattern")
+        strength_groups = {
+            s.group_key: s
+            for s in summaries
+            if s.group_type == "signal_strength_band"
+        }
+
+        self.assertIn("strong", strength_groups)    # 0.75
+        self.assertIn("medium", strength_groups)     # 0.45
+        self.assertIn("weak", strength_groups)       # 0.2
+        self.assertEqual(strength_groups["strong"].sample_count, 1)
+        self.assertAlmostEqual(strength_groups["strong"].avg_return_pct, 6.0)
+        self.assertEqual(strength_groups["medium"].sample_count, 1)
+        self.assertAlmostEqual(strength_groups["medium"].avg_return_pct, -3.0)
+        self.assertEqual(strength_groups["weak"].sample_count, 1)
+        self.assertAlmostEqual(strength_groups["weak"].avg_return_pct, 1.0)
+
+    def test_no_pattern_code_no_group(self):
+        """Evaluations without pattern_code in factor_snapshot should not appear in pattern_code groups."""
+        from src.backtest.aggregators.group_summary_aggregator import _group_by_pattern_code
+        from src.backtest.models.backtest_models import FiveLayerBacktestEvaluation
+
+        evals = [
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-x",
+                code="600036",
+                signal_family="entry",
+                factor_snapshot_json=json.dumps({"volume_ratio": 2.5}, ensure_ascii=False),
+                forward_return_5d=2.0,
+                outcome="win",
+            ),
+        ]
+        groups = _group_by_pattern_code(evals)
+        self.assertEqual(groups, {})
+
+
+    def test_ai_override_grouping(self):
+        """Should produce summaries grouped by ai_overridden status from metrics_json."""
+        from src.backtest.aggregators.group_summary_aggregator import GroupSummaryAggregator
+        from src.backtest.models.backtest_models import FiveLayerBacktestEvaluation
+        from src.backtest.repositories.evaluation_repo import EvaluationRepository
+        from src.backtest.repositories.run_repo import RunRepository
+        from src.backtest.repositories.summary_repo import SummaryRepository
+
+        RunRepository(self.db).create_run(
+            backtest_run_id="run-ai-override",
+            evaluation_mode="historical_snapshot",
+            execution_model="conservative",
+            trade_date_from=date(2024, 4, 1),
+            trade_date_to=date(2024, 4, 30),
+            market="cn",
+        )
+
+        evals = [
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-ai-override",
+                screening_candidate_id=41,
+                trade_date=date(2024, 4, 10),
+                code="600519",
+                signal_family="entry",
+                evaluator_type="entry",
+                metrics_json=json.dumps({"ai_overridden": True}),
+                forward_return_5d=8.0,
+                mae=-1.5,
+                mfe=10.0,
+                outcome="win",
+                eval_status="evaluated",
+            ),
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-ai-override",
+                screening_candidate_id=42,
+                trade_date=date(2024, 4, 11),
+                code="000858",
+                signal_family="entry",
+                evaluator_type="entry",
+                metrics_json=json.dumps({"ai_overridden": True}),
+                forward_return_5d=-2.0,
+                mae=-4.0,
+                mfe=3.0,
+                outcome="loss",
+                eval_status="evaluated",
+            ),
+            FiveLayerBacktestEvaluation(
+                backtest_run_id="run-ai-override",
+                screening_candidate_id=43,
+                trade_date=date(2024, 4, 12),
+                code="601318",
+                signal_family="entry",
+                evaluator_type="entry",
+                metrics_json=json.dumps({"ai_overridden": False}),
+                forward_return_5d=5.0,
+                mae=-2.0,
+                mfe=7.0,
+                outcome="win",
+                eval_status="evaluated",
+            ),
+        ]
+
+        repo = EvaluationRepository(self.db)
+        repo.save_batch(evals)
+
+        agg = GroupSummaryAggregator(repo, SummaryRepository(self.db))
+        summaries = agg.compute_all_summaries("run-ai-override")
+        ai_groups = {
+            s.group_key: s
+            for s in summaries
+            if s.group_type == "ai_override"
+        }
+
+        self.assertIn("ai_overridden", ai_groups)
+        self.assertIn("ai_not_overridden", ai_groups)
+        self.assertEqual(ai_groups["ai_overridden"].sample_count, 2)
+        self.assertEqual(ai_groups["ai_not_overridden"].sample_count, 1)
+        self.assertAlmostEqual(ai_groups["ai_overridden"].avg_return_pct, 3.0)
+        self.assertAlmostEqual(ai_groups["ai_not_overridden"].avg_return_pct, 5.0)
 
 
 if __name__ == "__main__":

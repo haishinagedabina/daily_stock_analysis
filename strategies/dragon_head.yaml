@@ -17,6 +17,7 @@ strategy_family: auxiliary
 applicable_market: [balanced, aggressive]
 applicable_theme: [main_theme, secondary_theme]
 setup_type: none
+screening_disabled: true
 
 instructions: |
   **龙头策略（Dragon Head Strategy）**

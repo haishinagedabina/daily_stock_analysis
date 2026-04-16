@@ -24,6 +24,8 @@ class ScreeningCandidateRecord:
     # ── 五层决策字段 (Phase 2A) ──
     setup_type: Optional[str] = None
     strategy_family: Optional[str] = None
+    primary_strategy: Optional[str] = None
+    contributing_strategies: List[str] = field(default_factory=list)
     trade_stage: Optional[str] = None
     entry_maturity: Optional[str] = None
     risk_level: Optional[str] = None

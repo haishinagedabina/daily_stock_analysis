@@ -625,6 +625,7 @@ class TestResultSchema(unittest.TestCase):
             "horizontal_breakout_confirmed",
             "trendline_breakout_confirmed",
             "double_breakout_sync",
+            "confirmation_bar_index",
             "entry_price", "stop_loss_price",
             "signal_strength", "rejection_reason",
         ]
@@ -641,6 +642,7 @@ class TestResultSchema(unittest.TestCase):
         if result["state"] == "confirmed":
             self.assertTrue(result["found"])
             self.assertIsNotNone(result["pattern_code"])
+            self.assertIsNotNone(result["confirmation_bar_index"])
             self.assertIsNotNone(result["entry_price"])
             self.assertIsNotNone(result["stop_loss_price"])
             self.assertTrue(result["double_breakout_sync"])

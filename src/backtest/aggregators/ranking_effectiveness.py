@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from src.backtest.models.backtest_models import FiveLayerBacktestGroupSummary
+from src.backtest.utils.summary_metrics import get_aggregatable_sample_count
 
 logger = logging.getLogger(__name__)
 
@@ -158,8 +159,8 @@ def _compare_tiers(
                 excess_return_pct=excess,
                 high_win_rate=high.win_rate_pct,
                 low_win_rate=low.win_rate_pct,
-                high_sample_count=high.sample_count or 0,
-                low_sample_count=low.sample_count or 0,
+                high_sample_count=get_aggregatable_sample_count(high),
+                low_sample_count=get_aggregatable_sample_count(low),
                 is_effective=is_effective,
             ))
     return results
@@ -171,20 +172,20 @@ def _compute_top_k_hit_rate(
     """% of leader_pool samples that are 'win' out of all wins."""
     pool_sums = index.get("candidate_pool_level", {})
     leader = pool_sums.get("leader_pool")
-    if leader is None or leader.sample_count is None:
+    if leader is None:
         return None
 
     total_samples = sum(
-        (s.sample_count or 0) for s in pool_sums.values()
+        get_aggregatable_sample_count(s) for s in pool_sums.values()
     )
     if total_samples == 0:
         return None
 
     leader_wr = (leader.win_rate_pct or 0) / 100
-    leader_wins = leader_wr * (leader.sample_count or 0)
+    leader_wins = leader_wr * get_aggregatable_sample_count(leader)
 
     total_wins = sum(
-        ((s.win_rate_pct or 0) / 100) * (s.sample_count or 0)
+        ((s.win_rate_pct or 0) / 100) * get_aggregatable_sample_count(s)
         for s in pool_sums.values()
     )
     if total_wins == 0:

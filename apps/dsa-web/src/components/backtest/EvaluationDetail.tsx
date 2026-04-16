@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '../common/Badge';
 import { Card } from '../common/Card';
 import type { BacktestResultItem } from '../../types/backtest';
@@ -7,6 +7,10 @@ import type { BacktestResultItem } from '../../types/backtest';
 interface EvaluationDetailProps {
   evaluations: BacktestResultItem[];
   isLoading?: boolean;
+  title?: string;
+  subtitle?: string;
+  targetEvaluation?: BacktestResultItem | null;
+  researchWarning?: string | null;
 }
 
 function pct(value?: number | null): string {
@@ -55,17 +59,100 @@ function renderFactorSummary(payload: Record<string, unknown> | null): Array<{ l
   ];
 }
 
-export const EvaluationDetail: React.FC<EvaluationDetailProps> = ({ evaluations, isLoading = false }) => {
+function renderAttributionSummary(item: BacktestResultItem): Array<{ label: string; value: string }> {
+  return [
+    {
+      label: '主策略归因',
+      value: item.primaryStrategy ?? '--',
+    },
+    {
+      label: '辅助策略',
+      value: item.contributingStrategies && item.contributingStrategies.length > 0
+        ? item.contributingStrategies.join(', ')
+        : '--',
+    },
+    {
+      label: '样本分层',
+      value: item.sampleBucket ?? '--',
+    },
+    {
+      label: '买点时机',
+      value: item.entryTimingLabel ?? '--',
+    },
+    {
+      label: 'Low123校验',
+      value: item.ma100Low123ValidationStatus ?? '--',
+    },
+  ];
+}
+
+function getEvaluationKey(item: BacktestResultItem): string {
+  return String(item.id ?? `${item.code}-${item.tradeDate ?? 'unknown'}-${item.signalFamily}`);
+}
+
+export const EvaluationDetail: React.FC<EvaluationDetailProps> = ({
+  evaluations,
+  isLoading = false,
+  title = '个股明细',
+  subtitle = 'Drill-down',
+  targetEvaluation = null,
+  researchWarning = null,
+}) => {
   const [tab, setTab] = useState<'entry' | 'observation'>('entry');
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const filtered = useMemo(
     () => evaluations.filter((item) => item.signalFamily === tab),
     [evaluations, tab],
   );
+  const entryCount = useMemo(
+    () => evaluations.filter((item) => item.signalFamily === 'entry').length,
+    [evaluations],
+  );
+  const observationCount = useMemo(
+    () => evaluations.filter((item) => item.signalFamily === 'observation').length,
+    [evaluations],
+  );
+
+  useEffect(() => {
+    if (tab === 'entry' && filtered.length === 0 && observationCount > 0) {
+      setTab('observation');
+    }
+    if (tab === 'observation' && filtered.length === 0 && entryCount > 0) {
+      setTab('entry');
+    }
+  }, [entryCount, filtered.length, observationCount, tab]);
+
+  useEffect(() => {
+    if (!targetEvaluation) {
+      return;
+    }
+    setTab(targetEvaluation.signalFamily === 'observation' ? 'observation' : 'entry');
+    setExpandedKey(getEvaluationKey(targetEvaluation));
+  }, [targetEvaluation]);
+
+  useEffect(() => {
+    if (!targetEvaluation) {
+      return;
+    }
+    const targetKey = getEvaluationKey(targetEvaluation);
+    const targetVisible = filtered.some((item) => getEvaluationKey(item) === targetKey);
+    if (!targetVisible) {
+      return;
+    }
+    const targetElement = rowRefs.current[targetKey];
+    targetElement?.scrollIntoView?.({ block: 'nearest' });
+  }, [filtered, targetEvaluation]);
 
   return (
-    <Card title="个股明细" subtitle="Drill-down" variant="gradient">
+    <Card title={title} subtitle={subtitle} variant="gradient">
+      {researchWarning ? (
+        <div className="mb-4 rounded-2xl border border-warning/20 bg-warning/5 px-4 py-3 text-sm text-secondary-text">
+          {researchWarning}
+        </div>
+      ) : null}
+
       <div className="mb-4 flex gap-2">
         <button type="button" className={`btn-secondary ${tab === 'entry' ? 'ring-1 ring-cyan/40' : ''}`} onClick={() => setTab('entry')}>
           入场信号
@@ -84,13 +171,21 @@ export const EvaluationDetail: React.FC<EvaluationDetailProps> = ({ evaluations,
           {filtered.map((item) => {
             const factorPayload = tryParse(item.factorSnapshotJson);
             const planPayload = tryParse(item.tradePlanJson);
-            const isExpanded = expandedId === item.id;
+            const itemKey = getEvaluationKey(item);
+            const isExpanded = expandedKey === itemKey;
+            const isTarget = targetEvaluation ? getEvaluationKey(targetEvaluation) === itemKey : false;
             return (
-              <div key={item.id ?? `${item.code}-${item.tradeDate}-${item.signalFamily}`} className="rounded-2xl border border-white/8">
+              <div
+                key={itemKey}
+                className={`rounded-2xl border ${isTarget ? 'border-cyan/40 shadow-lg shadow-cyan/10' : 'border-white/8'}`}
+              >
                 <button
                   type="button"
-                  className="flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left hover:bg-white/5"
-                  onClick={() => setExpandedId(isExpanded ? null : item.id ?? null)}
+                  ref={(element) => {
+                    rowRefs.current[itemKey] = element;
+                  }}
+                  className={`flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left hover:bg-white/5 ${isTarget ? 'bg-cyan/10' : ''}`}
+                  onClick={() => setExpandedKey(isExpanded ? null : itemKey)}
                 >
                   <div>
                     <div className="text-sm font-semibold text-foreground">{item.code} {item.name ?? ''}</div>
@@ -121,6 +216,15 @@ export const EvaluationDetail: React.FC<EvaluationDetailProps> = ({ evaluations,
                         </div>
                       </div>
                       <div>
+                        <h4 className="mb-3 text-sm font-semibold text-white">归因与验证</h4>
+                        <div className="mb-4 space-y-2 rounded-xl bg-white/5 p-3 text-sm">
+                          {renderAttributionSummary(item).map((row) => (
+                            <div key={row.label} className="flex items-center justify-between gap-3">
+                              <span className="text-secondary-text">{row.label}</span>
+                              <span className="font-mono text-foreground">{row.value}</span>
+                            </div>
+                          ))}
+                        </div>
                         <h4 className="mb-3 text-sm font-semibold text-white">交易计划</h4>
                         <div className="space-y-2 rounded-xl bg-white/5 p-3 text-sm">
                           <div className="flex items-center justify-between">

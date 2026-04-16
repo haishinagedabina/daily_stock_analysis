@@ -12,7 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Backtest experience
 
 - Reworked the five-layer backtest page into four layers: system scorecard, strategy comparison, judgment validation, and per-stock drill-down
+- The Web backtest entry now defaults to research mode anchored on the latest screening run, while date-range replay remains available as an explicit fallback mode
+- The Web header now renders `运行上下文 + 研究上下文` as separate context cards, exposing raw/evaluated/aggregatable/entry/observation/suppressed sample baselines and suppressed reasons directly on the page
+- Run-level `RankingEffectiveness` is now surfaced in the research canvas as a first-class conclusion block, explicitly labeled as whole-run evidence and showing effective vs. inconclusive dimensions, sample counts, and high/low tier return gaps instead of a single lightweight hint
+- Run recommendations are now mapped into `优先动作 / 继续观察 / 仅展示` buckets in the research canvas, so setup weighting, execution review, and display-only low-confidence groups can be read directly from the page
+- The Web research canvas and sample browser now enter a degraded-research state when a strategy slice becomes observation-only or attribution/timing semantics are incomplete, explicitly warning that the current view is only suitable for observation study
 - Added new summary metrics including `profit_factor`, `avg_holding_days`, `max_consecutive_losses`, `plan_execution_rate`, `stage_accuracy_rate`, and `system_grade`
+- Run and summary responses now expose structured sample-baseline metadata, including raw samples, aggregatable samples, and suppressed-sample reasons, so clients can explain summary compression explicitly
+- Screening-run backtests now recover the minimum analyzable `probe_entry` from five-layer snapshot fields when persisted `trade_stage` is overly conservative, while `ma100_low123` samples with `confirmed_missing_breakout_bar_index` still remain observation-only
 - Added `GET /api/v1/five-layer-backtest/runs/{backtest_run_id}/ranking-effectiveness` so Web/Desktop clients can display maturity-ranking effectiveness directly
 - Evaluation payloads now expose `factor_snapshot_json`, `trade_plan_json`, `signal_type`, `evaluation_mode`, `snapshot_source`, and `replayed` for expanded stock-level detail views
 

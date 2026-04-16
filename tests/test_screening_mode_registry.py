@@ -7,7 +7,7 @@ def _make_config(**kwargs) -> Config:
         stock_list=["600519"],
         screening_default_mode="balanced",
         screening_candidate_limit=30,
-        screening_ai_top_k=5,
+        screening_ai_top_k=10,
         screening_min_list_days=120,
         screening_min_volume_ratio=1.2,
         screening_breakout_lookback_days=20,
@@ -24,7 +24,7 @@ def test_resolve_screening_runtime_config_uses_balanced_defaults():
 
     assert runtime.mode == "balanced"
     assert runtime.candidate_limit == 30
-    assert runtime.ai_top_k == 5
+    assert runtime.ai_top_k == 10
     assert runtime.min_list_days == 120
     assert runtime.min_volume_ratio == 1.2
     assert runtime.breakout_lookback_days == 20
@@ -39,7 +39,7 @@ def test_resolve_screening_runtime_config_applies_aggressive_preset():
 
     assert runtime.mode == "aggressive"
     assert runtime.candidate_limit == 50
-    assert runtime.ai_top_k == 8
+    assert runtime.ai_top_k == 25
     assert runtime.min_list_days == 60
     assert runtime.min_volume_ratio == 1.0
     assert runtime.breakout_lookback_days == 15
@@ -88,3 +88,24 @@ def test_resolve_screening_runtime_config_keeps_quality_direction_with_custom_ba
     assert runtime.min_volume_ratio == 1.8
     assert runtime.breakout_lookback_days == 40
     assert runtime.factor_lookback_days == 160
+
+
+def test_resolve_screening_runtime_config_applies_quality_ai_top_k_preset():
+    config = _make_config(screening_ai_top_k=6)
+
+    runtime = resolve_screening_runtime_config(config=config, mode="quality", candidate_limit=None, ai_top_k=None)
+
+    assert runtime.mode == "quality"
+    assert runtime.ai_top_k == 10
+
+
+def test_resolve_screening_runtime_config_clamps_ai_top_k_to_candidate_limit():
+    config = _make_config(
+        screening_candidate_limit=8,
+        screening_ai_top_k=5,
+    )
+
+    runtime = resolve_screening_runtime_config(config=config, mode="quality", candidate_limit=None, ai_top_k=None)
+
+    assert runtime.candidate_limit == 8
+    assert runtime.ai_top_k == 8

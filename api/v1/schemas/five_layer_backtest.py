@@ -29,6 +29,21 @@ class FiveLayerBacktestRunRequest(BaseModel):
     generate_recommendations: bool = Field(True, description="是否生成建议")
 
 
+class FiveLayerBacktestScreeningRunRequest(BaseModel):
+    screening_run_id: str = Field(..., min_length=1, description="选股运行ID")
+    evaluation_mode: str = Field(
+        "historical_snapshot",
+        description="评估模式: historical_snapshot / rule_replay / parameter_calibration",
+    )
+    execution_model: str = Field(
+        "conservative",
+        description="执行模型: conservative / baseline / optimistic",
+    )
+    market: str = Field("cn", description="市场: cn / us / hk")
+    eval_window_days: int = Field(10, ge=1, le=120, description="评估窗口（交易日数）")
+    generate_recommendations: bool = Field(True, description="是否生成建议")
+
+
 class FiveLayerCalibrationRequest(BaseModel):
     baseline_run_id: str = Field(..., description="基准运行ID")
     candidate_run_id: str = Field(..., description="候选运行ID")
@@ -38,6 +53,22 @@ class FiveLayerCalibrationRequest(BaseModel):
 
 
 # ── Response models ────────────────────────────────────────────────────────
+
+class SampleBaselineResponse(BaseModel):
+    raw_sample_count: int = 0
+    evaluated_sample_count: Optional[int] = None
+    aggregatable_sample_count: int = 0
+    entry_sample_count: int = 0
+    observation_sample_count: int = 0
+    suppressed_sample_count: int = 0
+    suppressed_reasons: Dict[str, int] = Field(default_factory=dict)
+
+
+class ThresholdCheckResponse(BaseModel):
+    can_display: bool
+    can_suggest: bool
+    can_action: bool
+    reason: Optional[str] = None
 
 class FiveLayerRunResponse(BaseModel):
     backtest_run_id: str
@@ -55,6 +86,7 @@ class FiveLayerRunResponse(BaseModel):
     theme_mapping_version: Optional[str] = None
     candidate_snapshot_version: Optional[str] = None
     rules_version: Optional[str] = None
+    sample_baseline: Optional[SampleBaselineResponse] = None
     created_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -106,8 +138,18 @@ class FiveLayerEvaluationItem(BaseModel):
     outcome: Optional[str] = None
     stage_success: Optional[bool] = None
     eval_status: Optional[str] = None
+    metrics_json: Optional[str] = None
+    evidence_json: Optional[str] = None
     factor_snapshot_json: Optional[str] = None
     trade_plan_json: Optional[str] = None
+    primary_strategy: Optional[str] = None
+    contributing_strategies: List[str] = Field(default_factory=list)
+    matched_strategies: List[str] = Field(default_factory=list)
+    rule_hits: List[str] = Field(default_factory=list)
+    sample_bucket: Optional[str] = None
+    entry_timing_label: Optional[str] = None
+    ma100_low123_validation_status: Optional[str] = None
+    ma100_low123_data_complete: Optional[bool] = None
 
 
 class FiveLayerEvaluationsResponse(BaseModel):
@@ -141,6 +183,11 @@ class FiveLayerGroupSummaryItem(BaseModel):
     plan_execution_rate: Optional[float] = None
     stage_accuracy_rate: Optional[float] = None
     system_grade: Optional[str] = None
+    metrics_json: Optional[str] = None
+    sample_baseline: Optional[SampleBaselineResponse] = None
+    threshold_check: Optional[ThresholdCheckResponse] = None
+    family_breakdown: Optional[Dict[str, Dict[str, Any]]] = None
+    strategy_cohort_context: Optional[Dict[str, Any]] = None
 
 
 class RankingComparisonItem(BaseModel):

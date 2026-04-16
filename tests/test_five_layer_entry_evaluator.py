@@ -114,11 +114,103 @@ class TestEntrySignalEvaluator(unittest.TestCase):
         self.assertIsNone(result.forward_return_1d)
 
     def test_holding_days(self):
-        """Should track holding period length."""
+        """Should track holding period length as full window when no TP/SL."""
         bars = [MockBar(date(2024, 1, d), 100.0, 105.0, 95.0, 100.0) for d in range(16, 26)]
         result = self._evaluate(100.0, bars)
         self.assertEqual(result.holding_days, 10)
 
+    def test_holding_days_with_tp_hit(self):
+        """holding_days should be actual exit day when take-profit is hit."""
+        bars = [
+            MockBar(date(2024, 1, 16), 100.0, 100.5, 99.5, 100.0),
+            MockBar(date(2024, 1, 17), 100.0, 106.0, 99.0, 105.0),  # TP hit at bar 1
+            MockBar(date(2024, 1, 18), 105.0, 107.0, 104.0, 106.0),
+        ]
+        result = self._evaluate(100.0, bars, take_profit_pct=5.0, stop_loss_pct=-3.0)
+        self.assertEqual(result.holding_days, 2)  # bar index 1 + 1
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_holding_days_with_sl_hit(self):
+        """holding_days should be actual exit day when stop-loss is hit."""
+        bars = [
+            MockBar(date(2024, 1, 16), 100.0, 100.5, 99.5, 100.0),
+            MockBar(date(2024, 1, 17), 100.0, 101.0, 96.0, 97.0),  # SL hit at bar 1
+            MockBar(date(2024, 1, 18), 97.0, 98.0, 95.0, 96.0),
+        ]
+        result = self._evaluate(100.0, bars, take_profit_pct=5.0, stop_loss_pct=-3.0)
+        self.assertEqual(result.holding_days, 2)  # bar index 1 + 1
+
+    def test_holding_days_no_exit_trigger(self):
+        """holding_days should be full window when neither TP nor SL is triggered."""
+        bars = [
+            MockBar(date(2024, 1, 16), 100.0, 101.0, 99.0, 100.5),
+            MockBar(date(2024, 1, 17), 100.5, 102.0, 99.5, 101.0),
+            MockBar(date(2024, 1, 18), 101.0, 103.0, 100.0, 102.0),
+        ]
+        result = self._evaluate(100.0, bars, take_profit_pct=5.0, stop_loss_pct=-3.0)
+        self.assertEqual(result.holding_days, 3)
+
+    def test_outcome_aligned_with_plan_success_win(self):
+        """outcome should be 'win' when plan_success is True."""
+        bars = [
+            MockBar(date(2024, 1, 16), 100.0, 100.5, 99.5, 100.0),
+            MockBar(date(2024, 1, 17), 100.0, 106.0, 99.0, 105.0),  # TP hit
+        ]
+        result = self._evaluate(100.0, bars, take_profit_pct=5.0, stop_loss_pct=-3.0)
+        self.assertTrue(result.plan_success)
+        self.assertEqual(result.outcome, "win")
+
+    def test_outcome_aligned_with_plan_success_loss(self):
+        """outcome should be 'loss' when plan_success is False."""
+        bars = [
+            MockBar(date(2024, 1, 16), 100.0, 100.5, 99.5, 100.0),
+            MockBar(date(2024, 1, 17), 100.0, 101.0, 96.0, 97.0),  # SL hit
+        ]
+        result = self._evaluate(100.0, bars, take_profit_pct=5.0, stop_loss_pct=-3.0)
+        self.assertFalse(result.plan_success)
+        self.assertEqual(result.outcome, "loss")
+
+    def test_outcome_fallback_to_5d_return_when_no_plan(self):
+        """outcome should use forward_return_5d when no TP/SL params."""
+        bars = [MockBar(date(2024, 1, d), 100+d, 102+d, 99+d, 101+d) for d in range(1, 12)]
+        result = self._evaluate(100.0, bars)
+        self.assertIsNone(result.plan_success)
+        # forward_return_5d > 0 → win
+        self.assertEqual(result.outcome, "win")
+
+    def test_optimal_entry_deviation(self):
+        """optimal_entry_deviation = (entry - min_low) / entry * 100."""
+        bars = [
+            MockBar(date(2024, 1, 16), 100.0, 105.0, 95.0, 102.0),  # low=95
+            MockBar(date(2024, 1, 17), 102.0, 108.0, 97.0, 106.0),  # low=97
+        ]
+        result = self._evaluate(100.0, bars)
+        # min_low=95, deviation = (100-95)/100*100 = 5.0
+        self.assertAlmostEqual(result.optimal_entry_deviation, 5.0)
+
+    def test_optimal_entry_deviation_perfect_entry(self):
+        """Deviation should be 0 when entry price equals the window low."""
+        bars = [
+            MockBar(date(2024, 1, 16), 100.0, 105.0, 100.0, 103.0),  # low=100 = entry
+            MockBar(date(2024, 1, 17), 103.0, 108.0, 101.0, 106.0),
+        ]
+        result = self._evaluate(100.0, bars)
+        self.assertAlmostEqual(result.optimal_entry_deviation, 0.0)
+
+    def test_optimal_entry_timing(self):
+        """optimal_entry_timing should be 1-based day index of lowest price."""
+        bars = [
+            MockBar(date(2024, 1, 16), 100.0, 105.0, 98.0, 102.0),  # low=98
+            MockBar(date(2024, 1, 17), 102.0, 108.0, 95.0, 106.0),  # low=95 ← min
+            MockBar(date(2024, 1, 18), 106.0, 110.0, 99.0, 109.0),  # low=99
+        ]
+        result = self._evaluate(100.0, bars)
+        self.assertEqual(result.optimal_entry_timing, 2)  # day 2 had lowest price
+
+    def test_optimal_entry_timing_first_day(self):
+        """optimal_entry_timing should be 1 when lowest price is on first day."""
+        bars = [
+            MockBar(date(2024, 1, 16), 100.0, 105.0, 93.0, 102.0),  # low=93 ← min
+            MockBar(date(2024, 1, 17), 102.0, 108.0, 97.0, 106.0),
+        ]
+        result = self._evaluate(100.0, bars)
+        self.assertEqual(result.optimal_entry_timing, 1)

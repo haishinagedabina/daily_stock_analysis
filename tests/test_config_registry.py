@@ -47,7 +47,7 @@ def test_screening_fields_are_explicitly_registered():
     ai_top_k = get_field_definition("SCREENING_AI_TOP_K")
     assert ai_top_k["category"] == "screening"
     assert ai_top_k["data_type"] == "integer"
-    assert ai_top_k["default_value"] == "5"
+    assert ai_top_k["default_value"] == "10"
 
     min_volume_ratio = get_field_definition("SCREENING_MIN_VOLUME_RATIO")
     assert min_volume_ratio["category"] == "screening"

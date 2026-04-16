@@ -45,6 +45,10 @@ class EntrySignalEvaluator(BaseEvaluator):
         mae = (min_low - entry_price) / entry_price * 100
         mfe = (max_high - entry_price) / entry_price * 100
 
+        # Optimal entry deviation: how far actual entry was from best possible entry
+        optimal_entry_deviation = (entry_price - min_low) / entry_price * 100
+        optimal_entry_timing = lows.index(min_low) + 1  # 1-based day of lowest price
+
         # Max drawdown from peak
         peak = entry_price
         max_dd = 0.0
@@ -64,23 +68,38 @@ class EntrySignalEvaluator(BaseEvaluator):
 
         # Plan success (take-profit vs stop-loss)
         plan_success = None
+        exit_bar_index = None
         if take_profit_pct is not None and stop_loss_pct is not None:
             tp_price = entry_price * (1 + take_profit_pct / 100)
             sl_price = entry_price * (1 + stop_loss_pct / 100)
             plan_success = False
-            for bar in forward_bars:
+            for idx, bar in enumerate(forward_bars):
                 sl_hit = bar.low <= sl_price
                 tp_hit = bar.high >= tp_price
                 if tp_hit and not sl_hit:
                     plan_success = True
+                    exit_bar_index = idx
                     break
                 if sl_hit:
                     plan_success = False
+                    exit_bar_index = idx
                     break
                 if tp_hit and sl_hit:
                     # Ambiguous — conservative: stop first
                     plan_success = False
+                    exit_bar_index = idx
                     break
+
+        # holding_days: actual exit day (1-based) if TP/SL triggered, else full window
+        actual_holding_days = (exit_bar_index + 1) if exit_bar_index is not None else len(forward_bars)
+
+        # outcome: align with plan_success when available, fallback to 5d return
+        if plan_success is True:
+            outcome = "win"
+        elif plan_success is False:
+            outcome = "loss"
+        else:
+            outcome = "win" if (forward_return_5d or 0) > 0 else "loss"
 
         return EvaluationResult(
             forward_return_1d=forward_return_1d,
@@ -90,8 +109,10 @@ class EntrySignalEvaluator(BaseEvaluator):
             mae=mae,
             mfe=mfe,
             max_drawdown_from_peak=round(max_dd, 2),
-            holding_days=len(forward_bars),
+            optimal_entry_deviation=round(optimal_entry_deviation, 4),
+            optimal_entry_timing=optimal_entry_timing,
+            holding_days=actual_holding_days,
             plan_success=plan_success,
             signal_quality_score=round(signal_quality_score, 4),
-            outcome="win" if (forward_return_5d or 0) > 0 else "loss",
+            outcome=outcome,
         )

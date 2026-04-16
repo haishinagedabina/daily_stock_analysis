@@ -99,6 +99,8 @@ def _normalize_candidate_record(item: Any) -> ScreeningCandidateRecord:
             strategy_scores=dict(item.get("strategy_scores", {}) or {}),
             setup_type=item.get("setup_type"),
             strategy_family=item.get("strategy_family"),
+            primary_strategy=item.get("primary_strategy"),
+            contributing_strategies=list(item.get("contributing_strategies", []) or []),
         )
     raise TypeError(f"Unsupported candidate type for five-layer pipeline: {type(item)!r}")
 
@@ -484,12 +486,20 @@ class FiveLayerPipeline:
                 candidate.strategy_family = (
                     resolution.strategy_family.value if resolution.strategy_family else None
                 )
+                candidate.primary_strategy = resolution.primary_strategy
+                candidate.contributing_strategies = [
+                    strategy
+                    for strategy in (resolution.contributing_strategies or [])
+                    if strategy != resolution.primary_strategy
+                ]
                 candidate.matched_strategies = dispatch_result.allowed_strategies
             else:
                 try:
                     st = SetupType(candidate.setup_type) if candidate.setup_type else SetupType.NONE
                 except ValueError:
                     st = SetupType.NONE
+                candidate.primary_strategy = None
+                candidate.contributing_strategies = []
 
             # L4: 买点成熟度
             entry_mat = maturity_assessor.assess(st, fs)
@@ -542,7 +552,11 @@ class FiveLayerPipeline:
             candidate.trade_theme_stage = getattr(theme_decision, "trade_theme_stage", "unknown")
             candidate.leader_stocks = list(theme_decision.leader_stocks)
             candidate.front_stocks = list(theme_decision.front_stocks)
-            candidate.setup_hit_reasons = list(getattr(resolution, "contributing_strategies", []) if dispatcher is not None and setup_resolver is not None else [])
+            candidate.setup_hit_reasons = list(
+                getattr(resolution, "contributing_strategies", [])
+                if dispatcher is not None and setup_resolver is not None
+                else []
+            )
             fs["effective_leader_score"] = leader_score
             fs["effective_extreme_strength_score"] = extreme_strength
             fs["effective_leader_score_source"] = leader_score_source

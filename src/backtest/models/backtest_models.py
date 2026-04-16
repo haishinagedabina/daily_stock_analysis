@@ -155,6 +155,8 @@ class FiveLayerBacktestEvaluation(Base):
     mae = Column(Float)  # max adverse excursion
     mfe = Column(Float)  # max favorable excursion
     max_drawdown_from_peak = Column(Float)
+    optimal_entry_deviation = Column(Float)
+    optimal_entry_timing = Column(Integer)
     holding_days = Column(Integer)
     plan_success = Column(Boolean)
     signal_quality_score = Column(Float)
@@ -247,8 +249,8 @@ class FiveLayerBacktestGroupSummary(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     backtest_run_id = Column(String(64), nullable=False, index=True)
 
-    group_type = Column(String(64), nullable=False)  # overall / signal_family / setup_type / market_regime / combo
-    group_key = Column(String(128), nullable=False)    # "entry" / "trend_breakout" / "balanced+entry"
+    group_type = Column(String(64), nullable=False)  # overall / signal_family / setup_type / market_regime / combo / strategy_cohort
+    group_key = Column(String(128), nullable=False)    # "entry" / "trend_breakout" / "snapshot_theme_position=leader|snapshot_setup_type=trend_breakout" / "ps=trend_pullback|sb=boundary|mr=balanced|cp=tier2|em=medium"
 
     sample_count = Column(Integer, default=0)
     avg_return_pct = Column(Float)

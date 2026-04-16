@@ -1,581 +1,592 @@
-# 回测模块优化实施方案
+# 回测模块优化实施方案（修订版）
 
-> 日期：2026-04-14  
+> 首版日期：2026-04-14  
+> 修订日期：2026-04-15  
 > 状态：待实施  
-> 优先级：P0 → P1 → P2 分三阶段
+> 优先级：P0 → P1 → P2 分三阶段  
+> 依据：已结合一次真实运行 `flbt-722f9996f042` 复核当前实现与目标方案的差距
 
 ---
 
-## 一、现状问题
+## 一、修订背景
 
-### 1.1 核心矛盾
+本方案最初聚焦于“把回测页面从统计报表改成研究工作台”，但在 2026-04-15 对当前系统做了一次真实运行验证后，确认核心问题并不只是页面层级，而是**回测样本锚点、汇总口径、策略分布和归因语义仍未与目标问题对齐**。
 
-回测模块的目的是验证"选股及买卖点预测的准确性"，但当前实现偏向统计报表，没有直接回答以下关键问题：
+本次真实运行参数：
 
-| 应该回答的问题 | 现状 |
-|---------------|------|
-| 我的系统整体行不行？ | ❌ 没有一眼可见的综合评分 |
-| 哪个策略好用、哪个该关？ | ❌ setup_type 分组混在大表格里，没有盈亏比 |
-| trade_stage 判断准不准？ | ❌ 只做了分组平均收益，没算判断准确率 |
-| 入场成熟度分级有效吗？ | ⚠️ RankingEffectiveness 算了但前端不展示 |
-| 入场时机精确吗？ | ❌ MAE 数据有但没有按策略分析呈现 |
-| 止盈止损执行情况？ | ❌ plan_success 后端算了前端不展示 |
+- 接口：`POST /api/v1/five-layer-backtest/run`
+- 区间：`2026-03-16` ~ `2026-04-15`
+- `evaluation_mode`：`historical_snapshot`
+- `execution_model`：`conservative`
+- `market`：`cn`
+- `eval_window_days`：`10`
 
-### 1.2 前端页面问题
+本次真实运行结果：
 
-- **信息平铺无层次**：运行概览 → 分组汇总 → 候选列表三段式，没有信息优先级
-- **分组汇总表混杂**：overall / signal_family / setup_type / market_regime / combo 几十行混在一个表，用户无法快速定位
-- **候选列表是流水账**：10 个字段平铺，入场和观察信号混在一起，重点不突出
-- **缺失关键交易指标**：盈亏比、最大连续亏损、平均持仓天数、止盈止损执行率均未展示
+- `backtest_run_id`：`flbt-722f9996f042`
+- `status`：`completed`
+- `run.sample_count`：`65`
+- `completed_count`：`65`
+- `error_count`：`0`
+- `summary_count`：`36`
+- `recommendation_count`：`2`
 
-### 1.3 后端计算缺失
+关键观察：
 
-`GroupSummaryAggregator.aggregate_group()` 当前只计算：
-- avg_return_pct / median_return_pct / win_rate_pct
-- avg_mae / avg_mfe / avg_drawdown
-- p25 / p75 / extreme_sample_ratio / time_bucket_stability
+- `evaluations.total = 65`
+- `entry = 0`
+- `observation = 65`
+- `overall.summary.sample_count = 10`
+- `setup_type` 汇总只有 4 类，但明细 `snapshot_setup_type` 实际至少有 5 类，且 `trend_pullback = 17` 未进入汇总
+- `primary_strategy` 基本为空
+- `strategy_cohort = 0`
+- `entry_timing_label = not_applicable` 覆盖全部明细
 
-缺失：
-- profit_factor（盈亏比）
-- avg_holding_days（平均持仓天数）
-- max_consecutive_losses（最大连续亏损次数）
-- plan_execution_rate（止盈止损执行成功率）
-- stage_accuracy_rate（交易阶段判断准确率）
+结论：
 
----
-
-## 二、目标架构
-
-### 2.1 页面信息层级
-
-重构为 4 层，每层回答一个明确问题：
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ 第1层：系统体检卡（Hero Section）                             │
-│ "我的系统行不行？"  ← 30秒看完结论                             │
-├─────────────────────────────────────────────────────────────┤
-│ 第2层：策略拆解                                               │
-│ "哪个策略好用，哪个不行？"  ← 按 setup_type 对比              │
-├─────────────────────────────────────────────────────────────┤
-│ 第3层：判断验证面板                                            │
-│ "我的分级/标签判断准吗？"  ← 3个子面板                        │
-│  ├── 3A. 交易阶段判断准确率                                    │
-│  ├── 3B. 入场成熟度分级验证                                    │
-│  └── 3C. MAE入场精度分析                                      │
-├─────────────────────────────────────────────────────────────┤
-│ 第4层：个股明细（可折叠）                                      │
-│ "具体哪只股对了/错了？"  ← 分Tab + 展开行                     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 2.2 系统体检卡指标定义
-
-页面顶部 6 个 KPI 卡片：
-
-| 指标 | 定义 | 评判标准 |
-|------|------|---------|
-| **总胜率** | entry 信号中 outcome="win" 的占比 | >55% 优, 45-55% 中, <45% 差 |
-| **盈亏比** | sum(正收益) / abs(sum(负收益)) | >1.5 优, 1.0-1.5 中, <1.0 差 |
-| **平均收益** | entry 信号 forward_return_5d 均值 | >2% 优, 0-2% 中, <0% 差 |
-| **最大回撤** | entry 信号 avg_drawdown | >-3% 优, -3~-5% 中, <-5% 差 |
-| **信号质量** | entry 信号 avg signal_quality_score | >0.6 优, 0.4-0.6 中, <0.4 差 |
-| **综合评分** | 加权综合 → A/B/C/D 等级 | 见 §3.5 评分算法 |
-
-### 2.3 策略对比表字段
-
-按 setup_type 维度展示，每行一个策略：
-
-```
-策略名 | 样本数 | 胜率 | 盈亏比 | 平均5日收益 | 平均MAE | 信号质量 | 止盈执行率 | 评级
-```
-
-评级规则：
-- 🟢 优：胜率>55% 且 盈亏比>1.5
-- 🟡 中：胜率>45% 或 盈亏比>1.0
-- 🔴 差：胜率<45% 且 盈亏比<1.0
-
-### 2.4 判断验证面板
-
-**3A. 交易阶段判断准确率**
-
-| 字段 | 来源 |
-|------|------|
-| 阶段名称 | snapshot_trade_stage |
-| 样本数 | 该阶段候选数 |
-| 判断准确率 | entry: forward_return_5d > 0 为正确; observation: stage_success = True 为正确 |
-| 平均收益 | 该阶段 avg forward_return_5d |
-
-**3B. 入场成熟度分级验证**
-
-| 字段 | 来源 |
-|------|------|
-| 等级 | snapshot_entry_maturity (HIGH/MEDIUM/LOW) |
-| 胜率 | 该等级 win_rate |
-| 平均收益 | 该等级 avg_return |
-| 分级一致性 | HIGH > MEDIUM > LOW 是否成立（来自 RankingEffectivenessCalculator） |
-
-**3C. MAE 入场精度分析**
-
-| 字段 | 来源 |
-|------|------|
-| 策略 | snapshot_setup_type |
-| 平均MAE | 该策略 entry 信号的 avg(mae) |
-| MAE < -2% 占比 | mae < -2 的样本占比 |
-| 入场偏早率 | MAE < -3% 的占比（入场后回撤超3%认为偏早） |
-
-### 2.5 个股明细优化
-
-**分 Tab 展示：**
-
-Tab 1：入场信号
-```
-代码 | 名称 | 日期 | 策略(setup_type) | 入场价 | 5日收益 | 10日收益 | MAE | MFE | 盈亏 | 止盈止损 | 信号质量
-```
-
-Tab 2：观察信号
-```
-代码 | 名称 | 日期 | 阶段 | 假设入场价 | 规避风险% | 错过收益% | 判断结果 | 结论
-```
-
-**展开行（点击行展开详情）：**
-
-展示 `factor_snapshot_json` 和 `trade_plan_json` 的结构化内容：
-- 因子快照：MA100状态、底背离状态、趋势线突破、缺口检测等
-- 交易计划：止盈目标 → 是否触达、止损线 → 是否触发、计划执行结果
+**当前页面虽然已经开始具备“研究工作台”的结构，但当前主运行路径产生的数据仍然更像“日期区间 observation 统计样本”，不是“围绕一次真实选股运行的归因样本”。**
 
 ---
 
-## 三、后端改动详情
+## 二、当前最核心的问题
 
-### 3.1 GroupSummary 表新增字段
+### 2.1 样本锚点错位
 
-文件：`src/backtest/models/backtest_models.py`
+当前前端主入口调用的是：
 
-```python
-# FiveLayerBacktestGroupSummary 新增列
-profit_factor = Column(Float)              # 盈亏比
-avg_holding_days = Column(Float)           # 平均持仓天数
-max_consecutive_losses = Column(Integer)   # 最大连续亏损次数
-plan_execution_rate = Column(Float)        # 止盈止损成功率 (0-1)
-stage_accuracy_rate = Column(Float)        # 交易阶段判断准确率 (0-1)
-system_grade = Column(String(4))           # 综合评分 A+/A/B+/B/C/D
+```text
+POST /api/v1/five-layer-backtest/run
 ```
 
-需要同步更新：
-- `to_dict()` 方法
-- `summary_repo.py` 的 `upsert_summary()` 参数
+而不是：
 
-### 3.2 aggregate_group() 新增计算
-
-文件：`src/backtest/aggregators/group_summary_aggregator.py`
-
-在 `aggregate_group()` 函数中新增：
-
-```python
-# --- 盈亏比 ---
-positive_returns = [r for r in returns if r > 0]
-negative_returns = [r for r in returns if r < 0]
-total_positive = sum(positive_returns) if positive_returns else 0
-total_negative = abs(sum(negative_returns)) if negative_returns else 0
-profit_factor = round(total_positive / total_negative, 4) if total_negative > 0 else None
-
-# --- 平均持仓天数 ---
-holding_vals = [e.holding_days for e in valid if e.holding_days is not None and e.holding_days > 0]
-avg_holding_days = round(statistics.mean(holding_vals), 2) if holding_vals else None
-
-# --- 最大连续亏损 ---
-sorted_evals = sorted(
-    [e for e in valid if e.trade_date is not None and e.outcome is not None],
-    key=lambda e: (e.trade_date, e.code),
-)
-max_consecutive_losses = 0
-current_streak = 0
-for e in sorted_evals:
-    if e.outcome == "loss":
-        current_streak += 1
-        max_consecutive_losses = max(max_consecutive_losses, current_streak)
-    else:
-        current_streak = 0
-
-# --- 止盈止损执行率 ---
-plan_evals = [e for e in valid if e.plan_success is not None]
-plan_execution_rate = (
-    round(sum(1 for e in plan_evals if e.plan_success) / len(plan_evals), 4)
-    if plan_evals else None
-)
-
-# --- 交易阶段判断准确率 ---
-stage_correct = 0
-stage_total = 0
-for e in valid:
-    if e.signal_family == "entry" and e.forward_return_5d is not None:
-        stage_total += 1
-        if e.forward_return_5d > 0:
-            stage_correct += 1
-    elif e.signal_family == "observation" and e.stage_success is not None:
-        stage_total += 1
-        if e.stage_success:
-            stage_correct += 1
-stage_accuracy_rate = round(stage_correct / stage_total, 4) if stage_total > 0 else None
+```text
+POST /api/v1/five-layer-backtest/run/by-screening-run
 ```
 
-### 3.3 新建 SystemGrader
+这意味着当前回测主路径仍然是“按日期区间扫样本”，而不是“围绕某次真实选股运行做跟踪回测”。
 
-文件：`src/backtest/aggregators/system_grader.py`（新建）
+这与本项目要回答的关键问题不一致：
 
-```python
-class SystemGrader:
-    """综合评分算法，输出 A+/A/B+/B/C/D"""
+- 哪只股票为什么入选
+- 买点是否识别正确
+- 是否已经错过最佳买点
+- 哪个策略在真实入选样本里有效
+- 哪类样本应该继续观察，哪类应该拒绝
 
-    @staticmethod
-    def grade(
-        win_rate_pct: float | None,
-        profit_factor: float | None,
-        time_bucket_stability: float | None,
-        sample_count: int,
-    ) -> str:
-        if sample_count < 10:
-            return "N/A"
+### 2.2 页面上下在看不同批次样本
 
-        score = 0.0
+真实运行中出现了明显的口径分裂：
 
-        # 胜率得分 (0-40分)
-        if win_rate_pct is not None:
-            if win_rate_pct >= 60: score += 40
-            elif win_rate_pct >= 55: score += 35
-            elif win_rate_pct >= 50: score += 25
-            elif win_rate_pct >= 45: score += 15
-            else: score += 5
+- 顶部运行上下文：`run.sample_count = 65`
+- 页面核心汇总：`overall.sample_count = 10`
 
-        # 盈亏比得分 (0-40分)
-        if profit_factor is not None:
-            if profit_factor >= 2.0: score += 40
-            elif profit_factor >= 1.5: score += 35
-            elif profit_factor >= 1.2: score += 25
-            elif profit_factor >= 1.0: score += 15
-            else: score += 5
+如果页面不显式说明“原始样本数”和“可汇总样本数”的差异，用户会自然误以为所有结论都建立在同一批 65 个样本上。
 
-        # 稳定性得分 (0-20分)
-        if time_bucket_stability is not None:
-            if time_bucket_stability <= 0.08: score += 20
-            elif time_bucket_stability <= 0.12: score += 15
-            elif time_bucket_stability <= 0.15: score += 10
-            else: score += 5
+这会直接破坏页面可信度。
 
-        # 映射等级
-        if score >= 90: return "A+"
-        if score >= 80: return "A"
-        if score >= 70: return "B+"
-        if score >= 55: return "B"
-        if score >= 40: return "C"
-        return "D"
-```
+### 2.3 策略分布与真实样本分布不一致
 
-### 3.4 Evaluation to_dict() 补充字段
+本次 `evaluations` 中的 `snapshot_setup_type` 分布为：
 
-文件：`src/backtest/models/backtest_models.py`
+- `none = 22`
+- `bottom_divergence_breakout = 20`
+- `trend_pullback = 17`
+- `low123_breakout = 5`
+- `trend_breakout = 1`
 
-`FiveLayerBacktestEvaluation.to_dict()` 补充暴露：
+但 `setup_type` 汇总只返回：
 
-```python
-"factor_snapshot_json": self.factor_snapshot_json,
-"trade_plan_json": self.trade_plan_json,
-"signal_type": self.signal_type,
-"evaluation_mode": self.evaluation_mode,
-"snapshot_source": self.snapshot_source,
-"replayed": self.replayed,
-```
+- `bottom_divergence_breakout`
+- `low123_breakout`
+- `trend_breakout`
+- `none`
 
-### 3.5 API schema 新增字段
+`trend_pullback` 没有进入 setup 汇总。
 
-文件：`api/v1/schemas/five_layer_backtest.py`
+这意味着当前左侧“策略分布”并不是对真实明细的忠实映射，而是一个被筛过的子集。
 
-**FiveLayerGroupSummaryItem 新增：**
+### 2.4 页面核心模块缺少真实语义支撑
 
-```python
-profit_factor: Optional[float] = None
-avg_holding_days: Optional[float] = None
-max_consecutive_losses: Optional[int] = None
-plan_execution_rate: Optional[float] = None
-stage_accuracy_rate: Optional[float] = None
-system_grade: Optional[str] = None
-```
+本次 run 中：
 
-**FiveLayerEvaluationItem 新增：**
+- `entry = 0`
+- `primary_strategy` 为空
+- `entry_timing_label = not_applicable`
+- `strategy_cohort = 0`
+- `profit_factor = null`
+- `plan_execution_rate = null`
 
-```python
-factor_snapshot_json: Optional[str] = None
-trade_plan_json: Optional[str] = None
-signal_type: Optional[str] = None
-```
+这直接影响当前页面最重要的几个模块：
 
-### 3.6 新增 API 端点：排名有效性
+- `研究画布`
+- `策略结论`
+- `证据链与归因`
+- `买点时机分布`
+- `异常样本区`
 
-文件：`api/v1/endpoints/five_layer_backtest.py`
+它们可以渲染，但无法稳定回答“买点是否正确”“策略是否真正有效”。
 
-```
-GET /runs/{backtest_run_id}/ranking-effectiveness
-```
+### 2.5 已有数据能力没有进入页面主叙事
 
-返回 `RankingEffectivenessReport` 的 JSON 序列化，包含：
-- comparisons: 各维度层级对比列表
-- overall_effectiveness_ratio
-- top_k_hit_rate
-- excess_return_pct
-- ranking_consistency
+本次 run 已经返回：
+
+- `RankingEffectiveness`
+- `Recommendations = 2`
+
+说明后端开始具备“分级有效性”和“调权建议”的能力。
+
+但当前页面对它们的处理仍然偏弱：
+
+- `RankingEffectiveness` 只被压缩成非常轻的提示信息
+- `Recommendations` 没有进入主页面叙事
 
 ---
 
-## 四、前端改动详情
+## 三、目标状态
 
-### 4.1 文件清单
+本轮优化后的回测系统，要围绕“真实选股结果验证”来工作，而不是围绕“某段日期内的统计样本展示”来工作。
 
-| 文件 | 改动 |
-|------|------|
-| `types/backtest.ts` | 新增字段类型定义 |
-| `api/backtest.ts` | 新增 getRankingEffectiveness API 调用 |
-| `pages/BacktestPage.tsx` | 整体重构为4层布局 |
-| `components/backtest/SystemScorecard.tsx` | **新建** - 第1层体检卡组件 |
-| `components/backtest/StrategyComparison.tsx` | **新建** - 第2层策略对比组件 |
-| `components/backtest/JudgmentValidation.tsx` | **新建** - 第3层判断验证组件 |
-| `components/backtest/EvaluationDetail.tsx` | **新建** - 第4层个股明细组件（含展开行） |
+目标状态分为 4 层：
 
-### 4.2 第1层组件：SystemScorecard
+### 3.1 运行入口层
 
-```tsx
-// 6个KPI卡片横排
-// 每个卡片: 指标名 + 数值 + 进度条 + 颜色标识(绿/黄/红)
-// 数据来源: summaries 中 group_type="overall" 的记录
+默认入口切到 `screening_run_id` 驱动：
 
-interface ScorecardProps {
-  summary: BacktestSummaryItem;  // overall summary
-}
-```
+- 主路径：按真实选股运行回测
+- 辅路径：按日期区间做回放或补充验证
 
-KPI 卡片颜色逻辑：
-- 绿色(text-green)：达标（胜率>55%, 盈亏比>1.5, 评分>=B+）
-- 黄色(text-yellow)：及格（胜率45-55%, 盈亏比1.0-1.5, 评分B/C）
-- 红色(text-red)：预警（胜率<45%, 盈亏比<1.0, 评分D）
+默认研究页应优先回答：
 
-### 4.3 第2层组件：StrategyComparison
+- 这是哪次选股运行
+- 这次选股最终进入回测的样本有哪些
+- 哪些是可交易样本，哪些只是观察样本
 
-```tsx
-// 表格: 按 setup_type 维度的 summary 逐行展示
-// 数据来源: summaries.filter(s => s.groupType === "setup_type")
-// 排序: 按 profit_factor 降序
+### 3.2 统计口径层
 
-interface StrategyComparisonProps {
-  summaries: BacktestSummaryItem[];  // setup_type summaries only
-}
-```
+同一页面所有结论必须来自同一套可解释口径：
 
-每行末尾加评级 Badge（🟢优/🟡中/🔴差），评级规则写死在前端。
+- 原始候选数
+- 实际评估样本数
+- entry 样本数
+- observation 样本数
+- 被抑制或被过滤的样本数
 
-### 4.4 第3层组件：JudgmentValidation
+如果存在阈值压缩，页面必须能解释：
 
-三个子面板用 Tab 或折叠面板组织：
+- 哪些样本被压掉
+- 为什么被压掉
+- 汇总结论建立在哪一层样本上
 
-```tsx
-interface JudgmentValidationProps {
-  tradeStageSummaries: BacktestSummaryItem[];      // trade_stage 分组
-  maturitySummaries: BacktestSummaryItem[];         // entry_maturity 分组
-  setupTypeSummaries: BacktestSummaryItem[];        // setup_type 分组 (MAE)
-  rankingEffectiveness: RankingEffectivenessData;   // 新API返回
-}
-```
+### 3.3 研究层
 
-### 4.5 第4层组件：EvaluationDetail
+页面应能稳定回答：
 
-```tsx
-// Tab切换: 入场信号 / 观察信号
-// 通过 signalFamily query param 过滤API请求
-// 点击行展开: 解析 factor_snapshot_json / trade_plan_json 渲染详情
+- 哪个策略在真实选股结果里有效
+- 哪类 trade stage / entry maturity 判断有效
+- 哪些 observation 样本是正确等待，哪些是误判
+- 哪些 entry 样本是偏早、偏晚、刚好
+- 哪些策略在 P0 重点验证链路里表现异常
 
-interface EvaluationDetailProps {
-  backtestRunId: string;
-}
-```
+### 3.4 归因层
 
-展开行渲染 factor_snapshot_json 的关键字段映射：
+研究页应能拿到并展示：
 
-| JSON key | 展示名 | 展示方式 |
-|----------|--------|---------|
-| ma100_breakout_days | MA100突破 | ✅ 突破N日 / ❌ 未突破 |
-| bottom_divergence_state | 底背离 | ✅ confirmed / ❌ rejected |
-| trendline_breakout | 趋势线突破 | ✅ 突破(触碰N次) / ❌ 未突破 |
-| gap_is_breakaway | 突破性缺口 | ✅ 有 / ❌ 无 |
-| low_123_state | 低位结构 | ✅ confirmed / ⚠️ structure_only |
+- `primary_strategy`
+- `contributing_strategies`
+- `strategy_cohort_context`
+- `sample_bucket`
+- `entry_timing_label`
+- `ma100_low123_validation_status`
+- `factor_snapshot_json`
+- `trade_plan_json`
+
+如果这些字段缺失，不应该强行给“研究结论”，而应进入“数据不完备 / 当前仅适合观察研究”的降级态。
 
 ---
 
-## 五、数据库迁移
+## 四、实施总原则
 
-### 5.1 SQL 变更
-
-```sql
-ALTER TABLE five_layer_backtest_group_summaries
-  ADD COLUMN profit_factor FLOAT,
-  ADD COLUMN avg_holding_days FLOAT,
-  ADD COLUMN max_consecutive_losses INTEGER,
-  ADD COLUMN plan_execution_rate FLOAT,
-  ADD COLUMN stage_accuracy_rate FLOAT,
-  ADD COLUMN system_grade VARCHAR(4);
-```
-
-### 5.2 兼容性
-
-- 新字段全部 nullable，不影响已有数据
-- 已完成的 backtest run 如需新指标，重跑 `compute_summaries()` 即可回填
-- 前端对 null 值统一显示 `--`
+1. 先修样本锚点，再修页面叙事  
+2. 先统一 run / summary / evaluations 口径，再做视觉层优化  
+3. 先打通 `screening_run -> backtest -> summaries/evaluations -> page` 主链路，再做策略专项验证  
+4. 日期区间回测保留，但降级为辅助入口，不再作为主研究入口  
+5. 所有阶段都必须配真实运行验证，不能只看单测通过
 
 ---
 
-## 六、实施计划
+## 五、实施方案
 
-### Phase 1 (P0) — 核心指标 + 体检卡
+## Phase P0：修正主路径和统计口径
 
-**目标：** 打开页面30秒看到系统好不好
+### P0-1 切换前端主入口到 `screening_run_id`
 
-| 步骤 | 任务 | 涉及文件 |
-|------|------|---------|
-| 1.1 | DB migration: GroupSummary 加6个字段 | backtest_models.py, summary_repo.py |
-| 1.2 | aggregate_group() 新增 profit_factor / avg_holding_days / max_consecutive_losses / plan_execution_rate / stage_accuracy_rate | group_summary_aggregator.py |
-| 1.3 | 新建 SystemGrader + 集成到 compute_summaries | system_grader.py, backtest_service.py |
-| 1.4 | API schema 新增字段 | five_layer_backtest.py (schemas) |
-| 1.5 | 前端 SystemScorecard 组件 | SystemScorecard.tsx |
-| 1.6 | 前端 StrategyComparison 组件 | StrategyComparison.tsx |
-| 1.7 | BacktestPage 重构顶部布局 | BacktestPage.tsx |
+目标：
 
-**验收标准：**
-- 运行回测后，页面顶部显示6个KPI卡片+综合评分
-- KPI卡片下方显示策略对比表，按盈亏比排序，带颜色评级
-- 已有功能不受影响
+- 研究工作台默认不再直接围绕日期区间发起回测
+- 页面默认优先选择最近一次 `screening run`
+- 调用主接口改为：
 
-### Phase 2 (P1) — 判断验证面板
+```text
+POST /api/v1/five-layer-backtest/run/by-screening-run
+```
 
-**目标：** 验证选股系统的标签/分级是否准确
+涉及文件：
 
-| 步骤 | 任务 | 涉及文件 |
-|------|------|---------|
-| 2.1 | 新增 ranking-effectiveness API | five_layer_backtest.py (endpoints), schemas |
-| 2.2 | Evaluation to_dict() 暴露 factor_snapshot_json / trade_plan_json | backtest_models.py |
-| 2.3 | API schema EvaluationItem 新增字段 | five_layer_backtest.py (schemas) |
-| 2.4 | 前端 JudgmentValidation 组件 (3个子面板) | JudgmentValidation.tsx |
-| 2.5 | BacktestPage 集成第3层 | BacktestPage.tsx |
+- `apps/dsa-web/src/api/backtest.ts`
+- `apps/dsa-web/src/types/backtest.ts`
+- `apps/dsa-web/src/pages/BacktestPage.tsx`
+- `apps/dsa-web/src/pages/__tests__/BacktestPage.test.tsx`
 
-**验收标准：**
-- 交易阶段判断准确率面板：按 trade_stage 分组展示样本数、准确率、平均收益
-- 入场成熟度验证面板：HIGH/MEDIUM/LOW 三级对比 + 分级一致性标识
-- MAE精度分析面板：按策略展示平均MAE、偏早率
+完成标准：
 
-### Phase 3 (P2) — 个股明细优化
+- 页面能展示最近可用 `screening run`
+- 主运行按钮默认走 `screening_run_id`
+- 日期区间入口保留，但明确为“回放模式”或“辅助模式”
 
-**目标：** 深入到单只股票看因子快照和交易计划执行
+### P0-2 统一 run / summaries / evaluations 的样本口径
 
-| 步骤 | 任务 | 涉及文件 |
-|------|------|---------|
-| 3.1 | 前端 EvaluationDetail 组件（分Tab + 展开行） | EvaluationDetail.tsx |
-| 3.2 | factor_snapshot_json 结构化渲染 | EvaluationDetail.tsx |
-| 3.3 | trade_plan_json 执行结果渲染 | EvaluationDetail.tsx |
-| 3.4 | BacktestPage 替换现有候选列表 | BacktestPage.tsx |
-| 3.5 | 前端 types 补充 | backtest.ts |
+目标：
 
-**验收标准：**
-- 入场信号/观察信号分Tab展示
-- 点击行可展开查看因子快照（MA100/底背离/趋势线/缺口状态）
-- 点击行可展开查看止盈止损计划执行结果
+- 消除 `run.sample_count = 65`，但 `overall.sample_count = 10` 这类不可解释分裂
+- 明确区分：
+  - 原始样本数
+  - 可汇总样本数
+  - entry 样本数
+  - observation 样本数
+  - suppressed 样本数
+
+涉及文件：
+
+- `src/backtest/services/backtest_service.py`
+- `src/backtest/aggregators/group_summary_aggregator.py`
+- `src/backtest/models/backtest_models.py`
+- `api/v1/schemas/five_layer_backtest.py`
+- `tests/test_five_layer_aggregator.py`
+- `tests/test_five_layer_backtest_models.py`
+- `tests/test_five_layer_phase4_api.py`
+
+完成标准：
+
+- 页面上下看到的是同一套可解释样本基线
+- 如有压缩阈值，返回里有明确原因
+
+### P0-3 修复 `setup_type` 汇总漏策略问题
+
+目标：
+
+- 明细中出现的有效 `snapshot_setup_type` 不应无故丢失
+- 至少要做到：
+  - 进入汇总
+  - 或在响应里显式标记“被抑制，不参与展示”
+
+当前已知问题：
+
+- `trend_pullback = 17` 出现在明细中，但不在 `setup_type` 汇总中
+
+涉及文件：
+
+- `src/backtest/aggregators/group_summary_aggregator.py`
+- `src/backtest/services/backtest_service.py`
+- `tests/test_five_layer_aggregator.py`
+
+完成标准：
+
+- 策略导航与真实策略分布一致
+- 页面左侧不会再误导用户
+
+### P0-4 保证真实运行里稳定产出 `entry`
+
+目标：
+
+- 基于 `screening_run_id` 的主路径必须能稳定得到可分析的 `entry` 样本
+- 不能再出现 observation-only 成为默认常态
+
+涉及文件：
+
+- `src/backtest/services/backtest_service.py`
+- `src/backtest/models/backtest_models.py`
+- `src/services/factor_service.py`
+- `tests/test_five_layer_phase4_api.py`
+
+完成标准：
+
+- 至少能得到可分析的 `entry`
+- `entry_timing_label`、`forward_return_5d`、`plan_success` 在 entry 样本上有真实意义
 
 ---
 
-## 七、风险与注意事项
+## Phase P1：让研究页变成可信研究页
 
-### 7.1 数据依赖
+### P1-1 顶部上下文改为“双上下文”
 
-- factor_snapshot_json 和 trade_plan_json 的填充依赖 ScreeningCandidate 表中对应字段是否有值
-- 如果历史选股结果没有存储这些 JSON，展开行会显示空
-- **建议**：先检查近期 ScreeningCandidate 数据的填充率
+目标：
 
-### 7.2 性能
+- 页面明确区分：
+  - 运行上下文：`screening_run_id` / `backtest_run_id`
+  - 研究上下文：entry / observation / suppressed 的实际数量
 
-- GroupSummary 新增计算（连续亏损、准确率等）需要遍历排序，O(n log n)
-- 对于大区间回测（>1000 样本），aggregate_group 耗时可能增加
-- **缓解**：新增计算都在内存中完成，无额外DB查询，可接受
+涉及文件：
 
-### 7.3 向后兼容
+- `apps/dsa-web/src/pages/BacktestPage.tsx`
+- `apps/dsa-web/src/types/backtest.ts`
+- `apps/dsa-web/src/pages/__tests__/BacktestPage.test.tsx`
 
-- 所有新字段 nullable，不影响已有回测数据
-- 前端对 null 统一显示 `--`，不会报错
-- 旧的 API 响应是新响应的子集，不破坏外部调用方
+完成标准：
 
-### 7.4 不改动范围
+- 用户一眼看出页面当前结论建立在哪批样本上
 
-以下不在本方案范围内（维持现状）：
-- 回测引擎核心逻辑（EntryEvaluator / ObservationEvaluator / ExecutionModelResolver）
-- 选股策略本身（YAML 规则、indicator 检测器）
-- ExitSignalEvaluator（仍为 framework only）
-- 旧版 backtest_engine.py（已被五层系统替代）
+### P1-2 把 `RankingEffectiveness` 升级为主叙事
+
+目标：
+
+- 不再只显示“分级有效/仍需观察”
+- 直接展示：
+  - 哪个维度有效
+  - 哪个维度无效
+  - 对应样本量
+  - 高低层级差异
+
+涉及文件：
+
+- `apps/dsa-web/src/pages/BacktestPage.tsx`
+- `apps/dsa-web/src/components/backtest/StrategyResearchCanvas.tsx`
+- `apps/dsa-web/src/types/backtest.ts`
+- `apps/dsa-web/src/pages/__tests__/BacktestPage.test.tsx`
+
+### P1-3 把 `Recommendations` 接入研究结论区
+
+目标：
+
+- 当前 run 已经能返回建议，但页面没有把它转成策略动作
+- 页面需要能回答：
+  - 哪个 setup 该加权
+  - 哪类信号该观察
+  - 哪类样本量还不够，只能 display
+
+涉及文件：
+
+- `apps/dsa-web/src/pages/BacktestPage.tsx`
+- `apps/dsa-web/src/components/backtest/StrategyResearchCanvas.tsx`
+- `apps/dsa-web/src/types/backtest.ts`
+- `apps/dsa-web/src/pages/__tests__/BacktestPage.test.tsx`
+
+### P1-4 加入“研究降级态”
+
+目标：
+
+- 当真实数据缺失关键归因字段时，页面不应强行输出研究结论
+- 需要明确提示：
+  - 当前 observation 主导
+  - 当前无主策略归因
+  - 当前仅适合做观察研究，不适合买点结论
+
+涉及文件：
+
+- `apps/dsa-web/src/pages/BacktestPage.tsx`
+- `apps/dsa-web/src/components/backtest/StrategyResearchCanvas.tsx`
+- `apps/dsa-web/src/components/backtest/EvaluationDetail.tsx`
+- `apps/dsa-web/src/pages/__tests__/BacktestPage.test.tsx`
 
 ---
 
-## 八、附录
+## Phase P2：回到策略专项验证
 
-### A. 综合评分算法详情
+### P2-1 对 P0 策略做真实链路验证
 
+重点策略：
+
+- `bottom_divergence_double_breakout`
+- `low123_breakout`
+- `ma100_low123_combined`
+
+目标：
+
+- 这三类策略在 `screening_run -> backtest -> group summary -> page` 链路上都能拿到完整研究语义：
+  - `primary_strategy`
+  - `contributing_strategies`
+  - `sample_bucket`
+  - `entry_timing_label`
+  - `strategy_cohort_context`
+
+涉及文件：
+
+- `src/backtest/services/backtest_service.py`
+- `src/backtest/aggregators/group_summary_aggregator.py`
+- `src/backtest/aggregators/system_grader.py`
+- `tests/test_five_layer_aggregator.py`
+- `tests/test_five_layer_phase4_api.py`
+
+### P2-2 把 conservative mode 的拒绝语义显式展示
+
+目标：
+
+- `breakout_bar_index` 缺失导致的保守拒绝，不应只是后端隐性状态
+- 页面应能单独看见：
+  - 被保守拒绝的样本量
+  - 原因
+  - 受影响策略
+  - 是否属于数据完备性问题
+
+涉及文件：
+
+- `src/backtest/services/backtest_service.py`
+- `src/backtest/models/backtest_models.py`
+- `apps/dsa-web/src/types/backtest.ts`
+- `apps/dsa-web/src/components/backtest/StrategyResearchCanvas.tsx`
+- `tests/test_five_layer_phase4_api.py`
+
+---
+
+## 六、文件清单
+
+### 后端
+
+- `src/backtest/services/backtest_service.py`
+- `src/backtest/aggregators/group_summary_aggregator.py`
+- `src/backtest/aggregators/system_grader.py`
+- `src/backtest/models/backtest_models.py`
+- `api/v1/endpoints/five_layer_backtest.py`
+- `api/v1/schemas/five_layer_backtest.py`
+
+### 前端
+
+- `apps/dsa-web/src/api/backtest.ts`
+- `apps/dsa-web/src/types/backtest.ts`
+- `apps/dsa-web/src/pages/BacktestPage.tsx`
+- `apps/dsa-web/src/components/backtest/StrategyResearchCanvas.tsx`
+- `apps/dsa-web/src/components/backtest/EvaluationDetail.tsx`
+- `apps/dsa-web/src/components/backtest/StrategyWorkbenchSidebar.tsx`
+- `apps/dsa-web/src/pages/__tests__/BacktestPage.test.tsx`
+
+### 测试
+
+- `tests/test_five_layer_aggregator.py`
+- `tests/test_five_layer_backtest_models.py`
+- `tests/test_five_layer_phase4_api.py`
+
+---
+
+## 七、实施顺序建议
+
+建议严格按下面顺序推进：
+
+1. 先完成 `P0-1`：切换主入口到 `screening_run_id`
+2. 再完成 `P0-2`：统一 run / summary / evaluations 样本口径
+3. 再完成 `P0-3`：修 setup_type 汇总漏策略问题
+4. 再完成 `P0-4`：确保真实主路径里能稳定产出 entry
+5. 完成一次真实 `screening_run_id` 回测复核
+6. 在数据链路稳定后，再做 `P1`
+7. 最后做 `P2` 的策略专项验证
+
+**不建议**在 `P0` 未完成前继续做页面布局或视觉微调。
+
+---
+
+## 八、验收标准
+
+### P0 验收标准
+
+- 研究工作台默认走 `screening_run_id`
+- 真实 run 不再 observation-only
+- `run.sample_count`、`overall.sample_count`、`evaluations.total` 的关系可解释
+- `setup_type` 汇总与明细策略分布一致或显式标记抑制原因
+
+### P1 验收标准
+
+- 页面顶部能明确说明当前研究样本基线
+- `RankingEffectiveness` 和 `Recommendations` 进入主叙事
+- 数据不完备时，页面进入明确降级态
+
+### P2 验收标准
+
+- P0 策略能稳定拿到完整归因链
+- conservative mode 的关键拒绝原因可被页面解释
+
+---
+
+## 九、验证矩阵
+
+### 后端验证
+
+```bash
+python -m pytest tests/test_five_layer_aggregator.py -v
+python -m pytest tests/test_five_layer_backtest_models.py -v
+python -m pytest tests/test_five_layer_phase4_api.py -v
 ```
-总分 = 胜率得分(0-40) + 盈亏比得分(0-40) + 稳定性得分(0-20)
 
-胜率得分:
-  ≥60%  → 40分
-  ≥55%  → 35分
-  ≥50%  → 25分
-  ≥45%  → 15分
-  <45%  → 5分
+### 前端验证
 
-盈亏比得分:
-  ≥2.0  → 40分
-  ≥1.5  → 35分
-  ≥1.2  → 25分
-  ≥1.0  → 15分
-  <1.0  → 5分
-
-稳定性得分 (time_bucket_stability, 越低越好):
-  ≤0.08 → 20分
-  ≤0.12 → 15分
-  ≤0.15 → 10分
-  >0.15 → 5分
-
-等级映射:
-  ≥90 → A+    ≥80 → A    ≥70 → B+
-  ≥55 → B     ≥40 → C    <40 → D
+```bash
+cd apps/dsa-web
+npm test -- src/pages/__tests__/BacktestPage.test.tsx
+npm run build
 ```
 
-### B. 策略评级规则
+### 真实运行验证
 
-```
-🟢 优: win_rate_pct > 55 AND profit_factor > 1.5
-🟡 中: win_rate_pct > 45 OR  profit_factor > 1.0
-🔴 差: win_rate_pct ≤ 45 AND profit_factor ≤ 1.0
+至少做两次：
+
+1. 当前旧路径：
+
+```text
+POST /api/v1/five-layer-backtest/run
 ```
 
-### C. 文件变更总览
+2. 新主路径：
 
+```text
+POST /api/v1/five-layer-backtest/run/by-screening-run
 ```
-修改:
-  src/backtest/models/backtest_models.py          # GroupSummary 新增6字段 + Evaluation to_dict
-  src/backtest/aggregators/group_summary_aggregator.py  # aggregate_group 新增5个计算
-  src/backtest/repositories/summary_repo.py        # upsert_summary 新增参数
-  src/backtest/services/backtest_service.py        # 集成 SystemGrader
-  api/v1/schemas/five_layer_backtest.py            # Schema 新增字段
-  api/v1/endpoints/five_layer_backtest.py          # 新增 ranking-effectiveness 端点
-  apps/dsa-web/src/types/backtest.ts               # TS 类型新增
-  apps/dsa-web/src/api/backtest.ts                 # 新增 API 调用
-  apps/dsa-web/src/pages/BacktestPage.tsx          # 整体重构
 
-新建:
-  src/backtest/aggregators/system_grader.py        # 综合评分
-  apps/dsa-web/src/components/backtest/SystemScorecard.tsx
-  apps/dsa-web/src/components/backtest/StrategyComparison.tsx
-  apps/dsa-web/src/components/backtest/JudgmentValidation.tsx
-  apps/dsa-web/src/components/backtest/EvaluationDetail.tsx
-```
+对比项：
+
+- entry / observation 占比
+- `run.sample_count`
+- `overall.sample_count`
+- `setup_type` 汇总完整性
+- `primary_strategy`
+- `strategy_cohort`
+- `entry_timing_label`
+- `recommendations`
+
+---
+
+## 十、风险与边界
+
+### 10.1 当前最大风险
+
+如果继续让日期区间回测作为研究工作台主入口，那么页面再怎么调整，最终也只是一个“更好看的统计页”，而不是“围绕真实选股结果的研究页”。
+
+### 10.2 兼容性风险
+
+- 新旧路径会并存一段时间
+- 日期区间模式仍需保留，避免回放能力丢失
+- 前端需要明确区分“研究模式”和“回放模式”
+
+### 10.3 数据完备性风险
+
+- 历史样本可能没有完整 `primary_strategy`
+- 历史样本可能没有完整 `strategy_cohort_context`
+- 历史 observation 样本可能天然不具备买点研究语义
+
+因此页面必须支持降级态，不能假设所有运行都适合输出完整研究结论。
+
+### 10.4 不在本轮范围内
+
+以下内容不作为本轮优先任务：
+
+- 重新设计五层回测引擎本体
+- 重写策略 YAML 规则
+- 大规模重构筛选策略检测器
+- 继续做页面纯视觉层微调
+
+---
+
+## 十一、最终判断
+
+本次修订后的方案结论非常明确：
+
+**当前回测模块的首要任务，不是继续修页面，而是先把“回测到底在研究哪批样本”这件事做对。**
+
+只有当主路径切到 `screening_run_id`，并且 run / summaries / evaluations 的口径对齐之后，研究工作台上的“策略分布、研究结论、判断验证、样本浏览器”才会真正有意义。

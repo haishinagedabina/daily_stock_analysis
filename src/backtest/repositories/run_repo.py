@@ -58,6 +58,7 @@ class RunRepository:
         sample_count: Optional[int] = None,
         completed_count: Optional[int] = None,
         error_count: Optional[int] = None,
+        config_json: Optional[str] = None,
         started_at: Optional[datetime] = None,
         completed_at: Optional[datetime] = None,
     ) -> Optional[FiveLayerBacktestRun]:
@@ -77,6 +78,8 @@ class RunRepository:
                 run.completed_count = completed_count
             if error_count is not None:
                 run.error_count = error_count
+            if config_json is not None:
+                run.config_json = config_json
             if started_at is not None:
                 run.started_at = started_at
             if completed_at is not None:

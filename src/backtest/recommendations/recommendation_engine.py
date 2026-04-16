@@ -30,6 +30,7 @@ from src.backtest.recommendations.evidence_builder import EvidenceBuilder
 from src.backtest.repositories.evaluation_repo import EvaluationRepository
 from src.backtest.repositories.recommendation_repo import RecommendationRepository
 from src.backtest.repositories.summary_repo import SummaryRepository
+from src.backtest.utils.summary_metrics import get_aggregatable_sample_count
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,7 @@ class RecommendationEngine:
         summary: FiveLayerBacktestGroupSummary,
     ) -> Optional[RecommendationDraft]:
         """Evaluate a single group summary for recommendation potential."""
-        threshold = SampleThresholdGate.check(summary.sample_count or 0)
+        threshold = SampleThresholdGate.check(get_aggregatable_sample_count(summary))
         if not threshold.can_display:
             return None
 
@@ -191,6 +192,7 @@ class RecommendationEngine:
             "win_rate_pct": summary.win_rate_pct,
             "median_return_pct": summary.median_return_pct,
             "sample_count": summary.sample_count,
+            "aggregatable_sample_count": get_aggregatable_sample_count(summary),
         }
 
         return FiveLayerBacktestRecommendation(

@@ -15,6 +15,7 @@ strategy_family: trend
 applicable_market: [balanced, aggressive, defensive]
 applicable_theme: [main_theme, secondary_theme, follower_theme, non_theme]
 setup_type: none
+screening_disabled: true
 
 instructions: |
   **默认多头趋势（Default Bull Trend Strategy）**
